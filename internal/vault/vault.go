@@ -96,11 +96,6 @@ func (v *Vault) Stat(rel string) (fs.FileInfo, error) {
 	return v.root.Stat(rel)
 }
 
-func (v *Vault) Exists(rel string) bool {
-	_, err := v.Stat(rel)
-	return err == nil
-}
-
 // mkdirAll creates rel's ancestors inside the root. os.Root has no MkdirAll,
 // and doing it segment by segment keeps every step confined.
 func (v *Vault) mkdirAll(rel string) error {
@@ -188,8 +183,8 @@ func (v *Vault) Remove(rel string) error {
 	return nil
 }
 
-// IsTemp reports whether a path is one of our own in-flight temp files.
-func IsTemp(rel string) bool {
+// isTemp reports whether a path is one of our own in-flight temp files.
+func isTemp(rel string) bool {
 	return strings.HasPrefix(path.Base(rel), tmpPrefix)
 }
 
@@ -205,37 +200,7 @@ func Skip(rel string) bool {
 			return true
 		}
 	}
-	return IsTemp(rel)
-}
-
-// Walk lists every syncable file, as vault-relative slash-separated paths.
-func (v *Vault) Walk() ([]string, error) {
-	var out []string
-	err := filepath.WalkDir(v.dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, rerr := filepath.Rel(v.dir, p)
-		if rerr != nil {
-			return rerr
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			return nil
-		}
-		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if Skip(rel) || !d.Type().IsRegular() {
-			return nil
-		}
-		out = append(out, rel)
-		return nil
-	})
-	return out, err
+	return isTemp(rel)
 }
 
 // Hash is the content address used on the wire.

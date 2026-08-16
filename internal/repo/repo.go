@@ -44,7 +44,6 @@ func IsUnknownBase(err error) bool { return errors.Is(err, ErrUnknownBase) }
 
 // Entry is one file in a snapshot.
 type Entry struct {
-	Path string `json:"-"`
 	Hash string `json:"hash"`
 	Size int64  `json:"size"`
 }
@@ -175,7 +174,7 @@ func (r *Repo) Snapshot(rev string) (map[string]Entry, error) {
 		return out, err
 	}
 	err = t.Files().ForEach(func(f *object.File) error {
-		out[f.Name] = Entry{Path: f.Name, Hash: f.Hash.String(), Size: f.Size}
+		out[f.Name] = Entry{Hash: f.Hash.String(), Size: f.Size}
 		return nil
 	})
 	return out, err

@@ -214,16 +214,26 @@ export class Sync {
 			}
 		}
 
-		const content = await this.client().getContent(e.hash!);
-		await this.mkdirs(e.path);
-		await this.adapter.writeBinary(e.path, content);
-		const st = await this.adapter.stat(e.path);
-		state.files[e.path] = {
-			hash: e.hash!,
-			mtime: st?.mtime ?? Date.now(),
-			size: st?.size ?? content.byteLength,
-		};
+		state.files[e.path] = await this.materialise(e.path, e.hash!, e.size ?? 0);
 		return "applied";
+	}
+
+	/**
+	 * materialise writes server content to a path and returns the snapshot entry
+	 * for it. Three call sites needed exactly this -- pulling a remote change,
+	 * bootstrapping, and adopting after a push -- and each had its own copy of
+	 * the mkdir/write/stat/record dance to get subtly wrong.
+	 */
+	private async materialise(path: string, hash: string, fallbackSize: number): Promise<FileState> {
+		const content = await this.client().getContent(hash);
+		await this.mkdirs(path);
+		await this.adapter.writeBinary(path, content);
+		const st = await this.adapter.stat(path);
+		return {
+			hash,
+			mtime: st?.mtime ?? Date.now(),
+			size: st?.size ?? fallbackSize ?? content.byteLength,
+		};
 	}
 
 	/**
@@ -253,15 +263,7 @@ export class Sync {
 				state.files[path] = cur;
 				continue;
 			}
-			const content = await this.client().getContent(entry.hash);
-			await this.mkdirs(path);
-			await this.adapter.writeBinary(path, content);
-			const st = await this.adapter.stat(path);
-			state.files[path] = {
-				hash: entry.hash,
-				mtime: st?.mtime ?? Date.now(),
-				size: st?.size ?? entry.size,
-			};
+			state.files[path] = await this.materialise(path, entry.hash, entry.size);
 		}
 	}
 
@@ -287,15 +289,7 @@ export class Sync {
 				// with a real merge rather than clobbering it here.
 				continue;
 			}
-			const content = await this.client().getContent(entry.hash);
-			await this.mkdirs(path);
-			await this.adapter.writeBinary(path, content);
-			const st = await this.adapter.stat(path);
-			state.files[path] = {
-				hash: entry.hash,
-				mtime: st?.mtime ?? Date.now(),
-				size: st?.size ?? entry.size,
-			};
+			state.files[path] = await this.materialise(path, entry.hash, entry.size);
 		}
 		return state;
 	}

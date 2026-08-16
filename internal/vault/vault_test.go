@@ -131,25 +131,25 @@ func TestStat(t *testing.T) {
 	}
 }
 
-func TestWalkSkipsDotDirsAndTemps(t *testing.T) {
-	v, dir := newVault(t)
-	v.Write("notes/a.md", []byte("a"))
-	v.Write("notes/sub/b.md", []byte("b"))
-	os.MkdirAll(filepath.Join(dir, ".obsidian"), 0o755)
-	os.WriteFile(filepath.Join(dir, ".obsidian/app.json"), []byte("{}"), 0o644)
-	os.WriteFile(filepath.Join(dir, "notes", tmpPrefix+"xyz"), []byte("t"), 0o644)
-
-	got, err := v.Walk()
-	if err != nil {
-		t.Fatalf("Walk: %v", err)
+// Exclusion policy lives in Skip, and Skip is what both the watcher and the
+// commit-staging path consult. Testing it directly is closer to the thing that
+// matters than walking a directory was.
+func TestSkipExcludesDotfilesAtEveryLevel(t *testing.T) {
+	for _, p := range []string{
+		".obsidian/appearance.json",
+		"notes/.hidden.md",
+		".trash/old.md",
+		".git",
+		tmpPrefix + "1234",
+		"notes/" + tmpPrefix + "abcd",
+	} {
+		if !Skip(p) {
+			t.Errorf("Skip(%q) = false, want true", p)
+		}
 	}
-	want := map[string]bool{"notes/a.md": true, "notes/sub/b.md": true}
-	if len(got) != len(want) {
-		t.Fatalf("Walk = %v, want exactly %v", got, want)
-	}
-	for _, p := range got {
-		if !want[p] {
-			t.Errorf("Walk returned unexpected %q", p)
+	for _, p := range []string{"a.md", "notes/deep/b.md", "att/scan.pdf", "no.dot.here.md"} {
+		if Skip(p) {
+			t.Errorf("Skip(%q) = true, want false", p)
 		}
 	}
 }

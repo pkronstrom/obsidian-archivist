@@ -32,7 +32,7 @@ func Merge(base, ours, theirs []byte) (result []byte, conflict bool, err error) 
 	if err != nil {
 		return nil, false, err
 	}
-	return fixTrailingNewline(out, base, ours, theirs), r.Conflicts, nil
+	return fixTrailingNewline(out, ours, theirs), r.Conflicts, nil
 }
 
 // fixTrailingNewline restores a final newline the merge dropped.
@@ -42,9 +42,10 @@ func Merge(base, ours, theirs []byte) (result []byte, conflict bool, err error) 
 // newline -- which then appears as a spurious one-line diff on the next sync,
 // forever, on every merged file.
 //
-// The rule is conservative in both directions: restore a newline only when the
-// inputs actually had one, and never invent one for content that did not.
-func fixTrailingNewline(out, base, ours, theirs []byte) []byte {
+// The rule is conservative in both directions: restore a newline only when a
+// LIVING side had one -- base is history and does not get a vote -- and never
+// invent one for content that did not.
+func fixTrailingNewline(out, ours, theirs []byte) []byte {
 	if len(out) == 0 || bytes.HasSuffix(out, []byte("\n")) {
 		return out
 	}
@@ -53,7 +54,6 @@ func fixTrailingNewline(out, base, ours, theirs []byte) []byte {
 	if endsWithNewline(ours) || endsWithNewline(theirs) {
 		return append(out, '\n')
 	}
-	_ = base
 	return out
 }
 

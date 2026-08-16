@@ -70,12 +70,17 @@ func runCommand(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	vaultDir := fs.String("vault", envOr("VAULTSYNC_VAULT", ""), "vault directory")
 	gitDir := fs.String("git", envOr("VAULTSYNC_GIT", "/var/lib/vaultsync/git"), "git directory")
-	asJSON := fs.Bool("json", false, "machine-readable output")
+	// Only history and check produce structured output; show, restore and
+	// export do not, and silently accepting -json there implied otherwise.
+	asJSON := fs.Bool("json", false, "machine-readable output (history and check only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *vaultDir == "" {
 		return errors.New("vault directory is required (-vault or VAULTSYNC_VAULT)")
+	}
+	if *asJSON && name != "history" && name != "check" {
+		return fmt.Errorf("-json is not supported by %s (history and check only)", name)
 	}
 	return cli.Run(name, fs.Args(), cli.Env{
 		Vault: *vaultDir, Git: *gitDir, JSON: *asJSON, Out: os.Stdout,

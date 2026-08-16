@@ -167,7 +167,7 @@ func TestDeleteIsApplied(t *testing.T) {
 	if results[0].Status != StatusApplied {
 		t.Errorf("status = %q, want applied", results[0].Status)
 	}
-	if v.Exists("a.md") {
+	if exists(v, "a.md") {
 		t.Error("file still present after a delete")
 	}
 }
@@ -182,7 +182,7 @@ func TestClientWithNoBaseCannotDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Push: %v", err)
 	}
-	if !v.Exists("keep.md") {
+	if !exists(v, "keep.md") {
 		t.Fatal("a client with no base deleted a file")
 	}
 	if results[0].Status != StatusRefused {
@@ -261,4 +261,11 @@ func TestScanWithNoChangesDoesNotCommit(t *testing.T) {
 	if again != head {
 		t.Errorf("Scan created an empty commit: %q -> %q", head, again)
 	}
+}
+
+// exists is a test helper; production code has no need for it, so Vault does
+// not carry one.
+func exists(v *vault.Vault, path string) bool {
+	_, err := v.Stat(path)
+	return err == nil
 }

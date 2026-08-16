@@ -32,10 +32,6 @@ export function saveState(app: App, state: SyncState): void {
 	app.saveLocalStorage(KEY, state);
 }
 
-export function clearState(app: App): void {
-	app.saveLocalStorage(KEY, null);
-}
-
 export function emptyState(): SyncState {
 	return { base: "", files: {} };
 }

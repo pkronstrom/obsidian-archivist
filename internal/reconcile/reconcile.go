@@ -317,6 +317,3 @@ func (rc *Reconciler) Freeze(fn func() error) error {
 	defer rc.mu.Unlock()
 	return fn()
 }
-
-// Head is the current commit.
-func (rc *Reconciler) Head() (string, error) { return rc.r.Head() }
