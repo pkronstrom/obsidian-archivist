@@ -204,8 +204,36 @@ It carries a **notification, not the change** — "something moved, go look". A
 missed event costs nothing, because the cursor still says what changed. Use the
 stream to know *when*, and `/v1/changes` to know *what*.
 
+Each event carries enough to triage without a follow-up call:
+
+```json
+{ "head": "ff5a0b52...", "prev": "4f3538ca...", "count": 2, "changes": [
+  { "path": "att/scan.pdf",  "op": "put", "ext": "pdf", "kind": "binary", "size": 3000,  "hash": "0dc8eb..." },
+  { "path": "notes/idea.md", "op": "put", "ext": "md",  "kind": "text",   "size": 11,    "hash": "a1988d..." } ] }
+```
+
+`kind` is sniffed from the content, not guessed from the name, so an agent can
+skip what it cannot read. A commit touching more than 100 files is truncated
+with a count — read `/v1/changes` for those.
+
 An agent running on the same machine needs none of this. The vault is a
 directory; read and write the files and the server notices within a second.
+
+## Looking at history
+
+From the command line, without git installed:
+
+```bash
+vaultsync history notes/idea.md        # revisions that touched it
+vaultsync show notes/idea.md 4f3538ca  # print an old version, changing nothing
+vaultsync restore notes/idea.md 4f3538ca
+vaultsync check                        # working tree versus history; non-zero on drift
+vaultsync export > vault.tar
+```
+
+Or over HTTP, for agents and other containers — `GET /v1` lists every endpoint
+with a one-line description, generated from the same table that builds the
+routes, so it cannot describe something that does not exist.
 
 ## Backups
 

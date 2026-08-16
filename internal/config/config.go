@@ -11,6 +11,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -30,6 +31,22 @@ type Config struct {
 	// Watch enables the filesystem watcher. Off is useful in tests and for a
 	// read-only replica.
 	Watch bool
+	// LogLevel is debug, info, warn or error.
+	LogLevel string
+	// LogFile, when set, also writes to a rotating file. Leave empty in a
+	// container: Docker and journald already rotate.
+	LogFile     string
+	LogMaxBytes int64
+	LogKeep     int
+}
+
+func envInt(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func env(key, def string) string {
@@ -64,6 +81,14 @@ func Load(args []string) (*Config, error) {
 		"quiet period before a filesystem change is acted on")
 	fs.BoolVar(&c.Watch, "watch", env("VAULTSYNC_WATCH", "true") != "false",
 		"watch the vault for local edits")
+	fs.StringVar(&c.LogLevel, "log-level", env("VAULTSYNC_LOG_LEVEL", "info"),
+		"debug, info, warn or error")
+	fs.StringVar(&c.LogFile, "log-file", env("VAULTSYNC_LOG_FILE", ""),
+		"also write logs to this rotating file (unnecessary under Docker or systemd)")
+	fs.Int64Var(&c.LogMaxBytes, "log-max-bytes", envInt("VAULTSYNC_LOG_MAX_BYTES", 10<<20),
+		"rotate the log file at this size")
+	fs.IntVar(&c.LogKeep, "log-keep", int(envInt("VAULTSYNC_LOG_KEEP", 5)),
+		"how many rotated log files to keep")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err

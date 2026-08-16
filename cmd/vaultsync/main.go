@@ -7,6 +7,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,7 +17,9 @@ import (
 	"time"
 
 	"github.com/pkronstrom/vaultsync/internal/api"
+	"github.com/pkronstrom/vaultsync/internal/cli"
 	"github.com/pkronstrom/vaultsync/internal/config"
+	"github.com/pkronstrom/vaultsync/internal/logging"
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
 	"github.com/pkronstrom/vaultsync/internal/repo"
 	"github.com/pkronstrom/vaultsync/internal/vault"
@@ -23,20 +27,69 @@ import (
 )
 
 func main() {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Subcommands are dispatched before anything else, so they work against a
+	// stopped server -- which is exactly when `check` and `export` matter.
+	if len(os.Args) > 1 && cli.Handles(os.Args[1]) {
+		if err := runCommand(os.Args[1], os.Args[2:]); err != nil {
+			if errors.Is(err, cli.ErrDrift) {
+				// Already reported in full; exit non-zero for cron.
+				os.Exit(2)
+			}
+			fmt.Fprintln(os.Stderr, "vaultsync:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
-	if err := run(log); err != nil {
+	cfg, err := config.Load(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		os.Exit(1)
+	}
+	level, err := logging.Level(cfg.LogLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		os.Exit(1)
+	}
+	log, closer, err := logging.New(level, cfg.LogFile, cfg.LogMaxBytes, cfg.LogKeep)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		os.Exit(1)
+	}
+	defer closer.Close()
+
+	if err := run(cfg, log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
-	cfg, err := config.Load(os.Args[1:])
-	if err != nil {
+// runCommand handles the offline subcommands. They need only the paths, so
+// they deliberately do not require a token.
+func runCommand(name string, args []string) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	vaultDir := fs.String("vault", envOr("VAULTSYNC_VAULT", ""), "vault directory")
+	gitDir := fs.String("git", envOr("VAULTSYNC_GIT", "/var/lib/vaultsync/git"), "git directory")
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *vaultDir == "" {
+		return errors.New("vault directory is required (-vault or VAULTSYNC_VAULT)")
+	}
+	return cli.Run(name, fs.Args(), cli.Env{
+		Vault: *vaultDir, Git: *gitDir, JSON: *asJSON, Out: os.Stdout,
+	})
+}
 
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func run(cfg *config.Config, log *slog.Logger) error {
 	v, err := vault.New(cfg.Vault)
 	if err != nil {
 		return err
@@ -54,7 +107,10 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	log.Info("vaultsync starting",
-		"vault", cfg.Vault, "git", cfg.Git, "listen", cfg.Listen, "head", head)
+		"vault", cfg.Vault, "git", cfg.Git, "listen", cfg.Listen, "head", head,
+		"level", cfg.LogLevel)
+	log.Debug("configuration", "debounce", cfg.Debounce, "watch", cfg.Watch,
+		"logFile", cfg.LogFile)
 
 	// SIGINT/SIGTERM cancels the watcher and starts a graceful HTTP shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

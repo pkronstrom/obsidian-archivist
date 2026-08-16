@@ -121,9 +121,7 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 	if err != nil {
 		return "", nil, err
 	}
-	if newHead != head {
-		rc.notify(newHead)
-	}
+	rc.notify(head, newHead)
 	return newHead, results, nil
 }
 
@@ -274,8 +272,8 @@ func (rc *Reconciler) Scan(msg string) (string, error) {
 	before, _ := rc.r.Head()
 	head, err := rc.r.Commit(msg)
 	rc.mu.Unlock()
-	if err == nil && head != before {
-		rc.notify(head)
+	if err == nil {
+		rc.notify(before, head)
 	}
 	return head, err
 }

@@ -272,27 +272,121 @@ func TestEventsStreamsHeadOnConnectAndOnCommit(t *testing.T) {
 		pushOne(t, h, first, "notes/b.md", h2)
 	}()
 
-	done := make(chan string, 1)
+	// Parse properly rather than substring-matching: events now carry `prev`
+	// as well as `head`, so a naive "does not contain the old hash" filter
+	// skips the very event it is waiting for.
+	type sseEvent struct {
+		Head    string `json:"head"`
+		Prev    string `json:"prev"`
+		Count   int    `json:"count"`
+		Changes []struct {
+			Path string `json:"path"`
+			Op   string `json:"op"`
+			Ext  string `json:"ext"`
+			Kind string `json:"kind"`
+			Size int64  `json:"size"`
+		} `json:"changes"`
+	}
+
+	done := make(chan sseEvent, 1)
 	go func() {
 		for {
 			l, err := rd.ReadString('\n')
 			if err != nil {
 				return
 			}
-			if strings.HasPrefix(l, "data:") && !strings.Contains(l, first) {
-				done <- l
+			if !strings.HasPrefix(l, "data:") {
+				continue
+			}
+			var ev sseEvent
+			if json.Unmarshal([]byte(strings.TrimPrefix(l, "data: ")), &ev) != nil {
+				continue
+			}
+			if ev.Head != first {
+				done <- ev
 				return
 			}
 		}
 	}()
+
 	select {
-	case l := <-done:
+	case ev := <-done:
 		head, _ := r.Head()
-		if !strings.Contains(l, head) {
-			t.Errorf("event = %q, want head %s", l, head)
+		if ev.Head != head {
+			t.Errorf("event head = %s, want %s", ev.Head, head)
+		}
+		if ev.Prev != first {
+			t.Errorf("event prev = %s, want %s", ev.Prev, first)
+		}
+		// The point of the payload: enough to triage without another request.
+		if ev.Count != 1 || len(ev.Changes) != 1 {
+			t.Fatalf("changes = %+v, want exactly one", ev.Changes)
+		}
+		c := ev.Changes[0]
+		if c.Path != "notes/b.md" || c.Op != "put" || c.Ext != "md" || c.Kind != "text" {
+			t.Errorf("change = %+v, want notes/b.md put md text", c)
+		}
+		if c.Size == 0 {
+			t.Error("size missing from the event")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("no event for a commit made while subscribed")
+	}
+}
+
+// An agent should be able to tell an attachment from a note without fetching it.
+func TestEventsDistinguishBinaryFromText(t *testing.T) {
+	h, _, _ := newServer(t)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	rd := bufio.NewReader(resp.Body)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		blob := []byte("\x00\x01\x02 a pretend PDF")
+		bh, _ := repo.HashContent(blob)
+		putContent(t, h, bh, blob)
+		pushOne(t, h, "", "att/scan.pdf", bh)
+	}()
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("no event")
+		default:
+		}
+		l, err := rd.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(l, "data:") {
+			continue
+		}
+		var ev struct {
+			Changes []struct {
+				Path, Op, Ext, Kind string
+			} `json:"changes"`
+		}
+		if json.Unmarshal([]byte(strings.TrimPrefix(l, "data: ")), &ev) != nil || len(ev.Changes) == 0 {
+			continue
+		}
+		c := ev.Changes[0]
+		if c.Ext != "pdf" {
+			t.Errorf("ext = %q, want pdf", c.Ext)
+		}
+		if c.Kind != "binary" {
+			t.Errorf("kind = %q, want binary -- sniffed from content, not the extension", c.Kind)
+		}
+		return
 	}
 }
 
@@ -319,4 +413,38 @@ func pushOne(t *testing.T, h http.Handler, base, path, hash string) string {
 	var pr pushResponse
 	json.Unmarshal(w.Body.Bytes(), &pr)
 	return pr.Head
+}
+
+// The route table builds the mux, so this test guards the property that makes
+// the index trustworthy: everything advertised actually answers.
+func TestIndexListsRoutesThatAllExist(t *testing.T) {
+	h, _, _ := newServer(t)
+	w := do(t, h, "GET", "/v1", nil, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d", w.Code)
+	}
+	var idx struct {
+		Endpoints []struct{ Method, Path, Does string } `json:"endpoints"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &idx)
+	if len(idx.Endpoints) < 10 {
+		t.Fatalf("only %d endpoints listed", len(idx.Endpoints))
+	}
+	for _, e := range idx.Endpoints {
+		if e.Does == "" {
+			t.Errorf("%s %s has no description", e.Method, e.Path)
+		}
+		if strings.Contains(e.Path, "{") || e.Method != "GET" {
+			continue // needs parameters or a body; existence is covered elsewhere
+		}
+		if e.Path == "/v1/events" {
+			// An SSE stream never returns; calling it here hangs the test.
+			// Covered by TestEventsStreamsHeadOnConnectAndOnCommit instead.
+			continue
+		}
+		got := do(t, h, e.Method, e.Path, nil, true).Code
+		if got == http.StatusNotFound || got == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s is advertised but answers %d", e.Method, e.Path, got)
+		}
+	}
 }

@@ -35,19 +35,21 @@ func New(rc *reconcile.Reconciler, r *repo.Repo, token string) http.Handler {
 	s := &Server{rc: rc, repo: r, token: token}
 
 	mux := http.NewServeMux()
-	// Method patterns (Go 1.22+) give 405 rather than 404 on a method
-	// mismatch, with no router dependency.
-	mux.HandleFunc("GET /v1/head", s.head)
-	mux.HandleFunc("GET /v1/snapshot", s.snapshot)
-	mux.HandleFunc("GET /v1/changes", s.changes)
-	mux.HandleFunc("POST /v1/have", s.have)
-	mux.HandleFunc("PUT /v1/content/{hash}", s.putContent)
-	mux.HandleFunc("GET /v1/content/{hash}", s.getContent)
-	mux.HandleFunc("POST /v1/push", s.push)
-	mux.HandleFunc("GET /v1/export", s.export)
-	mux.HandleFunc("GET /v1/events", s.events)
+	// Method patterns (Go 1.22+) give 405 rather than 404 on a method mismatch,
+	// with no router dependency.
+	mux.HandleFunc("GET /v1", s.index)
+	for _, rt := range s.routes() {
+		if rt.handle == nil || rt.Path == "/healthz" {
+			continue
+		}
+		mux.HandleFunc(rt.Method+" "+rt.Path, rt.handle)
+	}
 
-	return s.authenticate(mux)
+	// healthz sits OUTSIDE the auth middleware, deliberately and alone.
+	outer := http.NewServeMux()
+	outer.HandleFunc("GET /healthz", s.healthz)
+	outer.Handle("/", s.authenticate(mux))
+	return outer
 }
 
 // authenticate compares in constant time, so a wrong token cannot be recovered
@@ -254,9 +256,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	// Send the current head immediately, so a consumer that just connected can
-	// reconcile without waiting for the next commit.
+	// orient itself without waiting for the next commit.
 	if head, err := s.repo.Head(); err == nil && head != "" {
-		fmt.Fprintf(w, "data: {\"head\":%q}\n\n", head)
+		writeEvent(w, map[string]any{"head": head, "count": 0, "changes": []any{}})
 	}
 	flusher.Flush()
 
@@ -272,17 +274,142 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case head, ok := <-ch:
+		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: {\"head\":%q}\n\n", head)
+			writeEvent(w, ev)
 			flusher.Flush()
 		case <-ticker.C:
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}
+}
+
+func writeEvent(w http.ResponseWriter, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", b)
+}
+
+// history lists the revisions in which a path changed.
+func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		httpError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	revs, err := s.repo.History(path, limit)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"path": path, "revisions": revs})
+}
+
+// at reads a file as it was at a revision, WITHOUT touching the working tree.
+// Inspecting is much more common than restoring, and conflating the two makes
+// looking at an old version a destructive act.
+func (s *Server) at(w http.ResponseWriter, r *http.Request) {
+	rev, p := r.PathValue("rev"), r.PathValue("path")
+	if err := vault.ValidPath(p); err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resolved, err := s.repo.Resolve(rev)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "unknown revision")
+		return
+	}
+	content, err := s.repo.ReadAt(resolved, p)
+	if err != nil {
+		httpError(w, http.StatusNotFound, "no such path at that revision")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Vaultsync-Revision", resolved)
+	w.Write(content)
+}
+
+// check compares the working tree against HEAD.
+func (s *Server) check(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.repo.Check()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, rep)
+}
+
+// routes is the API's own description, and the ONLY list of endpoints in the
+// codebase -- the mux is built from it, so a route cannot exist without being
+// documented and cannot be documented without existing. That property is worth
+// more than a hand-maintained OpenAPI file, which drifts the moment someone
+// adds a handler in a hurry.
+type route struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Does   string `json:"does"`
+	handle http.HandlerFunc
+}
+
+func (s *Server) routes() []route {
+	return []route{
+		{"GET", "/v1", "this list", nil},
+		{"GET", "/v1/head", "current commit hash", s.head},
+		{"GET", "/v1/snapshot", "every file at head: path, hash, size", s.snapshot},
+		{"GET", "/v1/changes", "what changed since ?since=<commit>; 409 if unknown", s.changes},
+		{"POST", "/v1/have", "{hashes:[...]} -> {missing:[...]}", s.have},
+		{"PUT", "/v1/content/{hash}", "upload content; 400 if it does not hash to {hash}", s.putContent},
+		{"GET", "/v1/content/{hash}", "download content by hash", s.getContent},
+		{"POST", "/v1/push", "{base,device,changes:[...]} apply a change set", s.push},
+		{"GET", "/v1/events", "SSE:one per commit with changed paths, kind, size", s.events},
+		{"GET", "/v1/history", "?path=&limit= revisions that touched a path", s.history},
+		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", s.at},
+		{"GET", "/v1/check", "working tree versus head", s.check},
+		{"GET", "/v1/export", "consistent archive of history; ?gzip=1 to compress", s.export},
+		{"GET", "/healthz", "liveness, no auth", s.healthz},
+	}
+}
+
+// index describes the API to whatever is calling it. Agents and humans both
+// benefit, and it costs one struct rather than a specification to maintain.
+func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	type doc struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Does   string `json:"does"`
+	}
+	out := []doc{}
+	for _, rt := range s.routes() {
+		out = append(out, doc{rt.Method, rt.Path, rt.Does})
+	}
+	writeJSON(w, map[string]any{
+		"service": "vaultsync",
+		"notes": []string{
+			"All /v1 routes need Authorization: Bearer <token>.",
+			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
+			"/v1/changes is the durable feed; /v1/events only says when to read it.",
+		},
+		"endpoints": out,
+	})
+}
+
+// healthz is the only unauthenticated route. A container healthcheck has no
+// credentials and no shell -- the image is FROM scratch -- so this exists to be
+// reachable by anything that can make an HTTP request.
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // export streams a consistent, gzipped archive of the git directory.
