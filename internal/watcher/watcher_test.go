@@ -242,15 +242,35 @@ func TestSustainedWritesStillCommit(t *testing.T) {
 	settle()
 	before := headOf(t, r)
 
-	// Write continuously for noticeably longer than maxDelay (5s floor),
-	// never pausing long enough for the debounce alone to fire.
-	deadline := time.Now().Add(6 * time.Second)
-	for i := 0; time.Now().Before(deadline); i++ {
-		v.Write("busy.md", []byte{byte('a' + i%26), '\n'})
-		time.Sleep(20 * time.Millisecond)
+	// Keep writing for the WHOLE test, so the plain debounce can never fire --
+	// every write re-arms it. Only the max-delay cap can produce a commit here.
+	//
+	// Polling while the writer runs, rather than checking once after it stops,
+	// is deliberate: a fixed deadline is too tight under -race, where a
+	// commit can take longer than the margin, and stopping the writer first
+	// would let the debounce commit and prove nothing.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			v.Write("busy.md", []byte{byte('a' + i%26), '\n'})
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	defer func() { close(stop); <-done }()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if headOf(t, r) != before {
+			return // the cap fired while writes were still arriving
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	// Check BEFORE any quiet period, so only the cap can have committed.
-	if got := headOf(t, r); got == before {
-		t.Error("sustained writes never committed; the debounce cap did not fire")
-	}
+	t.Error("sustained writes never committed; the max-delay cap did not fire")
 }
