@@ -8,10 +8,20 @@ ask for something back: the server copy stops being ordinary files, or sync is
 not real-time, or mobile is unreliable, or your vault ends up stored three times
 over.
 
-Archivist is one small Go binary and one Obsidian plugin. Your vault lives on
-your server as **plain Markdown, images and PDFs in a normal directory** — the
-real thing, not an export — while Obsidian on your laptop and phone syncs against
-it in the background.
+Archivist is a small Go server and an Obsidian plugin. Your vault lives on your
+server as **plain Markdown, images and PDFs in a normal directory** — the real
+thing, not an export — while Obsidian on your laptop and phone syncs against it
+in the background.
+
+| | | |
+| --- | --- | --- |
+| `archivist-server` | owns the vault, keeps the history | **working** |
+| Obsidian plugin | syncs your laptop and phone | **working** |
+| `archivist-relay` | optional sidecar: MCP tools, webhooks, a friendlier API | **not built yet** |
+
+The relay is for reaching the vault from somewhere that is *not* the server. If
+your tools run on the same machine, you do not need it — the vault is a
+directory, and opening a file beats calling an API.
 
 ## Why that matters
 
@@ -38,7 +48,7 @@ flowchart LR
 
     subgraph server ["your server"]
         direction TB
-        vs(["archivist<br/><i>one 8 MB binary</i>"])
+        vs(["archivist-server<br/><i>one 8 MB binary</i>"])
         vault[/"~/knowledge/personal<br/><b>plain .md .pdf .png</b>"/]
         git[("git history")]
         vs --- vault
@@ -46,29 +56,32 @@ flowchart LR
     end
 
     web["web viewer"]
-    agent["AI agent<br/>MCP tools"]
-    cli["grep, scripts, cron"]
+    local["AI agent, grep,<br/>scripts, cron"]
     restic["restic"]
+    relay["archivist-relay<br/><i>not built yet</i>"]
+    remote["remote agents<br/>n8n, Claude Code"]
 
     mac <==> vs
     phone <==> vs
 
     vault <--> web
-    vault <--> agent
-    vault <--> cli
+    vault <--> local
 
-    vs -.->|"/v1/events"| agent
-    git -.->|"/v1/export"| restic
+    vs -.->|"/v1/export"| restic
+    vs -.->|"HTTP + events"| relay
+    relay -.->|"MCP, webhooks"| remote
 
     classDef plain fill:#fff,stroke:#999
     classDef hot fill:#fffbe6,stroke:#c9a227,stroke-width:2px
+    classDef todo fill:#fff,stroke:#999,stroke-dasharray:4 3
     class vault,vs hot
-    class mac,phone,web,agent,cli,restic plain
+    class mac,phone,web,local,restic plain
+    class relay,remote todo
 ```
 
 **Thick lines** are sync. **Thin lines are ordinary file I/O** — that is the
-whole point: those tools open files, they do not call an API. Dotted lines are
-optional extras.
+whole point: anything on the server opens files rather than calling an API.
+Dotted lines are optional, and the dashed boxes are not built yet.
 
 ## What this is good for
 
@@ -105,7 +118,8 @@ grows past what one person can hold in their head, it has failed at its purpose.
 
 **One static binary. No database, no dependencies.** The container image is
 `FROM scratch` and 8 MB. Nothing to install on the server, nothing to keep
-running alongside it.
+running alongside it. The relay, when it exists, is a separate binary precisely
+so a laptop never carries a git implementation it will not use.
 
 **The server-side files are real and yours to modify.** Edit them with anything.
 The changes sync back to your devices.
@@ -145,7 +159,7 @@ actually tried restoring, which is true of any sync tool and especially this one
 | **Self-hosted LiveSync** | free | a projection of a CouchDB, ~4× disk | yes | good |
 | **Obsidian Git** | free | a git checkout | no — on a timer | poor on iOS |
 | **Syncthing** | free | plain files | yes | no iOS client |
-| **archivist** | free | **plain files, 1×** | yes | good |
+| **Archivist** | free | **plain files, 1×** | yes | good |
 
 **Obsidian Sync** is the right answer if you want it to just work and do not
 care where the notes live. It is genuinely excellent.
@@ -179,6 +193,15 @@ server URL and token in archivist's settings and press **Test connection**.
 
 Two vaults means two of everything: two containers, two tokens, two hostnames.
 They share nothing.
+
+### Reaching it from elsewhere
+
+Everything on the server uses the files directly. For anything that is not on
+the server — an agent on your laptop, an n8n flow in another container — the
+plan is `archivist-relay`: one process offering MCP over HTTP, webhook fan-out
+and a friendlier write API, holding no vault and no sync state of its own.
+
+Until it exists, the HTTP API is directly usable; `GET /v1` describes it.
 
 ## Hooking things up to it
 
@@ -247,7 +270,7 @@ from the machine that owns the vault and it stays consistent.
 
 ## Looking at history
 
-From the command line, without git installed:
+From the command line on the server, without git installed:
 
 ```bash
 archivist-server history notes/idea.md        # revisions that touched it
