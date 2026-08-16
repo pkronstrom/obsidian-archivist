@@ -67,6 +67,12 @@ func check(rel string) error {
 	return nil
 }
 
+// ValidPath reports whether a client-supplied path is acceptable at all.
+// Callers should use this to reject bad input loudly, rather than letting it
+// fall through to Skip and be reported as a routine exclusion -- an escaping
+// path is a broken or hostile client, not a dotfile.
+func ValidPath(rel string) error { return check(rel) }
+
 func (v *Vault) Read(rel string) ([]byte, error) {
 	if err := check(rel); err != nil {
 		return nil, err
