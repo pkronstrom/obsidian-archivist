@@ -232,3 +232,25 @@ func TestDotfilesAreIgnored(t *testing.T) {
 		t.Error("a dotfile change produced a commit")
 	}
 }
+
+// A plain debounce re-arms on every event, so sustained writing postpones the
+// commit forever. Found by a backup-consistency test: 60 writes at 80ms with a
+// 200ms debounce produced zero commits until the writing stopped.
+func TestSustainedWritesStillCommit(t *testing.T) {
+	v, r, _, _ := start(t)
+	v.Write("seed.md", []byte("seed\n"))
+	settle()
+	before := headOf(t, r)
+
+	// Write continuously for noticeably longer than maxDelay (5s floor),
+	// never pausing long enough for the debounce alone to fire.
+	deadline := time.Now().Add(6 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		v.Write("busy.md", []byte{byte('a' + i%26), '\n'})
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Check BEFORE any quiet period, so only the cap can have committed.
+	if got := headOf(t, r); got == before {
+		t.Error("sustained writes never committed; the debounce cap did not fire")
+	}
+}

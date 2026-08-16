@@ -37,15 +37,29 @@ type Watcher struct {
 
 	fsw *fsnotify.Watcher
 
-	mu      sync.Mutex
-	pending map[string]struct{}
-	timer   *time.Timer
+	mu       sync.Mutex
+	pending  map[string]struct{}
+	timer    *time.Timer
+	firstAt  time.Time
+	maxDelay time.Duration
 }
 
 func New(v *vault.Vault, rc *reconcile.Reconciler, debounce time.Duration, log *slog.Logger) *Watcher {
+	// maxDelay caps how long sustained activity can postpone a commit.
+	//
+	// A plain debounce re-arms on every event, so a steady stream of writes --
+	// a long editing session, an rsync, a script generating notes -- defers the
+	// commit indefinitely. Measured: 60 writes at 80ms intervals with a 200ms
+	// debounce produced ZERO commits until the writes stopped. Everything was
+	// still on disk, but nothing was in history, so a backup taken during that
+	// window captured no history at all.
+	maxDelay := 10 * debounce
+	if maxDelay < 5*time.Second {
+		maxDelay = 5 * time.Second
+	}
 	return &Watcher{
 		v: v, rc: rc, debounce: debounce, log: log,
-		pending: map[string]struct{}{},
+		pending: map[string]struct{}{}, maxDelay: maxDelay,
 	}
 }
 
@@ -158,11 +172,23 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 func (w *Watcher) queue(rel string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		w.firstAt = time.Now()
+	}
 	w.pending[rel] = struct{}{}
 	if w.timer != nil {
 		w.timer.Stop()
 	}
-	w.timer = time.AfterFunc(w.debounce, w.flush)
+	// Re-arm for the debounce, but never push the commit further out than
+	// maxDelay from the first pending change.
+	wait := w.debounce
+	if elapsed := time.Since(w.firstAt); elapsed+wait > w.maxDelay {
+		wait = w.maxDelay - elapsed
+		if wait < 0 {
+			wait = 0
+		}
+	}
+	w.timer = time.AfterFunc(wait, w.flush)
 }
 
 func (w *Watcher) cancelTimer() {
@@ -181,6 +207,7 @@ func (w *Watcher) flush() {
 		paths = append(paths, p)
 	}
 	w.pending = map[string]struct{}{}
+	w.firstAt = time.Time{}
 	w.mu.Unlock()
 
 	if len(paths) == 0 {
