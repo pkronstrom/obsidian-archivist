@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
@@ -210,5 +211,26 @@ func TestReadNoteRefusesBinary(t *testing.T) {
 		Name: "read_note", Arguments: map[string]any{"path": "att/scan.pdf"}})
 	if err == nil && !res.IsError {
 		t.Errorf("read_note returned binary content as text: %s", text(res))
+	}
+}
+
+// A byte-slice truncation splits multi-byte characters and emits invalid UTF-8.
+// This vault demonstrably has non-ASCII content.
+func TestSearchExcerptDoesNotMangleUTF8(t *testing.T) {
+	cs, c := session(t)
+	// The leading ASCII byte is load-bearing: it shifts the 160-byte cut so it
+	// lands in the MIDDLE of a two-byte character. Without it the cut falls on a
+	// rune boundary and this test passes against the buggy code too -- which it
+	// did, the first time it was written.
+	long := "x" + strings.Repeat("\u00e4", 300) + " needle"
+	if _, err := c.Write(context.Background(), "notes/wide.md", []byte(long+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := text(call(t, cs, "search_notes", map[string]any{"query": "needle"}))
+	if !utf8.ValidString(got) {
+		t.Errorf("search output is not valid UTF-8: %q", got)
+	}
+	if strings.ContainsRune(got, '\ufffd') {
+		t.Errorf("excerpt was truncated mid-character: %q", got)
 	}
 }

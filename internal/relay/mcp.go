@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
@@ -342,10 +343,21 @@ func searchNotes(c *client.Client) mcp.ToolHandlerFor[searchInput, searchOutput]
 	}
 }
 
+// excerpt truncates by RUNES, not bytes. Slicing a string at a byte offset
+// splits a multi-byte character in half and emits invalid UTF-8, which the JSON
+// encoder then replaces with U+FFFD -- a mangled excerpt for any note that is
+// not pure ASCII.
 func excerpt(line string) string {
 	line = strings.TrimSpace(line)
-	if len(line) > 160 {
-		return line[:160] + "…"
+	if utf8.RuneCountInString(line) <= 160 {
+		return line
+	}
+	n := 0
+	for i := range line {
+		if n == 160 {
+			return line[:i] + "…"
+		}
+		n++
 	}
 	return line
 }
