@@ -36,18 +36,25 @@ type Webhooks struct {
 	http     *http.Client
 	deadline time.Duration
 
+	// queueDepth bounds each target's backlog. Small on purpose: a target that
+	// is more than a few events behind is broken, and this is a notification
+	// channel, not a queue -- the receiver recovers from /v1/changes?since=.
+	queueDepth int
+
 	mu        sync.Mutex
 	delivered int
 	failed    int
+	dropped   int
 }
 
 func NewWebhooks(c *client.Client, targets []string, log *slog.Logger) *Webhooks {
 	return &Webhooks{
-		client:   c,
-		targets:  targets,
-		log:      log,
-		deadline: 5 * time.Second,
-		http:     &http.Client{Timeout: 5 * time.Second},
+		client:     c,
+		targets:    targets,
+		log:        log,
+		deadline:   5 * time.Second,
+		queueDepth: 16,
+		http:       &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -59,6 +66,35 @@ func (w *Webhooks) Run(ctx context.Context) error {
 	if len(w.targets) == 0 {
 		return nil
 	}
+
+	// One worker per target, each with its own queue. This is what actually
+	// gives the isolation this type claims: a target that is slow or hanging
+	// fills only its OWN queue, and the stream loop never waits on any of them.
+	//
+	// Previously deliver() did a wg.Wait() inline, so a single unresponsive
+	// target stalled the reader for the full 5s deadline on every event, and the
+	// server drops notifications once a subscriber falls behind -- one broken
+	// target silently cost the healthy ones their events.
+	queues := make([]chan []byte, len(w.targets))
+	var workers sync.WaitGroup
+	for i, url := range w.targets {
+		q := make(chan []byte, w.queueDepth)
+		queues[i] = q
+		workers.Add(1)
+		go func(url string, q chan []byte) {
+			defer workers.Done()
+			for body := range q {
+				w.post(ctx, url, body)
+			}
+		}(url, q)
+	}
+	defer func() {
+		for _, q := range queues {
+			close(q)
+		}
+		workers.Wait()
+	}()
+
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -88,7 +124,7 @@ func (w *Webhooks) Run(ctx context.Context) error {
 				if ev.Count == 0 && len(ev.Changes) == 0 {
 					continue // the head sent on connect; nothing changed
 				}
-				w.deliver(ctx, ev)
+				w.deliver(queues, ev)
 			case err, ok := <-errs:
 				if ok && err != nil {
 					w.log.Warn("webhook: stream dropped", "err", err)
@@ -104,9 +140,10 @@ func (w *Webhooks) Run(ctx context.Context) error {
 	}
 }
 
-// deliver POSTs one event to every target concurrently. A slow or broken target
-// must not hold up the others, and none of them can hold up the stream.
-func (w *Webhooks) deliver(ctx context.Context, ev protocol.Event) {
+// deliver hands one event to every target's queue and returns immediately. It
+// never blocks: a full queue means that target is behind, and the event is
+// dropped for THAT target only.
+func (w *Webhooks) deliver(queues []chan []byte, ev protocol.Event) {
 	// Forwarded verbatim, including Truncated. A large commit arrives with a
 	// partial list and that flag, and the receiver is expected to read
 	// /v1/changes for the rest. Filling it in here would make the relay
@@ -117,18 +154,18 @@ func (w *Webhooks) deliver(ctx context.Context, ev protocol.Event) {
 		return
 	}
 
-	var wg sync.WaitGroup
-	for _, url := range w.targets {
-		wg.Add(1)
-		go func(url string) {
-			defer wg.Done()
-			w.post(ctx, url, body, ev.Head)
-		}(url)
+	for i, q := range queues {
+		select {
+		case q <- body:
+		default:
+			w.noteDrop()
+			w.log.Warn("webhook: target is behind, dropping this event",
+				"url", w.targets[i], "head", short(ev.Head), "queue", w.queueDepth)
+		}
 	}
-	wg.Wait()
 }
 
-func (w *Webhooks) post(ctx context.Context, url string, body []byte, head string) {
+func (w *Webhooks) post(ctx context.Context, url string, body []byte) {
 	ctx, cancel := context.WithTimeout(ctx, w.deadline)
 	defer cancel()
 
@@ -144,18 +181,18 @@ func (w *Webhooks) post(ctx context.Context, url string, body []byte, head strin
 	resp, err := w.http.Do(req)
 	if err != nil {
 		w.note(false)
-		w.log.Warn("webhook: delivery failed, dropping", "url", url, "head", short(head), "err", err)
+		w.log.Warn("webhook: delivery failed, dropping", "url", url, "err", err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		w.note(false)
 		w.log.Warn("webhook: target rejected the event, dropping",
-			"url", url, "head", short(head), "status", resp.StatusCode)
+			"url", url, "status", resp.StatusCode)
 		return
 	}
 	w.note(true)
-	w.log.Debug("webhook: delivered", "url", url, "head", short(head))
+	w.log.Debug("webhook: delivered", "url", url)
 }
 
 func (w *Webhooks) note(ok bool) {
@@ -168,12 +205,20 @@ func (w *Webhooks) note(ok bool) {
 	}
 }
 
-// Stats is for the health endpoint: a silently failing webhook is worse than a
-// noisy one, so the counts are visible without reading logs.
-func (w *Webhooks) Stats() (delivered, failed int) {
+func (w *Webhooks) noteDrop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.delivered, w.failed
+	w.dropped++
+}
+
+// Stats is for the health endpoint: a silently failing webhook is worse than a
+// noisy one, so the counts are visible without reading logs. Drops are counted
+// separately from failures -- a delivery that was attempted and rejected is a
+// different problem from one that was never attempted because a target is behind.
+func (w *Webhooks) Stats() (delivered, failed, dropped int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.delivered, w.failed, w.dropped
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

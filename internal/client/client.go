@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/protocol"
@@ -49,6 +50,15 @@ type Client struct {
 	token  string
 	device string
 	http   *http.Client
+
+	// compat caches the last compatibility verdict. A startup-only check is not
+	// enough: the relay is explicitly allowed to start while the server is down,
+	// and the server can be redeployed under a running relay. Either way the
+	// relay would otherwise keep writing to a server whose protocol it has never
+	// agreed with.
+	compatMu  sync.Mutex
+	compatErr error
+	compatSet bool
 }
 
 // New returns a client. device names this caller in commit messages and
@@ -160,12 +170,44 @@ func (c *Client) Index(ctx context.Context) (protocol.IndexResponse, error) {
 func (c *Client) CheckCompatible(ctx context.Context) error {
 	idx, err := c.Index(ctx)
 	if err != nil {
+		// Unreachable is not incompatible. Leave the verdict unset so the next
+		// call retries rather than caching a network blip as a protocol verdict.
 		return err
 	}
+	var verdict error
 	if idx.Protocol != protocol.Version {
-		return fmt.Errorf(
+		verdict = fmt.Errorf(
 			"archivist: server speaks protocol %d, this client speaks %d (server build %s)",
 			idx.Protocol, protocol.Version, idx.Version)
+	}
+	c.compatMu.Lock()
+	c.compatErr, c.compatSet = verdict, true
+	c.compatMu.Unlock()
+	return verdict
+}
+
+// ensureCompatible gates mutations. If the protocol has never been confirmed --
+// the server was down at startup, say -- it is confirmed now, once. If it was
+// confirmed INCOMPATIBLE, the mutation is refused rather than sent to a server
+// that may interpret the fields differently.
+//
+// A server that is merely unreachable does not block anything: the request goes
+// out and fails on its own terms, with its own error.
+func (c *Client) ensureCompatible(ctx context.Context) error {
+	c.compatMu.Lock()
+	set, verdict := c.compatSet, c.compatErr
+	c.compatMu.Unlock()
+	if set {
+		return verdict
+	}
+	if err := c.CheckCompatible(ctx); err != nil {
+		c.compatMu.Lock()
+		set, verdict = c.compatSet, c.compatErr
+		c.compatMu.Unlock()
+		if set {
+			return verdict // a real protocol mismatch
+		}
+		return nil // unreachable; let the actual call report it
 	}
 	return nil
 }
@@ -225,6 +267,11 @@ func (c *Client) GetContent(ctx context.Context, hash string) ([]byte, error) {
 // put that merged once can merge again. Reporting an uncertain outcome honestly
 // is better than a retry that quietly does something different.
 func (c *Client) Push(ctx context.Context, base string, changes []protocol.Change) (protocol.PushResponse, error) {
+	// Gate the only call that changes the vault. Reads against a mismatched
+	// protocol are merely wrong; writes are durable.
+	if err := c.ensureCompatible(ctx); err != nil {
+		return protocol.PushResponse{}, err
+	}
 	return postJSON[protocol.PushResponse](ctx, c, "/v1/push", protocol.PushRequest{
 		Base: base, Device: c.device, Changes: changes,
 	})
@@ -274,25 +321,40 @@ func (c *Client) Read(ctx context.Context, path string) ([]byte, error) {
 	return c.ReadAt(ctx, "head", path)
 }
 
-// Write stores content at path and reports what the server ended up with.
+// ReadForEdit reads a note AND the revision it was read at, for a caller that
+// intends to write it back.
 //
-// The whole sequence lives here so callers do not have to know it: capture the
-// head, hash, ask what is missing, upload only that, then push against the
-// captured base.
+// The revision is taken first and the content is read AT that revision, so the
+// pair is a consistent snapshot: reading content and then asking for head could
+// return a revision newer than the bytes in hand, which is the same lost-update
+// bug in a subtler form.
+func (c *Client) ReadForEdit(ctx context.Context, path string) (content []byte, base string, err error) {
+	base, err = c.Head(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	content, err = c.ReadAt(ctx, base, path)
+	if err != nil {
+		return nil, "", err
+	}
+	return content, base, nil
+}
+
+// WriteAt stores content as an edit derived from `base`.
 //
-// Capturing the base is required rather than cosmetic. An empty base makes
-// every existing path look concurrently changed and forbids deletion entirely.
-// Because the push carries a base, the server MERGES a concurrent edit instead
-// of clobbering it -- which is why there is no plain write endpoint on the
-// server, and why the returned Result may say "merged" or "conflict" rather
-// than "applied". Callers must report that honestly instead of assuming the
-// bytes they sent are the bytes now stored.
-func (c *Client) Write(ctx context.Context, path string, content []byte) (protocol.Result, error) {
+// The base is what makes the system's merge machinery work, and it MUST be the
+// revision the caller's content was derived from -- not the current head.
+// Pushing against current head tells the server "nothing has changed since I
+// looked", so a concurrent edit is fast-forwarded over and silently lost
+// instead of merged. Passing an empty base is a blind overwrite; see Write.
+func (c *Client) WriteAt(ctx context.Context, path string, content []byte, base string) (protocol.Result, error) {
 	var zero protocol.Result
 
-	base, err := c.Head(ctx)
-	if err != nil {
-		return zero, err
+	if base == "" {
+		var err error
+		if base, err = c.Head(ctx); err != nil {
+			return zero, err
+		}
 	}
 	hash := protocol.HashContent(content)
 
@@ -318,13 +380,33 @@ func (c *Client) Write(ctx context.Context, path string, content []byte) (protoc
 	return resp.Results[0], nil
 }
 
+// Write stores content with NO base, which is a blind overwrite: whatever the
+// note currently holds is replaced, and a concurrent edit is lost rather than
+// merged.
+//
+// That is correct only for content that does not derive from a previous read --
+// creating a note, or replacing one wholesale. Anything that read the note
+// first must use WriteAt with the revision from ReadForEdit.
+func (c *Client) Write(ctx context.Context, path string, content []byte) (protocol.Result, error) {
+	return c.WriteAt(ctx, path, content, "")
+}
+
 // Delete removes a path. It cannot be done without a base: a caller with no
 // base has no idea what exists, so the server refuses such deletions outright.
 func (c *Client) Delete(ctx context.Context, path string) (protocol.Result, error) {
+	return c.DeleteAt(ctx, path, "")
+}
+
+// DeleteAt removes a path as of `base`. As with WriteAt, the base is what lets
+// the server notice that the note changed after the caller decided to delete
+// it. An empty base means "delete whatever is there now".
+func (c *Client) DeleteAt(ctx context.Context, path, base string) (protocol.Result, error) {
 	var zero protocol.Result
-	base, err := c.Head(ctx)
-	if err != nil {
-		return zero, err
+	if base == "" {
+		var err error
+		if base, err = c.Head(ctx); err != nil {
+			return zero, err
+		}
 	}
 	resp, err := c.Push(ctx, base, []protocol.Change{{Path: path, Op: protocol.OpDel}})
 	if err != nil {

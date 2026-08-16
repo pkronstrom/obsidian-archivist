@@ -140,6 +140,36 @@ func run(cfg *config, log *slog.Logger) error {
 		log.Info("server is compatible", "url", cfg.url, "protocol", version.Version)
 	}
 
+	// Re-check periodically. The startup check alone leaves two gaps: the server
+	// may have been down just now (explicitly supported), and it may be
+	// redeployed under a running relay. Writes are refused while a mismatch
+	// stands, and resume by themselves once it is resolved.
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		var lastBad bool
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				err := c.CheckCompatible(cctx)
+				cancel()
+				switch {
+				case err != nil && strings.Contains(err.Error(), "protocol"):
+					if !lastBad {
+						log.Error("server protocol no longer matches; writes are refused", "err", err)
+						lastBad = true
+					}
+				case err == nil && lastBad:
+					log.Info("server protocol matches again; writes resumed")
+					lastBad = false
+				}
+			}
+		}
+	}()
+
 	var mcpHandler http.Handler
 	if cfg.enableMCP {
 		srv := relay.NewMCPServer(c, "archivist", version.Version)

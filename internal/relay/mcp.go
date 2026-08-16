@@ -45,7 +45,10 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 		Name: "write_note",
 		Description: "Create or replace a note. If another writer changed the " +
 			"same note concurrently the server merges the two; if the edits " +
-			"overlap it keeps both and reports a conflict. Always check the " +
+			"overlap it keeps both and reports a conflict. If this content is an " +
+			"edit of a note you read, pass the 'revision' read_note returned -- " +
+			"without it the write silently overwrites any concurrent change. " +
+			"Always check the " +
 			"returned status: 'applied' means your exact content was stored, " +
 			"'merged' means the stored content differs from what you sent.",
 	}, writeNote(c))
@@ -118,6 +121,9 @@ type pathInput struct {
 type readOutput struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	// Revision is the vault revision this content was read at. Pass it back as
+	// write_note's `revision` to edit safely; see writeInput.
+	Revision string `json:"revision,omitempty"`
 }
 
 func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
@@ -125,7 +131,7 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 		if in.Path == "" {
 			return nil, readOutput{}, fmt.Errorf("path is required")
 		}
-		body, err := c.Read(ctx, in.Path)
+		body, base, err := c.ReadForEdit(ctx, in.Path)
 		if err != nil {
 			return nil, readOutput{}, err
 		}
@@ -135,13 +141,17 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 			return nil, readOutput{}, fmt.Errorf(
 				"%s is a binary file (%d bytes); read_note only returns text", in.Path, len(body))
 		}
-		return nil, readOutput{Path: in.Path, Content: string(body)}, nil
+		return nil, readOutput{Path: in.Path, Content: string(body), Revision: base}, nil
 	}
 }
 
 type writeInput struct {
 	Path    string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 	Content string `json:"content" jsonschema:"the full new content of the note"`
+	// Optimistic concurrency. Without this the write is a blind overwrite and a
+	// concurrent edit is lost instead of merged, so an agent that read the note
+	// before editing it MUST send the revision back.
+	Revision string `json:"revision,omitempty" jsonschema:"the revision from read_note, if this content is an edit of what you read; omit only when creating or wholly replacing a note"`
 }
 
 type writeOutput struct {
@@ -158,7 +168,7 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		if in.Path == "" {
 			return nil, writeOutput{}, fmt.Errorf("path is required")
 		}
-		res, err := c.Write(ctx, in.Path, []byte(in.Content))
+		res, err := c.WriteAt(ctx, in.Path, []byte(in.Content), in.Revision)
 		if err != nil {
 			return nil, writeOutput{}, err
 		}
@@ -185,12 +195,17 @@ type deleteOutput struct {
 	Note   string `json:"note,omitempty"`
 }
 
-func deleteNote(c *client.Client) mcp.ToolHandlerFor[pathInput, deleteOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in pathInput) (*mcp.CallToolResult, deleteOutput, error) {
+type deleteInput struct {
+	Path     string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
+	Revision string `json:"revision,omitempty" jsonschema:"the revision from read_note, if you read the note before deciding to delete it"`
+}
+
+func deleteNote(c *client.Client) mcp.ToolHandlerFor[deleteInput, deleteOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteInput) (*mcp.CallToolResult, deleteOutput, error) {
 		if in.Path == "" {
 			return nil, deleteOutput{}, fmt.Errorf("path is required")
 		}
-		res, err := c.Delete(ctx, in.Path)
+		res, err := c.DeleteAt(ctx, in.Path, in.Revision)
 		if err != nil {
 			return nil, deleteOutput{}, err
 		}

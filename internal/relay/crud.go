@@ -89,11 +89,14 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
 		return
 	}
-	body, err := h.client.Read(r.Context(), p)
+	body, base, err := h.client.ReadForEdit(r.Context(), p)
 	if err != nil {
 		h.relayError(w, err)
 		return
 	}
+	// The ETag is the vault revision this content was read at. Send it back as
+	// If-Match on the write and a concurrent edit is merged instead of lost.
+	w.Header().Set("ETag", `"`+base+`"`)
 	w.Header().Set("Content-Type", contentType(p))
 	w.Write(body)
 }
@@ -115,7 +118,7 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.client.Write(r.Context(), p, body)
+	res, err := h.client.WriteAt(r.Context(), p, body, ifMatch(r))
 	if err != nil {
 		h.relayError(w, err)
 		return
@@ -137,12 +140,26 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
 		return
 	}
-	res, err := h.client.Delete(r.Context(), p)
+	res, err := h.client.DeleteAt(r.Context(), p, ifMatch(r))
 	if err != nil {
 		h.relayError(w, err)
 		return
 	}
 	writeJSON(w, res)
+}
+
+// ifMatch pulls the vault revision out of If-Match. Absent means a blind
+// overwrite, which is the right default for `curl -T newfile.md` but wrong for
+// anything that read the note first -- hence the ETag on GET.
+//
+// Quotes are optional here: the header is specified with them, every real
+// client sends them, and a hand-written curl call usually does not.
+func ifMatch(r *http.Request) string {
+	v := strings.TrimSpace(r.Header.Get("If-Match"))
+	if v == "" || v == "*" {
+		return ""
+	}
+	return strings.Trim(v, `"`)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
@@ -156,9 +173,9 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	endpoints := []protocol.Endpoint{
-		{Method: "GET", Path: "/file/{path}", Does: "read a note"},
-		{Method: "PUT", Path: "/file/{path}", Does: "create or replace a note; 409 if it conflicted"},
-		{Method: "DELETE", Path: "/file/{path}", Does: "delete a note"},
+		{Method: "GET", Path: "/file/{path}", Does: "read a note; the ETag is its revision"},
+		{Method: "PUT", Path: "/file/{path}", Does: "create or replace a note; send If-Match: <ETag> to merge instead of overwrite; 409 if it conflicted"},
+		{Method: "DELETE", Path: "/file/{path}", Does: "delete a note; If-Match is honoured"},
 		{Method: "GET", Path: "/list", Does: "list files, ?prefix= to scope"},
 		{Method: "GET", Path: "/healthz", Does: "liveness and upstream reachability, no auth"},
 	}
@@ -195,8 +212,9 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 		out["upstream"] = map[string]any{"version": up.Version, "protocol": up.Protocol}
 	}
 	if h.hooks != nil {
-		delivered, failed := h.hooks.Stats()
-		out["webhooks"] = map[string]int{"delivered": delivered, "failed": failed}
+		delivered, failed, dropped := h.hooks.Stats()
+		out["webhooks"] = map[string]int{
+			"delivered": delivered, "failed": failed, "dropped": dropped}
 	}
 	writeJSON(w, out)
 }

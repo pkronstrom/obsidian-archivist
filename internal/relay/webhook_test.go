@@ -3,6 +3,7 @@ package relay_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -135,7 +136,7 @@ func TestAFailingTargetDoesNotBlockTheOthers(t *testing.T) {
 		t.Fatal("the healthy target was starved by the failing one")
 	}
 	if !waitFor(t, 2*time.Second, func() bool {
-		_, failed := w.Stats()
+		_, failed, _ := w.Stats()
 		return failed > 0
 	}) {
 		t.Error("a rejected delivery was not counted as a failure")
@@ -192,5 +193,37 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Error("Run did not stop on cancellation")
+	}
+}
+
+// The isolation claim, tested rather than asserted in a comment: a slow target
+// must not delay a healthy one, and must not cost it events.
+//
+// The old fan-out did a wg.Wait() inline, so every event paid the slowest
+// target's latency before the next one could even be read.
+func TestASlowTargetDoesNotStallTheOthers(t *testing.T) {
+	c := liveClient(t)
+
+	slow := newCollector(t, 200, 2*time.Second)
+	good := newCollector(t, 200, 0)
+
+	w := relay.NewWebhooks(c, []string{slow.srv.URL, good.srv.URL}, quiet())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+
+	const events = 5
+	start := time.Now()
+	for i := 0; i < events; i++ {
+		if _, err := c.Write(context.Background(),
+			fmt.Sprintf("notes/n%d.md", i), []byte("x\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Serialised behind a 2s target this needs >10s; isolated it is immediate.
+	if !waitFor(t, 6*time.Second, func() bool { return len(good.got()) >= events }) {
+		t.Fatalf("healthy target got %d/%d events in %v while another target was slow",
+			len(good.got()), events, time.Since(start))
 	}
 }
