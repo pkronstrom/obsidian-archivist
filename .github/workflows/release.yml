@@ -4,8 +4,12 @@ name: Release
 # the upload step is the point of this workflow: a tag with nothing attached
 # installs nothing.
 #
-# Only the plugin ships as release assets. The server ships as a container image
-# built from the Dockerfile.
+# Two kinds of asset ship here:
+#   main.js + manifest.json   the plugin, installed by BRAT and the store
+#   vaultsync-<os>-<arch>     the server, for hosts without a Go toolchain
+#
+# the server is linux/amd64 and has no Go installed, which is the whole reason the
+# server binaries are cross-compiled here rather than built on the target.
 on:
   push:
     tags: ["v*"]
@@ -25,6 +29,20 @@ jobs:
       - name: Server tests
         run: go test ./...
 
+      - name: Cross-compile the server
+        run: |
+          mkdir -p dist
+          # CGO_ENABLED=0 everywhere: everything is pure Go, which is what makes
+          # cross-compilation a matter of two environment variables and lets the
+          # container image be FROM scratch.
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" \
+              -o "dist/vaultsync-$os-$arch" ./cmd/vaultsync
+          done
+          cd dist && shasum -a 256 vaultsync-* > SHA256SUMS && cat SHA256SUMS
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -40,4 +58,4 @@ jobs:
           gh release create "${GITHUB_REF#refs/tags/}" \
             --title "${GITHUB_REF#refs/tags/}" \
             --generate-notes \
-            main.js manifest.json
+            main.js manifest.json dist/vaultsync-* dist/SHA256SUMS

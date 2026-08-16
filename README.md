@@ -38,6 +38,19 @@ Nothing else is needed, so nothing else exists.
 
 ## Running it
 
+Prebuilt binaries are attached to every [release](../../releases) for
+`linux/amd64`, `linux/arm64` and `darwin/arm64`, with a `SHA256SUMS` file.
+Nothing needs a Go toolchain on the target host:
+
+```bash
+curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/vaultsync-linux-amd64
+curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+chmod +x vaultsync-linux-amd64
+```
+
+Or build it yourself:
+
 ```bash
 go build -o vaultsync ./cmd/vaultsync
 VAULTSYNC_TOKEN=secret ./vaultsync -vault ~/knowledge/personal
