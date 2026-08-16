@@ -60,9 +60,13 @@ func (v *Vault) Dir() string { return v.dir }
 // check rejects anything that is not a plain relative path inside the vault.
 // filepath.IsLocal is false for "", ".", "..", absolute paths, and any path
 // whose cleaned form escapes the root.
+// ErrInvalidPath is returned for any path that is not local to the vault, so
+// callers can classify it as client fault without matching on message text.
+var ErrInvalidPath = errors.New("vault: path is not local to the vault")
+
 func check(rel string) error {
 	if !filepath.IsLocal(rel) {
-		return fmt.Errorf("vault: path is not local to the vault: %q", rel)
+		return fmt.Errorf("%w: %q", ErrInvalidPath, rel)
 	}
 	return nil
 }
