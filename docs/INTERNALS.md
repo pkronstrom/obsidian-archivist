@@ -90,7 +90,8 @@ Seven routes, all behind `Authorization: Bearer <token>`.
 | `PUT` | `/v1/content/{hash}` | upload; 400 if the bytes do not hash to `{hash}` |
 | `GET` | `/v1/content/{hash}` | download |
 | `POST` | `/v1/push` | apply a change set against a base |
-| `GET` | `/v1/export` | consistent gzipped archive of the git directory |
+| `GET` | `/v1/export` | consistent archive of the git directory |
+| `GET` | `/v1` | the endpoint list, plus `protocol` and `version` |
 
 Content is addressed by **git object hash**, so a client can compute an address
 with plain `git hash-object` and nothing bespoke:

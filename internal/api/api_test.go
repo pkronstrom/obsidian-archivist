@@ -14,6 +14,7 @@ import (
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
 	"github.com/pkronstrom/vaultsync/internal/repo"
 	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/vaultsync/internal/version"
 )
 
 const token = "test-token"
@@ -445,6 +446,27 @@ func TestIndexListsRoutesThatAllExist(t *testing.T) {
 		got := do(t, h, e.Method, e.Path, nil, true).Code
 		if got == http.StatusNotFound || got == http.StatusMethodNotAllowed {
 			t.Errorf("%s %s is advertised but answers %d", e.Method, e.Path, got)
+		}
+	}
+}
+
+func TestIndexAndHealthzReportTheProtocol(t *testing.T) {
+	h, _, _ := newServer(t)
+	for _, path := range []string{"/v1", "/healthz"} {
+		w := do(t, h, "GET", path, nil, path == "/v1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s = %d", path, w.Code)
+		}
+		var got struct {
+			Protocol int    `json:"protocol"`
+			Version  string `json:"version"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &got)
+		if got.Protocol != version.Protocol {
+			t.Errorf("%s protocol = %d, want %d", path, got.Protocol, version.Protocol)
+		}
+		if got.Version == "" {
+			t.Errorf("%s reports no version", path)
 		}
 	}
 }

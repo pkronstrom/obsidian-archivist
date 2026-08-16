@@ -19,6 +19,7 @@ import (
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
 	"github.com/pkronstrom/vaultsync/internal/repo"
 	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/vaultsync/internal/version"
 )
 
 // maxUpload bounds a single content upload. Generous for an attachment,
@@ -394,11 +395,14 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		out = append(out, doc{rt.Method, rt.Path, rt.Does})
 	}
 	writeJSON(w, map[string]any{
-		"service": "vaultsync",
+		"service":  "vaultsync",
+		"version":  version.Version,
+		"protocol": version.Protocol,
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
 			"/v1/changes is the durable feed; /v1/events only says when to read it.",
+			"Check `protocol`, not `version`: releases bump the latter constantly.",
 		},
 		"endpoints": out,
 	})
@@ -409,7 +413,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 // reachable by anything that can make an HTTP request.
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
+	// Version here as well as in /v1: a monitor without a token still wants to
+	// know what is running, and neither field is a secret.
+	writeJSON(w, map[string]any{
+		"status": "ok", "version": version.Version, "protocol": version.Protocol,
+	})
 }
 
 // export streams a consistent, gzipped archive of the git directory.
