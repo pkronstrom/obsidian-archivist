@@ -1,0 +1,43 @@
+name: Release
+
+# BRAT and the Obsidian community store both install RELEASE ASSETS by name, so
+# the upload step is the point of this workflow: a tag with nothing attached
+# installs nothing.
+#
+# Only the plugin ships as release assets. The server ships as a container image
+# built from the Dockerfile.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Server tests
+        run: go test ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the plugin
+        run: |
+          npm ci
+          npm run build
+
+      - name: Release with the assets the plugin installers expect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            --title "${GITHUB_REF#refs/tags/}" \
+            --generate-notes \
+            main.js manifest.json

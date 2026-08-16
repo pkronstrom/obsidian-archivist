@@ -1,3 +1,13 @@
+# Go
 vaultsync
-/tmp/
 *.test
+
+# Plugin build output
+node_modules/
+main.js
+dist-test/
+*.js.map
+data.json
+
+# Scratch
+/tmp/

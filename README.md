@@ -1,5 +1,19 @@
 # vaultsync
 
+Self-hosted Obsidian sync. **One repository, two counterparts:**
+
+| | |
+| --- | --- |
+| **Server** — `cmd/`, `internal/` | one static Go binary; owns the vault, keeps history in git |
+| **Plugin** — `src/`, `manifest.json` | the Obsidian client, for desktop and mobile |
+
+They share a wire protocol, so they live together: a protocol change touches
+both sides and belongs in one commit.
+
+---
+
+# The server
+
 One Go binary that owns a plain Markdown vault on disk, keeps its history in a
 real git repository, and syncs it to Obsidian over HTTP.
 
@@ -13,8 +27,8 @@ Obsidian (Mac, iPhone)        SilverBullet / scripts / Claude
                        ▼
                    vaultsync
                        │
-        /srv/knowledge/personal   ← an ordinary directory, this is the vault
-        /var/lib/vaultsync/git    ← history, deliberately outside the vault
+        ~/knowledge/personal   ← an ordinary directory, this is the vault
+        ~/vaultsync/git    ← history, deliberately outside the vault
 ```
 
 The working tree **is** the vault. Git is the state store: the tree at a commit
@@ -26,13 +40,13 @@ Nothing else is needed, so nothing else exists.
 
 ```bash
 go build -o vaultsync ./cmd/vaultsync
-VAULTSYNC_TOKEN=secret ./vaultsync -vault /srv/knowledge/personal
+VAULTSYNC_TOKEN=secret ./vaultsync -vault ~/knowledge/personal
 ```
 
 | Flag | Environment | Default |
 | --- | --- | --- |
 | `-vault` | `VAULTSYNC_VAULT` | *(required)* |
-| `-git` | `VAULTSYNC_GIT` | `/var/lib/vaultsync/git` |
+| `-git` | `VAULTSYNC_GIT` | `~/vaultsync/git` |
 | `-listen` | `VAULTSYNC_LISTEN` | `:8090` |
 | `-token` | `VAULTSYNC_TOKEN` | *(required)* |
 | `-debounce` | `VAULTSYNC_DEBOUNCE` | `1s` |
@@ -44,7 +58,7 @@ flag is a deliberate override of it.
 ```bash
 docker build -t vaultsync .
 docker run -e VAULTSYNC_TOKEN=secret -e VAULTSYNC_VAULT=/vault -e VAULTSYNC_GIT=/git \
-  -v /srv/knowledge/personal:/vault -v /var/lib/vaultsync:/git -p 8090:8090 vaultsync
+  -v ~/knowledge/personal:/vault -v ~/vaultsync:/git -p 8090:8090 vaultsync
 ```
 
 ## API
@@ -153,7 +167,7 @@ The repository is a standard git repository. Nothing at runtime needs the git
 CLI, but a human debugging it can use one:
 
 ```bash
-git --git-dir=/var/lib/vaultsync/git --work-tree=/srv/knowledge/personal log --oneline
+git --git-dir=~/vaultsync/git --work-tree=~/knowledge/personal log --oneline
 ```
 
 go-git writes a small `.git` pointer file into the vault (the linked-worktree
@@ -169,8 +183,94 @@ go test -race ./...
 `internal/merge/diff3/` is vendored — see its `PROVENANCE.md` for why, and for
 the twelve `git merge-file` comparison cases encoded as tests.
 
+# The Obsidian plugin
+
+## The plugin: how it decides what changed
+
+The plugin keeps a **snapshot** — `path → {hash, mtime, size}` as of the commit
+it last synced — in Obsidian's device-local storage. Every cycle diffs the vault
+against that snapshot.
+
+It deliberately does **not** replay an event log. iOS kills apps without warning,
+so an in-memory queue evaporates; and Obsidian's `create` event fires for every
+existing file when a vault loads, so events are not a trustworthy delta anyway.
+Events here only mean *sync soon* — never *here is what changed*. Ten seconds
+offline and ten days offline are the same computation.
+
+Content is addressed by **git object hash**, so anything the plugin uploads can
+be checked against the real tool:
+
+```bash
+printf 'hello\n' | git hash-object --stdin
+```
+
+## Install
+
+Not in the community store yet. Use [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+
+1. Install BRAT from Community Plugins.
+2. If this repository is private, add a fine-grained read-only GitHub token in
+   BRAT's settings.
+3. BRAT → *Add beta plugin* → `pkronstrom/obsidian-vaultsync`.
+
+Then set the server URL, token and device name in the plugin's settings, and
+press **Test connection**.
+
+## Settings
+
+| Setting | Notes |
+| --- | --- |
+| Server URL | e.g. `https://vault.example.net` |
+| Token | the bearer token the server expects |
+| Device name | appears in commit messages and conflict filenames |
+| Sync on change | sync shortly after edits, debounced |
+| Sync interval | background period; `0` disables it |
+
+Syncing also happens on window focus and blur. **Pull-on-focus is the one that
+matters** for the edit-on-phone-then-pick-up-the-laptop pattern: the laptop
+fetches the moment it is activated, rather than waiting for a timer.
+
+## Conflicts
+
+The server resolves them, against a real merge base.
+
+Edits to different parts of a note merge silently. Edits to the same lines keep
+the server's version at the original path and write yours to
+`notes/idea.conflict-phone-20260816T093012.md` — an ordinary note, so it syncs
+everywhere and you resolve it by editing and deleting. Binary files are never
+merged; both versions are kept.
+
+## What is not synced
+
+Anything under a dot-directory, including `.obsidian/`. Workspace layout is
+device-specific and config sync needs different rules; it is not implemented.
+
+## Two invariants worth knowing
+
+**Sync state never lives in the vault.** It goes in `app.saveLocalStorage`, not
+`data.json`. If `.obsidian/` were ever synced, a shared `data.json` would give
+every device another device's cursor, and each would then reason about local
+changes from a snapshot it never built.
+
+**A device that has never synced cannot delete anything.** It has no idea what
+the server holds, so an absence tells it nothing. The server refuses such
+deletes too.
+
+## Development
+
+```bash
+npm install
+npm run build
+
+# End-to-end against a running server. Exercises the real client and sync
+# engine; only Obsidian's requestUrl and DataAdapter are substituted.
+node test/integration.mjs http://localhost:8090 <token>
+```
+
 ## Not built yet
 
-The Obsidian plugin, `.obsidian/` config sync, and history/blob retention. The
-server is complete and drivable with `curl` alone, which is what makes the
-plugin testable when it arrives.
+`.obsidian/` config sync, history squashing and object retention.
+
+## Licence
+
+MIT.
