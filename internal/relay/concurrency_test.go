@@ -167,3 +167,21 @@ func jsonField(t *testing.T, blob, key string) string {
 	v, _ := m[key].(string)
 	return v
 }
+
+// concurrentEditPath is concurrentEdit for a path other than n.md.
+func concurrentEditPath(t *testing.T, c *client.Client, path, content string) {
+	t.Helper()
+	ctx := context.Background()
+	h := protocol.HashContent([]byte(content))
+	if err := c.PutContent(ctx, h, []byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	head, err := c.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Push(ctx, head, []protocol.Change{
+		{Path: path, Op: protocol.OpPut, Hash: h}}); err != nil {
+		t.Fatal(err)
+	}
+}

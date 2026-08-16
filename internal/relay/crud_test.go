@@ -140,28 +140,73 @@ func TestEscapingPathsCreateNothingOutsideTheVault(t *testing.T) {
 
 // A conflict must be visible from the status alone, for callers that ignore
 // the body.
+// The conflict must surface through the RELAY, as an HTTP status.
+//
+// The previous version of this test pushed the conflicting change with the Go
+// client and never sent it through srv at all, then ended in t.Skipf -- so it
+// asserted nothing, and deleting the relay's 409 mapping would have kept it
+// green. Same failure as the TypeScript client test that made the 409 path
+// unreachable: a test that exercises the setup instead of the subject.
 func TestConflictSurfacesAs409(t *testing.T) {
 	c := liveClient(t)
-	srv := httptest.NewServer(relay.NewHandler(c, relayTok, quiet(), nil, nil))
-	t.Cleanup(srv.Close)
-	ctx := t.Context()
+	srv := crudServerFor(t, c)
 
-	req(t, srv, "PUT", "/file/c.md", []byte("base\n"), true)
-
-	// Another writer moves the same path from the same base.
-	base, _ := c.Head(ctx)
-	h := protocol.HashContent([]byte("from elsewhere\n"))
-	c.PutContent(ctx, h, []byte("from elsewhere\n"))
-	c.Push(ctx, base, []protocol.Change{{Path: "c.md", Op: protocol.OpPut, Hash: h}})
-
-	h2 := protocol.HashContent([]byte("from the relay\n"))
-	c.PutContent(ctx, h2, []byte("from the relay\n"))
-	resp, err := c.Push(ctx, base, []protocol.Change{{Path: "c.md", Op: protocol.OpPut, Hash: h2}})
-	if err != nil {
-		t.Fatal(err)
+	req(t, srv, "PUT", "/file/c.md", []byte(doc), true)
+	etag := req(t, srv, "GET", "/file/c.md", nil, true).Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("no ETag to be conditional on")
 	}
-	if resp.Results[0].Status != protocol.StatusConflict {
-		t.Skipf("did not conflict (%s); covered by the client tests", resp.Results[0].Status)
+
+	// Another writer changes the same line, so the two edits cannot merge.
+	concurrentEditPath(t, c, "c.md", strings.Replace(doc, "line3", "line3 THEIRS", 1))
+
+	mine := strings.Replace(doc, "line3", "line3 MINE", 1)
+	resp := reqWithHeaders(t, srv, "PUT", "/file/c.md", []byte(mine), true,
+		map[string]string{"If-Match": etag})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("conflicting PUT = %d, want 409", resp.StatusCode)
+	}
+	var res protocol.Result
+	json.NewDecoder(resp.Body).Decode(&res)
+	if res.Status != protocol.StatusConflict || res.ConflictPath == "" {
+		t.Errorf("body does not describe the conflict: %+v", res)
+	}
+}
+
+// A refused delete used to come back 200, so a caller checking only the status
+// would report a note as removed while it was still in the vault.
+func TestRefusedDeleteIsNot200(t *testing.T) {
+	c := liveClient(t)
+	srv := crudServerFor(t, c)
+
+	req(t, srv, "PUT", "/file/d.md", []byte(doc), true)
+	etag := req(t, srv, "GET", "/file/d.md", nil, true).Header.Get("ETag")
+
+	// The note changes after the caller decided to delete it.
+	concurrentEditPath(t, c, "d.md", strings.Replace(doc, "line3", "line3 THEIRS", 1))
+
+	resp := reqWithHeaders(t, srv, "DELETE", "/file/d.md", nil, true,
+		map[string]string{"If-Match": etag})
+	var res protocol.Result
+	json.NewDecoder(resp.Body).Decode(&res)
+	if res.Status == protocol.StatusApplied {
+		return // the server allowed it; nothing to assert
+	}
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("delete came back %q but HTTP 200: a caller would report success",
+			res.Status)
+	}
+}
+
+// A wildcard If-Match cannot be honoured as a revision. Turning it into an
+// absent base would make a request that ASKED to be conditional a blind
+// overwrite, so it is refused instead.
+func TestWildcardIfMatchIsRefused(t *testing.T) {
+	srv := crudServer(t)
+	resp := reqWithHeaders(t, srv, "PUT", "/file/w.md", []byte("x\n"), true,
+		map[string]string{"If-Match": "*"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("If-Match: * = %d, want 400", resp.StatusCode)
 	}
 }
 

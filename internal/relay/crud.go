@@ -118,19 +118,18 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.client.WriteAt(r.Context(), p, body, ifMatch(r))
+	base, err := ifMatch(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
+	res, err := h.client.WriteAt(r.Context(), p, body, base)
 	if err != nil {
 		h.relayError(w, err)
 		return
 	}
-	// 200 for a clean write, 409 for a conflict: a caller that ignores the body
-	// still learns something went sideways from the status alone.
-	status := http.StatusOK
-	if res.Status == protocol.StatusConflict {
-		status = http.StatusConflict
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(httpStatus(res))
 	json.NewEncoder(w).Encode(res)
 }
 
@@ -140,12 +139,21 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
 		return
 	}
-	res, err := h.client.DeleteAt(r.Context(), p, ifMatch(r))
+	base, err := ifMatch(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
+	res, err := h.client.DeleteAt(r.Context(), p, base)
 	if err != nil {
 		h.relayError(w, err)
 		return
 	}
-	writeJSON(w, res)
+	// A refused delete used to come back 200: a caller checking only the status
+	// would report the note as removed while it is still in the vault.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatus(res))
+	json.NewEncoder(w).Encode(res)
 }
 
 // ifMatch pulls the vault revision out of If-Match. Absent means a blind
@@ -154,12 +162,34 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 //
 // Quotes are optional here: the header is specified with them, every real
 // client sends them, and a hand-written curl call usually does not.
-func ifMatch(r *http.Request) string {
+func ifMatch(r *http.Request) (string, error) {
 	v := strings.TrimSpace(r.Header.Get("If-Match"))
-	if v == "" || v == "*" {
-		return ""
+	if v == "" {
+		return "", nil
 	}
-	return strings.Trim(v, `"`)
+	// RFC 9110's wildcard means "if the resource exists", which is not a
+	// revision and cannot be honoured as one. Silently treating it as an absent
+	// base turns a request that ASKED to be conditional into a blind overwrite
+	// -- the exact failure this header exists to prevent -- so refuse instead.
+	if v == "*" {
+		return "", errors.New(
+			"If-Match: * is not supported; send the ETag returned by GET")
+	}
+	return strings.Trim(v, `"`), nil
+}
+
+// httpStatus maps a push outcome onto a status code. A caller that reads only
+// the status line still learns that its change did not land as sent -- and a
+// refused delete must not look like a successful one.
+func httpStatus(res protocol.Result) int {
+	switch res.Status {
+	case protocol.StatusConflict:
+		return http.StatusConflict
+	case protocol.StatusRefused:
+		return http.StatusConflict
+	default:
+		return http.StatusOK
+	}
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
