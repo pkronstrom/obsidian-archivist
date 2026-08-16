@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pkronstrom/vaultsync/internal/repo"
-	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/repo"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 )
 
 func setup(t *testing.T) (Env, *vault.Vault, *repo.Repo) {

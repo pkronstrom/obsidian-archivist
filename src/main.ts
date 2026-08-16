@@ -1,9 +1,9 @@
 import { Notice, Plugin, TAbstractFile, debounce } from "obsidian";
 import { Client } from "./client";
 import { Sync, skip } from "./sync";
-import { DEFAULT_SETTINGS, VaultsyncSettingTab, type Settings } from "./settings";
+import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 
-export default class VaultsyncPlugin extends Plugin {
+export default class ArchivistPlugin extends Plugin {
 	settings: Settings = { ...DEFAULT_SETTINGS };
 	sync!: Sync;
 
@@ -18,13 +18,13 @@ export default class VaultsyncPlugin extends Plugin {
 			this.app,
 			() => new Client(this.settings.serverUrl, this.settings.token),
 			() => this.settings.device || "device",
-			(msg, ...rest) => console.log("[vaultsync]", msg, ...rest),
+			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
 		);
 
 		this.status = this.addStatusBarItem();
 		this.setStatus("idle");
 
-		this.addSettingTab(new VaultsyncSettingTab(this.app, this));
+		this.addSettingTab(new ArchivistSettingTab(this.app, this));
 
 		this.addCommand({
 			id: "sync-now",
@@ -36,11 +36,11 @@ export default class VaultsyncPlugin extends Plugin {
 			name: "Re-bootstrap from server",
 			callback: async () => {
 				await this.sync.forceRebootstrap();
-				new Notice("vaultsync: re-bootstrapped");
+				new Notice("archivist: re-bootstrapped");
 			},
 		});
 
-		this.addRibbonIcon("refresh-cw", "vaultsync: sync now", () => void this.runSync());
+		this.addRibbonIcon("refresh-cw", "archivist: sync now", () => void this.runSync());
 
 		// Vault events fire for EVERY existing file when the vault loads, which
 		// the API documents and recommends handling by registering inside
@@ -102,7 +102,7 @@ export default class VaultsyncPlugin extends Plugin {
 				// Conflicts are the one outcome worth interrupting for: a file
 				// now exists that the user has to resolve by hand.
 				new Notice(
-					`vaultsync: ${report.conflicts.length} conflict(s); see ${report.conflicts[0].conflictPath}`,
+					`archivist: ${report.conflicts.length} conflict(s); see ${report.conflicts[0].conflictPath}`,
 					8000,
 				);
 			}
@@ -113,14 +113,14 @@ export default class VaultsyncPlugin extends Plugin {
 			);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			console.error("[vaultsync] sync failed", err);
+			console.error("[archivist] sync failed", err);
 			this.setStatus("error");
-			new Notice(`vaultsync: ${msg}`, 8000);
+			new Notice(`archivist: ${msg}`, 8000);
 		}
 	}
 
 	private setStatus(text: string): void {
-		this.status?.setText(`vaultsync: ${text}`);
+		this.status?.setText(`archivist: ${text}`);
 	}
 
 	async loadSettings(): Promise<void> {

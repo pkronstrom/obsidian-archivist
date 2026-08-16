@@ -28,10 +28,10 @@ Obsidian (Mac, iPhone)        SilverBullet / scripts / Claude
         │  HTTP                            │  ordinary file I/O
         └──────────────┬───────────────────┘
                        ▼
-                   vaultsync
+                   archivist
                        │
         ~/knowledge/personal   ← an ordinary directory, this is the vault
-        ~/vaultsync/git    ← history, deliberately outside the vault
+        ~/archivist/git    ← history, deliberately outside the vault
 ```
 
 The working tree **is** the vault. Git is the state store: the tree at a commit
@@ -46,35 +46,35 @@ Prebuilt binaries are attached to every [release](../../releases) for
 Nothing needs a Go toolchain on the target host:
 
 ```bash
-curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/vaultsync-server-linux-amd64
-curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/SHA256SUMS
+curl -fsSLO https://github.com/pkronstrom/obsidian-archivist/releases/latest/download/archivist-server-linux-amd64
+curl -fsSLO https://github.com/pkronstrom/obsidian-archivist/releases/latest/download/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x vaultsync-server-linux-amd64
+chmod +x archivist-server-linux-amd64
 ```
 
 Or build it yourself:
 
 ```bash
-go build -o vaultsync-server ./cmd/vaultsync-server
-VAULTSYNC_TOKEN=secret ./vaultsync-server -vault ~/knowledge/personal
+go build -o archivist-server ./cmd/archivist-server
+ARCHIVIST_TOKEN=secret ./archivist-server -vault ~/knowledge/personal
 ```
 
 | Flag | Environment | Default |
 | --- | --- | --- |
-| `-vault` | `VAULTSYNC_VAULT` | *(required)* |
-| `-git` | `VAULTSYNC_GIT` | `~/vaultsync/git` |
-| `-listen` | `VAULTSYNC_LISTEN` | `:8090` |
-| `-token` | `VAULTSYNC_TOKEN` | *(required)* |
-| `-debounce` | `VAULTSYNC_DEBOUNCE` | `1s` |
-| `-watch` | `VAULTSYNC_WATCH` | `true` |
+| `-vault` | `ARCHIVIST_VAULT` | *(required)* |
+| `-git` | `ARCHIVIST_GIT` | `~/archivist/git` |
+| `-listen` | `ARCHIVIST_LISTEN` | `:8090` |
+| `-token` | `ARCHIVIST_TOKEN` | *(required)* |
+| `-debounce` | `ARCHIVIST_DEBOUNCE` | `1s` |
+| `-watch` | `ARCHIVIST_WATCH` | `true` |
 
 Flags beat the environment: the environment is the deployment's baseline, a
 flag is a deliberate override of it.
 
 ```bash
-docker build -t vaultsync .
-docker run -e VAULTSYNC_TOKEN=secret -e VAULTSYNC_VAULT=/vault -e VAULTSYNC_GIT=/git \
-  -v ~/knowledge/personal:/vault -v ~/vaultsync:/git -p 8090:8090 vaultsync
+docker build -t archivist-server .
+docker run -e ARCHIVIST_TOKEN=secret -e ARCHIVIST_VAULT=/vault -e ARCHIVIST_GIT=/git \
+  -v ~/knowledge/personal:/vault -v ~/archivist:/git -p 8090:8090 archivist
 ```
 
 ## API
@@ -142,7 +142,7 @@ Thirty daily snapshots would be thirty full copies. restic compresses
 repository-side anyway. Add `?gzip=1` only when piping somewhere that will not.
 
 Restore with `tar xzf` into an empty directory and point `--git-dir` at it; the
-working tree rebuilds from `git checkout` or simply by starting vaultsync
+working tree rebuilds from `git checkout` or simply by starting archivist
 against it.
 
 **The working tree is safe to back up directly.** Every server write is
@@ -198,7 +198,7 @@ The repository is a standard git repository. Nothing at runtime needs the git
 CLI, but a human debugging it can use one:
 
 ```bash
-git --git-dir=~/vaultsync/git --work-tree=~/knowledge/personal log --oneline
+git --git-dir=~/archivist/git --work-tree=~/knowledge/personal log --oneline
 ```
 
 go-git writes a small `.git` pointer file into the vault (the linked-worktree
@@ -242,7 +242,7 @@ Not in the community store yet. Use [BRAT](https://github.com/TfTHacker/obsidian
 1. Install BRAT from Community Plugins.
 2. If this repository is private, add a fine-grained read-only GitHub token in
    BRAT's settings.
-3. BRAT → *Add beta plugin* → `pkronstrom/obsidian-vaultsync`.
+3. BRAT → *Add beta plugin* → `pkronstrom/obsidian-archivist`.
 
 Then set the server URL, token and device name in the plugin's settings, and
 press **Test connection**.

@@ -3,8 +3,8 @@ package config
 import "testing"
 
 func TestEnvFallback(t *testing.T) {
-	t.Setenv("VAULTSYNC_VAULT", "/srv/knowledge/test")
-	t.Setenv("VAULTSYNC_TOKEN", "secret")
+	t.Setenv("ARCHIVIST_VAULT", "/srv/knowledge/test")
+	t.Setenv("ARCHIVIST_TOKEN", "secret")
 	c, err := Load([]string{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -15,15 +15,15 @@ func TestEnvFallback(t *testing.T) {
 	if c.Listen != ":8090" {
 		t.Errorf("Listen = %q, want the default :8090", c.Listen)
 	}
-	if c.Git != "/var/lib/vaultsync/git" {
+	if c.Git != "/var/lib/archivist/git" {
 		t.Errorf("Git = %q, want the default", c.Git)
 	}
 }
 
 func TestFlagBeatsEnv(t *testing.T) {
-	t.Setenv("VAULTSYNC_LISTEN", ":1111")
-	t.Setenv("VAULTSYNC_VAULT", "/v")
-	t.Setenv("VAULTSYNC_TOKEN", "s")
+	t.Setenv("ARCHIVIST_LISTEN", ":1111")
+	t.Setenv("ARCHIVIST_VAULT", "/v")
+	t.Setenv("ARCHIVIST_TOKEN", "s")
 	c, err := Load([]string{"-listen", ":2222"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -34,22 +34,22 @@ func TestFlagBeatsEnv(t *testing.T) {
 }
 
 func TestMissingTokenIsAnError(t *testing.T) {
-	t.Setenv("VAULTSYNC_VAULT", "/v")
+	t.Setenv("ARCHIVIST_VAULT", "/v")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("want an error when the token is unset, got nil")
 	}
 }
 
 func TestMissingVaultIsAnError(t *testing.T) {
-	t.Setenv("VAULTSYNC_TOKEN", "s")
+	t.Setenv("ARCHIVIST_TOKEN", "s")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("want an error when the vault is unset, got nil")
 	}
 }
 
 func TestWatchCanBeDisabled(t *testing.T) {
-	t.Setenv("VAULTSYNC_VAULT", "/v")
-	t.Setenv("VAULTSYNC_TOKEN", "s")
+	t.Setenv("ARCHIVIST_VAULT", "/v")
+	t.Setenv("ARCHIVIST_TOKEN", "s")
 	c, err := Load([]string{"-watch=false"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -60,9 +60,9 @@ func TestWatchCanBeDisabled(t *testing.T) {
 }
 
 func TestBadDebounceIsAnError(t *testing.T) {
-	t.Setenv("VAULTSYNC_VAULT", "/v")
-	t.Setenv("VAULTSYNC_TOKEN", "s")
-	t.Setenv("VAULTSYNC_DEBOUNCE", "not-a-duration")
+	t.Setenv("ARCHIVIST_VAULT", "/v")
+	t.Setenv("ARCHIVIST_TOKEN", "s")
+	t.Setenv("ARCHIVIST_DEBOUNCE", "not-a-duration")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("want an error for an unparseable debounce, got nil")
 	}

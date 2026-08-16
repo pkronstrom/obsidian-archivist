@@ -1,4 +1,4 @@
-module github.com/pkronstrom/vaultsync
+module github.com/pkronstrom/obsidian-archivist
 
 go 1.26.5
 

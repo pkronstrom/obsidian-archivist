@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkronstrom/vaultsync/internal/reconcile"
-	"github.com/pkronstrom/vaultsync/internal/repo"
-	"github.com/pkronstrom/vaultsync/internal/vault"
-	"github.com/pkronstrom/vaultsync/internal/version"
+	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
+	"github.com/pkronstrom/obsidian-archivist/internal/repo"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/version"
 )
 
 // maxUpload bounds a single content upload. Generous for an attachment,
@@ -60,7 +60,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := []byte(r.Header.Get("Authorization"))
 		if subtle.ConstantTimeCompare(got, want) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="vaultsync"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist"`)
 			httpError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -395,7 +395,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		out = append(out, doc{rt.Method, rt.Path, rt.Does})
 	}
 	writeJSON(w, map[string]any{
-		"service":  "vaultsync",
+		"service":  "archivist",
 		"version":  version.Version,
 		"protocol": version.Protocol,
 		"notes": []string{
@@ -433,7 +433,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	// snapshot rather than a delta. See repo.Archive.
 	compress := r.URL.Query().Get("gzip") == "1"
 
-	tmp, err := os.CreateTemp("", "vaultsync-export-*.tar")
+	tmp, err := os.CreateTemp("", "archivist-export-*.tar")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -455,9 +455,9 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, ctype := "vaultsync-git.tar", "application/x-tar"
+	name, ctype := "archivist-git.tar", "application/x-tar"
 	if compress {
-		name, ctype = "vaultsync-git.tar.gz", "application/gzip"
+		name, ctype = "archivist-git.tar.gz", "application/gzip"
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))

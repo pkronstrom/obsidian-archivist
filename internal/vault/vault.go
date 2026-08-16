@@ -33,7 +33,7 @@ import (
 
 // tmpPrefix is a dotfile so Obsidian hides it, the watcher ignores it, and it
 // never reaches git.
-const tmpPrefix = ".vaultsync-tmp-"
+const tmpPrefix = ".archivist-tmp-"
 
 type Vault struct {
 	root *os.Root

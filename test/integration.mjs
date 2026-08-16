@@ -1,4 +1,4 @@
-// Drives the real sync engine against a real vaultsync server, with two
+// Drives the real sync engine against a real archivist-server server, with two
 // independent "devices" pointed at one server.
 //
 // Usage:

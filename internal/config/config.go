@@ -58,46 +58,46 @@ func env(key, def string) string {
 
 // Load parses args over environment defaults.
 func Load(args []string) (*Config, error) {
-	debounce, err := time.ParseDuration(env("VAULTSYNC_DEBOUNCE", "1s"))
+	debounce, err := time.ParseDuration(env("ARCHIVIST_DEBOUNCE", "1s"))
 	if err != nil {
-		return nil, errors.New("VAULTSYNC_DEBOUNCE: " + err.Error())
+		return nil, errors.New("ARCHIVIST_DEBOUNCE: " + err.Error())
 	}
 
-	fs := flag.NewFlagSet("vaultsync", flag.ContinueOnError)
+	fs := flag.NewFlagSet("archivist-server", flag.ContinueOnError)
 	// The caller reports errors; the flag package writing to stderr on its own
 	// makes test output unreadable.
 	fs.SetOutput(io.Discard)
 
 	c := &Config{}
-	fs.StringVar(&c.Vault, "vault", env("VAULTSYNC_VAULT", ""),
+	fs.StringVar(&c.Vault, "vault", env("ARCHIVIST_VAULT", ""),
 		"vault directory (the notes themselves)")
-	fs.StringVar(&c.Git, "git", env("VAULTSYNC_GIT", "/var/lib/vaultsync/git"),
+	fs.StringVar(&c.Git, "git", env("ARCHIVIST_GIT", "/var/lib/archivist/git"),
 		"git directory, kept outside the vault")
-	fs.StringVar(&c.Listen, "listen", env("VAULTSYNC_LISTEN", ":8090"),
+	fs.StringVar(&c.Listen, "listen", env("ARCHIVIST_LISTEN", ":8090"),
 		"HTTP listen address")
-	fs.StringVar(&c.Token, "token", env("VAULTSYNC_TOKEN", ""),
+	fs.StringVar(&c.Token, "token", env("ARCHIVIST_TOKEN", ""),
 		"bearer token required from clients")
 	fs.DurationVar(&c.Debounce, "debounce", debounce,
 		"quiet period before a filesystem change is acted on")
-	fs.BoolVar(&c.Watch, "watch", env("VAULTSYNC_WATCH", "true") != "false",
+	fs.BoolVar(&c.Watch, "watch", env("ARCHIVIST_WATCH", "true") != "false",
 		"watch the vault for local edits")
-	fs.StringVar(&c.LogLevel, "log-level", env("VAULTSYNC_LOG_LEVEL", "info"),
+	fs.StringVar(&c.LogLevel, "log-level", env("ARCHIVIST_LOG_LEVEL", "info"),
 		"debug, info, warn or error")
-	fs.StringVar(&c.LogFile, "log-file", env("VAULTSYNC_LOG_FILE", ""),
+	fs.StringVar(&c.LogFile, "log-file", env("ARCHIVIST_LOG_FILE", ""),
 		"also write logs to this rotating file (unnecessary under Docker or systemd)")
-	fs.Int64Var(&c.LogMaxBytes, "log-max-bytes", envInt("VAULTSYNC_LOG_MAX_BYTES", 10<<20),
+	fs.Int64Var(&c.LogMaxBytes, "log-max-bytes", envInt("ARCHIVIST_LOG_MAX_BYTES", 10<<20),
 		"rotate the log file at this size")
-	fs.IntVar(&c.LogKeep, "log-keep", int(envInt("VAULTSYNC_LOG_KEEP", 5)),
+	fs.IntVar(&c.LogKeep, "log-keep", int(envInt("ARCHIVIST_LOG_KEEP", 5)),
 		"how many rotated log files to keep")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 	if c.Vault == "" {
-		return nil, errors.New("vault directory is required (-vault or VAULTSYNC_VAULT)")
+		return nil, errors.New("vault directory is required (-vault or ARCHIVIST_VAULT)")
 	}
 	if c.Token == "" {
-		return nil, errors.New("bearer token is required (-token or VAULTSYNC_TOKEN)")
+		return nil, errors.New("bearer token is required (-token or ARCHIVIST_TOKEN)")
 	}
 	return c, nil
 }

@@ -6,7 +6,7 @@ name: Release
 #
 # Two kinds of asset ship here:
 #   main.js + manifest.json   the plugin, installed by BRAT and the store
-#   vaultsync-<os>-<arch>     the server, for hosts without a Go toolchain
+#   archivist-<os>-<arch>     the server, for hosts without a Go toolchain
 #
 # the server is linux/amd64 and has no Go installed, which is the whole reason the
 # server binaries are cross-compiled here rather than built on the target.
@@ -36,7 +36,7 @@ jobs:
           # cross-compilation a matter of two environment variables and lets the
           # container image be FROM scratch.
           VER="${GITHUB_REF#refs/tags/}"
-          LDFLAGS="-s -w -X github.com/pkronstrom/vaultsync/internal/version.Version=$VER"
+          LDFLAGS="-s -w -X github.com/pkronstrom/obsidian-archivist/internal/version.Version=$VER"
           for cmd in $(ls cmd); do
             for target in linux/amd64 linux/arm64 darwin/arm64; do
               os="${target%/*}"; arch="${target#*/}"
@@ -62,4 +62,4 @@ jobs:
           gh release create "${GITHUB_REF#refs/tags/}" \
             --title "${GITHUB_REF#refs/tags/}" \
             --generate-notes \
-            main.js manifest.json dist/vaultsync-* dist/SHA256SUMS
+            main.js manifest.json dist/archivist-* dist/SHA256SUMS

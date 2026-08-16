@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 )
 
 func newRepo(t *testing.T) (*Repo, *vault.Vault, string) {

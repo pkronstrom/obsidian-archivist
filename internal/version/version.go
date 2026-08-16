@@ -8,7 +8,7 @@ package version
 
 // Version is the build. Set at link time:
 //
-//	go build -ldflags "-X github.com/pkronstrom/vaultsync/internal/version.Version=1.2.3"
+//	go build -ldflags "-X github.com/pkronstrom/obsidian-archivist/internal/version.Version=1.2.3"
 var Version = "dev"
 
 // Protocol is the wire contract. Increment ONLY on a change a client cannot

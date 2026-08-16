@@ -1,4 +1,4 @@
-# vaultsync
+# Archivist
 
 Keep using Obsidian. Keep your notes as ordinary files on your own server.
 
@@ -8,7 +8,7 @@ ask for something back: the server copy stops being ordinary files, or sync is
 not real-time, or mobile is unreliable, or your vault ends up stored three times
 over.
 
-vaultsync is one small Go binary and one Obsidian plugin. Your vault lives on
+archivist-server is one small Go binary and one Obsidian plugin. Your vault lives on
 your server as **plain Markdown, images and PDFs in a normal directory** — the
 real thing, not an export — while Obsidian on your laptop and phone syncs against
 it in the background.
@@ -38,7 +38,7 @@ flowchart LR
 
     subgraph server ["your server"]
         direction TB
-        vs(["vaultsync<br/><i>one 8 MB binary</i>"])
+        vs(["archivist<br/><i>one 8 MB binary</i>"])
         vault[/"~/knowledge/personal<br/><b>plain .md .pdf .png</b>"/]
         git[("git history")]
         vs --- vault
@@ -145,7 +145,7 @@ actually tried restoring, which is true of any sync tool and especially this one
 | **Self-hosted LiveSync** | free | a projection of a CouchDB, ~4× disk | yes | good |
 | **Obsidian Git** | free | a git checkout | no — on a timer | poor on iOS |
 | **Syncthing** | free | plain files | yes | no iOS client |
-| **vaultsync** | free | **plain files, 1×** | yes | good |
+| **archivist** | free | **plain files, 1×** | yes | good |
 
 **Obsidian Sync** is the right answer if you want it to just work and do not
 care where the notes live. It is genuinely excellent.
@@ -169,13 +169,13 @@ you have an iPhone.
 Server — grab a binary from [releases](../../releases) or run the container:
 
 ```bash
-VAULTSYNC_TOKEN=$(openssl rand -hex 32) \
-  vaultsync -vault ~/knowledge/personal -git ~/vaultsync/git
+ARCHIVIST_TOKEN=$(openssl rand -hex 32) \
+  archivist-server -vault ~/knowledge/personal -git ~/archivist/git
 ```
 
 Plugin — install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from
-Community Plugins, add `pkronstrom/vaultsync` as a beta plugin, then set the
-server URL and token in vaultsync's settings and press **Test connection**.
+Community Plugins, add `pkronstrom/obsidian-archivist` as a beta plugin, then set the
+server URL and token in archivist's settings and press **Test connection**.
 
 Two vaults means two of everything: two containers, two tokens, two hostnames.
 They share nothing.
@@ -232,7 +232,7 @@ Copy it in and start the server:
 
 ```bash
 rsync -a ~/existing-vault/ ~/knowledge/personal/
-vaultsync-server -vault ~/knowledge/personal ...
+archivist-server -vault ~/knowledge/personal ...
 ```
 
 Then point each device at it. **Files that already match are recognised by hash
@@ -250,11 +250,11 @@ from the machine that owns the vault and it stays consistent.
 From the command line, without git installed:
 
 ```bash
-vaultsync-server history notes/idea.md        # revisions that touched it
-vaultsync-server show notes/idea.md 4f3538ca  # print an old version, changing nothing
-vaultsync-server restore notes/idea.md 4f3538ca
-vaultsync-server check                        # working tree versus history; non-zero on drift
-vaultsync-server export > vault.tar
+archivist-server history notes/idea.md        # revisions that touched it
+archivist-server show notes/idea.md 4f3538ca  # print an old version, changing nothing
+archivist-server restore notes/idea.md 4f3538ca
+archivist-server check                        # working tree versus history; non-zero on drift
+archivist-server export > vault.tar
 ```
 
 Or over HTTP, for agents and other containers — `GET /v1` lists every endpoint

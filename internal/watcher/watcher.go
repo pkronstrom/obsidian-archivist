@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/pkronstrom/vaultsync/internal/reconcile"
-	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 )
 
 type Watcher struct {

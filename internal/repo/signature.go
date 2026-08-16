@@ -11,8 +11,8 @@ import (
 // there while working fine in tests.
 func signature() *object.Signature {
 	return &object.Signature{
-		Name:  "vaultsync",
-		Email: "vaultsync@localhost",
+		Name:  "archivist",
+		Email: "archivist@localhost",
 		When:  time.Now(),
 	}
 }

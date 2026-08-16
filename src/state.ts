@@ -9,13 +9,13 @@ export type SyncState = {
 	files: Record<string, FileState>;
 };
 
-const KEY = "vaultsync.state";
+const KEY = "archivist.state";
 
 /**
  * State lives in Obsidian's vault-scoped LOCAL storage, deliberately not in
  * saveData().
  *
- * saveData writes .obsidian/plugins/vaultsync/data.json -- inside the vault. If
+ * saveData writes .obsidian/plugins/archivist/data.json -- inside the vault. If
  * .obsidian is ever synced, every device would adopt every other device's
  * cursor and snapshot, and each would then reason about local changes from a
  * snapshot it never built. That is silent, baffling data loss. Keeping the

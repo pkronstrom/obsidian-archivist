@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-vaultsync",
-  "version": "0.1.0",
+  "name": "obsidian-archivist",
+  "version": "0.3.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -10,16 +10,16 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pkronstrom/obsidian-vaultsync.git"
+    "url": "git+https://github.com/pkronstrom/obsidian-archivist.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/pkronstrom/obsidian-vaultsync/issues"
+    "url": "https://github.com/pkronstrom/obsidian-archivist/issues"
   },
-  "homepage": "https://github.com/pkronstrom/obsidian-vaultsync#readme",
+  "homepage": "https://github.com/pkronstrom/obsidian-archivist#readme",
   "devDependencies": {
     "@types/node": "^26.2.0",
     "builtin-modules": "^5.3.0",

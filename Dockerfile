@@ -8,12 +8,12 @@ COPY . .
 # the scratch image below -- keep it that way.
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags="-s -w -X github.com/pkronstrom/vaultsync/internal/version.Version=${VERSION}" \
-    -o /vaultsync-server ./cmd/vaultsync-server
+    -ldflags="-s -w -X github.com/pkronstrom/archivist/internal/version.Version=${VERSION}" \
+    -o /archivist-server ./cmd/archivist-server
 
-# No base image. vaultsync opens files, listens on a socket and speaks git's
+# No base image. archivist-server opens files, listens on a socket and speaks git's
 # object format itself; it needs nothing else from userspace.
 FROM scratch
-COPY --from=build /vaultsync-server /vaultsync-server
+COPY --from=build /archivist-server /archivist-server
 EXPOSE 8090
-ENTRYPOINT ["/vaultsync-server"]
+ENTRYPOINT ["/archivist-server"]

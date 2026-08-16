@@ -16,7 +16,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pkronstrom/vaultsync/internal/merge/diff3/linereader"
+	"github.com/pkronstrom/obsidian-archivist/internal/merge/diff3/linereader"
 )
 
 type DiffAlgorithm int

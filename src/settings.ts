@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import { Client } from "./client";
-import type VaultsyncPlugin from "./main";
+import type ArchivistPlugin from "./main";
 
 export type Settings = {
 	serverUrl: string;
@@ -18,8 +18,8 @@ export const DEFAULT_SETTINGS: Settings = {
 	syncOnChange: true,
 };
 
-export class VaultsyncSettingTab extends PluginSettingTab {
-	constructor(app: App, private plugin: VaultsyncPlugin) {
+export class ArchivistSettingTab extends PluginSettingTab {
+	constructor(app: App, private plugin: ArchivistPlugin) {
 		super(app, plugin);
 	}
 
@@ -29,7 +29,7 @@ export class VaultsyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Server URL")
-			.setDesc("Base URL of your vaultsync server, e.g. https://vault.example.net")
+			.setDesc("Base URL of your archivist-server server, e.g. https://vault.example.net")
 			.addText((t) =>
 				t.setPlaceholder("https://vault.example.net")
 					.setValue(this.plugin.settings.serverUrl)
@@ -94,14 +94,14 @@ export class VaultsyncSettingTab extends PluginSettingTab {
 				b.setButtonText("Test").onClick(async () => {
 					const { serverUrl, token } = this.plugin.settings;
 					if (!serverUrl || !token) {
-						new Notice("vaultsync: set the server URL and token first");
+						new Notice("archivist: set the server URL and token first");
 						return;
 					}
 					try {
 						const head = await new Client(serverUrl, token).head();
-						new Notice(head ? `vaultsync: connected, head ${head.slice(0, 8)}` : "vaultsync: connected, empty vault");
+						new Notice(head ? `archivist: connected, head ${head.slice(0, 8)}` : "archivist: connected, empty vault");
 					} catch (err) {
-						new Notice(`vaultsync: ${err instanceof Error ? err.message : String(err)}`, 8000);
+						new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
 					}
 				}),
 			);
@@ -112,7 +112,7 @@ export class VaultsyncSettingTab extends PluginSettingTab {
 			.addButton((b) =>
 				b.setWarning().setButtonText("Re-bootstrap").onClick(async () => {
 					await this.plugin.sync.forceRebootstrap();
-					new Notice("vaultsync: re-bootstrapped");
+					new Notice("archivist: re-bootstrapped");
 				}),
 			);
 	}

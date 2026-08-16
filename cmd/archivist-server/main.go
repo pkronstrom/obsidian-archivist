@@ -1,4 +1,4 @@
-// Command vaultsync serves one vault.
+// Command archivist-server serves one vault.
 //
 // One vault per process: two vaults means two containers, which is how they
 // would be deployed anyway, and it keeps every path in the API unqualified.
@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pkronstrom/vaultsync/internal/api"
-	"github.com/pkronstrom/vaultsync/internal/cli"
-	"github.com/pkronstrom/vaultsync/internal/config"
-	"github.com/pkronstrom/vaultsync/internal/logging"
-	"github.com/pkronstrom/vaultsync/internal/reconcile"
-	"github.com/pkronstrom/vaultsync/internal/repo"
-	"github.com/pkronstrom/vaultsync/internal/vault"
-	"github.com/pkronstrom/vaultsync/internal/watcher"
+	"github.com/pkronstrom/obsidian-archivist/internal/api"
+	"github.com/pkronstrom/obsidian-archivist/internal/cli"
+	"github.com/pkronstrom/obsidian-archivist/internal/config"
+	"github.com/pkronstrom/obsidian-archivist/internal/logging"
+	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
+	"github.com/pkronstrom/obsidian-archivist/internal/repo"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/watcher"
 )
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 				// Already reported in full; exit non-zero for cron.
 				os.Exit(2)
 			}
-			fmt.Fprintln(os.Stderr, "vaultsync:", err)
+			fmt.Fprintln(os.Stderr, "archivist:", err)
 			os.Exit(1)
 		}
 		return
@@ -43,17 +43,17 @@ func main() {
 
 	cfg, err := config.Load(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		fmt.Fprintln(os.Stderr, "archivist:", err)
 		os.Exit(1)
 	}
 	level, err := logging.Level(cfg.LogLevel)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		fmt.Fprintln(os.Stderr, "archivist:", err)
 		os.Exit(1)
 	}
 	log, closer, err := logging.New(level, cfg.LogFile, cfg.LogMaxBytes, cfg.LogKeep)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "vaultsync:", err)
+		fmt.Fprintln(os.Stderr, "archivist:", err)
 		os.Exit(1)
 	}
 	defer closer.Close()
@@ -68,8 +68,8 @@ func main() {
 // they deliberately do not require a token.
 func runCommand(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	vaultDir := fs.String("vault", envOr("VAULTSYNC_VAULT", ""), "vault directory")
-	gitDir := fs.String("git", envOr("VAULTSYNC_GIT", "/var/lib/vaultsync/git"), "git directory")
+	vaultDir := fs.String("vault", envOr("ARCHIVIST_VAULT", ""), "vault directory")
+	gitDir := fs.String("git", envOr("ARCHIVIST_GIT", "/var/lib/archivist/git"), "git directory")
 	// Only history and check produce structured output; show, restore and
 	// export do not, and silently accepting -json there implied otherwise.
 	asJSON := fs.Bool("json", false, "machine-readable output (history and check only)")
@@ -77,7 +77,7 @@ func runCommand(name string, args []string) error {
 		return err
 	}
 	if *vaultDir == "" {
-		return errors.New("vault directory is required (-vault or VAULTSYNC_VAULT)")
+		return errors.New("vault directory is required (-vault or ARCHIVIST_VAULT)")
 	}
 	if *asJSON && name != "history" && name != "check" {
 		return fmt.Errorf("-json is not supported by %s (history and check only)", name)
@@ -114,7 +114,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("vaultsync starting",
+	log.Info("archivist-server starting",
 		"vault", cfg.Vault, "git", cfg.Git, "listen", cfg.Listen, "head", head,
 		"level", cfg.LogLevel)
 	log.Debug("configuration", "debounce", cfg.Debounce, "watch", cfg.Watch,

@@ -1,5 +1,5 @@
 // A minimal stand-in for the Obsidian runtime, so the sync engine can be
-// driven against a REAL vaultsync server from Node.
+// driven against a REAL archivist-server server from Node.
 //
 // This is not a mock of the logic under test -- client.ts, sync.ts and hash.ts
 // run unmodified. Only the two things Obsidian provides are substituted:

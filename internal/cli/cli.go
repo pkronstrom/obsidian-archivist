@@ -17,8 +17,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/pkronstrom/vaultsync/internal/repo"
-	"github.com/pkronstrom/vaultsync/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/repo"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 )
 
 // ErrDrift is returned by check when the working tree differs from HEAD, so
@@ -64,7 +64,7 @@ func Run(name string, args []string, env Env) error {
 
 func history(r *repo.Repo, args []string, env Env) error {
 	if len(args) < 1 {
-		return errors.New("usage: vaultsync history <path>")
+		return errors.New("usage: archivist-server history <path>")
 	}
 	revs, err := r.History(args[0], 50)
 	if err != nil {
@@ -95,7 +95,7 @@ func history(r *repo.Repo, args []string, env Env) error {
 // old version a destructive act.
 func show(r *repo.Repo, args []string, env Env) error {
 	if len(args) < 1 {
-		return errors.New("usage: vaultsync show <path> [revision]")
+		return errors.New("usage: archivist-server show <path> [revision]")
 	}
 	rev := ""
 	if len(args) > 1 {
@@ -115,7 +115,7 @@ func show(r *repo.Repo, args []string, env Env) error {
 
 func restore(r *repo.Repo, args []string, env Env) error {
 	if len(args) < 2 {
-		return errors.New("usage: vaultsync restore <path> <revision>")
+		return errors.New("usage: archivist-server restore <path> <revision>")
 	}
 	resolved, err := r.Resolve(args[1])
 	if err != nil {

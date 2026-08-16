@@ -16,7 +16,7 @@ cursor, and on every reconnect ask /v1/changes what you missed. That is why
 there is no retry queue, no acknowledgement, and no backlog to manage here --
 a missed event costs nothing.
 
-If the worker runs on the same host as vaultsync, it should read the changed
+If the worker runs on the same host as archivist, it should read the changed
 files straight off disk rather than fetching them: the vault is an ordinary
 directory. --vault enables that. Otherwise it falls back to /v1/content.
 """
@@ -29,7 +29,7 @@ import time
 import urllib.error
 import urllib.request
 
-CURSOR_FILE = os.path.expanduser("~/.vaultsync-worker-cursor")
+CURSOR_FILE = os.path.expanduser("~/.archivist-worker-cursor")
 
 # Line-buffered, so output appears as it happens rather than when a pipe's
 # buffer fills. Without this the worker looks dead under `docker logs`.
@@ -156,13 +156,13 @@ def stream(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--url", default=os.environ.get("VAULTSYNC_URL", "http://localhost:8090"))
-    ap.add_argument("--token", default=os.environ.get("VAULTSYNC_TOKEN", ""))
-    ap.add_argument("--vault", default=os.environ.get("VAULTSYNC_VAULT", ""),
+    ap.add_argument("--url", default=os.environ.get("ARCHIVIST_URL", "http://localhost:8090"))
+    ap.add_argument("--token", default=os.environ.get("ARCHIVIST_TOKEN", ""))
+    ap.add_argument("--vault", default=os.environ.get("ARCHIVIST_VAULT", ""),
                     help="read files from disk instead of over HTTP (same-host workers)")
     args = ap.parse_args()
     if not args.token:
-        raise SystemExit("a token is required (--token or VAULTSYNC_TOKEN)")
+        raise SystemExit("a token is required (--token or ARCHIVIST_TOKEN)")
 
     # Always catch up before streaming: whatever happened while we were not
     # running is invisible to the stream.

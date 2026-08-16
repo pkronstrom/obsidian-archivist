@@ -1,9 +1,9 @@
-# Built server binary. Anchored with a leading slash: a bare `vaultsync`
-# pattern also matches the DIRECTORY cmd/vaultsync, which silently kept the
+# Built server binary. Anchored with a leading slash: a bare `archivist`
+# pattern also matches the DIRECTORY cmd/archivist, which silently kept the
 # server's entrypoint out of the repository until a CI cross-compile failed
-# with "cmd/vaultsync: directory not found".
-/vaultsync-server
-/vaultsync-client
+# with "cmd/archivist: directory not found".
+/archivist-server
+/archivist-client
 /dist/
 *.test
 

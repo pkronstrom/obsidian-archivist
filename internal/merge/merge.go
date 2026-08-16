@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/pkronstrom/vaultsync/internal/merge/diff3"
+	"github.com/pkronstrom/obsidian-archivist/internal/merge/diff3"
 )
 
 // Merge performs a three-way merge of ours and theirs against base.
