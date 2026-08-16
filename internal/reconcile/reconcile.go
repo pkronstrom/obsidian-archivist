@@ -57,10 +57,12 @@ type Reconciler struct {
 	// watcher can recognise its own echo instead of treating it as a new edit.
 	echoMu  sync.Mutex
 	written map[string]string
+
+	events *broadcaster
 }
 
 func New(v *vault.Vault, r *repo.Repo) *Reconciler {
-	return &Reconciler{v: v, r: r, written: map[string]string{}}
+	return &Reconciler{v: v, r: r, written: map[string]string{}, events: newBroadcaster()}
 }
 
 func (rc *Reconciler) noteWrite(path string, content []byte) {
@@ -118,6 +120,9 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 	newHead, err := rc.r.Commit(fmt.Sprintf("sync from %s", device))
 	if err != nil {
 		return "", nil, err
+	}
+	if newHead != head {
+		rc.notify(newHead)
 	}
 	return newHead, results, nil
 }
@@ -266,8 +271,13 @@ func sanitise(s string) string {
 // base version, so this is last-writer-wins by construction.
 func (rc *Reconciler) Scan(msg string) (string, error) {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	return rc.r.Commit(msg)
+	before, _ := rc.r.Head()
+	head, err := rc.r.Commit(msg)
+	rc.mu.Unlock()
+	if err == nil && head != before {
+		rc.notify(head)
+	}
+	return head, err
 }
 
 // Freeze runs fn while holding the commit lock, so no commit can land while it

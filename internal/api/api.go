@@ -8,11 +8,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
 	"github.com/pkronstrom/vaultsync/internal/repo"
@@ -43,6 +45,7 @@ func New(rc *reconcile.Reconciler, r *repo.Repo, token string) http.Handler {
 	mux.HandleFunc("GET /v1/content/{hash}", s.getContent)
 	mux.HandleFunc("POST /v1/push", s.push)
 	mux.HandleFunc("GET /v1/export", s.export)
+	mux.HandleFunc("GET /v1/events", s.events)
 
 	return s.authenticate(mux)
 }
@@ -218,6 +221,68 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, pushResponse{Head: head, Results: results})
+}
+
+// events is a Server-Sent Events stream of commit hashes, for anything that
+// wants to react to a change rather than poll for it -- an indexer, an agent, a
+// webhook bridge.
+//
+//	curl -N -H "Authorization: Bearer $TOKEN" https://vault.example/v1/events
+//	data: {"head":"4ff143d6..."}
+//
+// It carries a NOTIFICATION, not the change itself. The durable feed is
+// /v1/changes?since=<cursor>: git history is append-only, so a consumer that
+// stores a cursor can always ask what it missed, however long it was away.
+// This stream only says "something moved, go look" -- so a dropped event, a
+// reconnect, or a consumer that was offline for a week all cost nothing, and
+// there is no queue to persist or backlog to manage.
+//
+// Consumers should therefore: subscribe, and on each event call /v1/changes
+// with their own cursor. Never treat the stream as the record.
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Reverse proxies buffer by default, which would hold events until the
+	// buffer fills -- defeating the point of the stream.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	// Send the current head immediately, so a consumer that just connected can
+	// reconcile without waiting for the next commit.
+	if head, err := s.repo.Head(); err == nil && head != "" {
+		fmt.Fprintf(w, "data: {\"head\":%q}\n\n", head)
+	}
+	flusher.Flush()
+
+	ch, stop := s.rc.Subscribe()
+	defer stop()
+
+	// Idle connections get dropped by proxies; a comment line is a valid SSE
+	// keep-alive that consumers ignore.
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case head, ok := <-ch:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(w, "data: {\"head\":%q}\n\n", head)
+			flusher.Flush()
+		case <-ticker.C:
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 // export streams a consistent, gzipped archive of the git directory.

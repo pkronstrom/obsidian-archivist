@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
 	"github.com/pkronstrom/vaultsync/internal/repo"
@@ -226,4 +228,95 @@ func TestMethodMismatchIs405(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("code = %d, want 405", w.Code)
 	}
+}
+
+// The stream must carry the CURRENT head on connect, then each new one. A
+// consumer that just subscribed should not have to wait for the next commit to
+// learn where things stand.
+func TestEventsStreamsHeadOnConnectAndOnCommit(t *testing.T) {
+	h, _, r := newServer(t)
+	content := []byte("first\n")
+	hash, _ := repo.HashContent(content)
+	putContent(t, h, hash, content)
+	first := pushOne(t, h, "", "notes/a.md", hash)
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+
+	rd := bufio.NewReader(resp.Body)
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading the connect event: %v", err)
+	}
+	if !strings.Contains(line, first) {
+		t.Errorf("connect event = %q, want the current head %s", line, first)
+	}
+
+	// A commit landing while subscribed must arrive.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		c2 := []byte("second\n")
+		h2, _ := repo.HashContent(c2)
+		putContent(t, h, h2, c2)
+		pushOne(t, h, first, "notes/b.md", h2)
+	}()
+
+	done := make(chan string, 1)
+	go func() {
+		for {
+			l, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if strings.HasPrefix(l, "data:") && !strings.Contains(l, first) {
+				done <- l
+				return
+			}
+		}
+	}()
+	select {
+	case l := <-done:
+		head, _ := r.Head()
+		if !strings.Contains(l, head) {
+			t.Errorf("event = %q, want head %s", l, head)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no event for a commit made while subscribed")
+	}
+}
+
+func putContent(t *testing.T, h http.Handler, hash string, content []byte) {
+	t.Helper()
+	req := httptest.NewRequest("PUT", "/v1/content/"+hash, bytes.NewReader(content))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body)
+	}
+}
+
+func pushOne(t *testing.T, h http.Handler, base, path, hash string) string {
+	t.Helper()
+	w := do(t, h, "POST", "/v1/push", pushRequest{
+		Base: base, Device: "test",
+		Changes: []reconcile.Change{{Path: path, Op: "put", Hash: hash}},
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", w.Code, w.Body)
+	}
+	var pr pushResponse
+	json.Unmarshal(w.Body.Bytes(), &pr)
+	return pr.Head
 }

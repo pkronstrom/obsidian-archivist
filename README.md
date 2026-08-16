@@ -111,6 +111,33 @@ server URL and token in vaultsync's settings and press **Test connection**.
 Two vaults means two of everything: two containers, two tokens, two hostnames.
 They share nothing.
 
+## Hooking things up to it
+
+Because every change is a commit, **history is already a durable event feed**.
+Anything that wants to react to edits — an indexer, an AI agent, a webhook
+bridge — stores a cursor and asks what it missed:
+
+```bash
+curl -s -H "$AUTH" "https://vault.example/v1/changes?since=$CURSOR"
+```
+
+That works however long the consumer was away, so there is nothing to queue and
+no backlog to manage.
+
+For low latency, subscribe to the change stream:
+
+```bash
+curl -N -H "$AUTH" https://vault.example/v1/events
+data: {"head":"4ff143d6..."}
+```
+
+It carries a **notification, not the change** — "something moved, go look". A
+missed event costs nothing, because the cursor still says what changed. Use the
+stream to know *when*, and `/v1/changes` to know *what*.
+
+An agent running on the same machine needs none of this. The vault is a
+directory; read and write the files and the server notices within a second.
+
 ## Backups
 
 ```bash
