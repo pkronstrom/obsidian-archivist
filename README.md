@@ -32,44 +32,43 @@ for free, and can recover a note you mangled three weeks ago.
 ## How it flows
 
 ```mermaid
-flowchart TB
-    subgraph devices ["Your devices"]
-        mac["Obsidian<br/>laptop"]
-        phone["Obsidian<br/>phone"]
+flowchart LR
+    mac["Obsidian<br/>laptop"]
+    phone["Obsidian<br/>phone"]
+
+    subgraph server ["your server"]
+        direction TB
+        vs(["vaultsync<br/><i>one 8 MB binary</i>"])
+        vault[/"~/knowledge/personal<br/><b>plain .md .pdf .png</b>"/]
+        git[("git history")]
+        vs --- vault
+        vs -->|"every change<br/>is a commit"| git
     end
 
-    subgraph server ["Your server"]
-        vs{{"vaultsync<br/><i>8 MB, one binary</i>"}}
-        vault[("~/knowledge/personal<br/><b>plain .md, .pdf, .png</b>")]
-        git[("git history<br/><i>outside the vault</i>")]
-    end
+    web["web viewer"]
+    agent["AI agent<br/>MCP tools"]
+    cli["grep, scripts, cron"]
+    restic["restic"]
 
-    subgraph consumers ["Everything else, no adapter needed"]
-        web["Web viewer"]
-        agent["AI agent<br/>MCP tools"]
-        cli["grep, scripts,<br/>cron"]
-        backup["restic"]
-    end
+    mac <==> vs
+    phone <==> vs
 
-    mac <-->|"sync on save<br/>merged, not overwritten"| vs
-    phone <-->|"sync on focus"| vs
-    vs -->|"writes atomically"| vault
-    vs -->|"commits every change"| git
+    vault <--> web
+    vault <--> agent
+    vault <--> cli
 
-    vault <-->|"ordinary file I/O"| web
-    vault <-->|"ordinary file I/O"| agent
-    vault <-->|"ordinary file I/O"| cli
-    vs -.->|"/v1/events<br/><i>something changed</i>"| agent
-    vs -.->|"/v1/export"| backup
+    vs -.->|"/v1/events"| agent
+    git -.->|"/v1/export"| restic
 
-    classDef store fill:#eef,stroke:#88a
-    classDef core fill:#ffe,stroke:#aa6
-    class vault,git store
-    class vs core
+    classDef plain fill:#fff,stroke:#999
+    classDef hot fill:#fffbe6,stroke:#c9a227,stroke-width:2px
+    class vault,vs hot
+    class mac,phone,web,agent,cli,restic plain
 ```
 
-The dotted lines are optional. The solid line from the vault to everything else
-is the point: those tools are reading files, not calling an API.
+**Thick lines** are sync. **Thin lines are ordinary file I/O** — that is the
+whole point: those tools open files, they do not call an API. Dotted lines are
+optional extras.
 
 ## What this is good for
 
