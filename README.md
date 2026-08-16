@@ -8,7 +8,7 @@ ask for something back: the server copy stops being ordinary files, or sync is
 not real-time, or mobile is unreliable, or your vault ends up stored three times
 over.
 
-archivist-server is one small Go binary and one Obsidian plugin. Your vault lives on
+Archivist is one small Go binary and one Obsidian plugin. Your vault lives on
 your server as **plain Markdown, images and PDFs in a normal directory** — the
 real thing, not an export — while Obsidian on your laptop and phone syncs against
 it in the background.

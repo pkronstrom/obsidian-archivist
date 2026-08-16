@@ -72,7 +72,7 @@ Flags beat the environment: the environment is the deployment's baseline, a
 flag is a deliberate override of it.
 
 ```bash
-docker build -t archivist-server .
+docker build -t archivist .
 docker run -e ARCHIVIST_TOKEN=secret -e ARCHIVIST_VAULT=/vault -e ARCHIVIST_GIT=/git \
   -v ~/knowledge/personal:/vault -v ~/archivist:/git -p 8090:8090 archivist
 ```

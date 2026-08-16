@@ -29,7 +29,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Server URL")
-			.setDesc("Base URL of your archivist-server server, e.g. https://vault.example.net")
+			.setDesc("Base URL of your Archivist server, e.g. https://vault.example.net")
 			.addText((t) =>
 				t.setPlaceholder("https://vault.example.net")
 					.setValue(this.plugin.settings.serverUrl)
