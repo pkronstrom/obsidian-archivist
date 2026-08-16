@@ -14,7 +14,7 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
-	"github.com/pkronstrom/obsidian-archivist/internal/version"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 const token = "test-token"
@@ -175,7 +175,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
-	w := do(t, h, "POST", "/v1/push", pushRequest{
+	w := do(t, h, "POST", "/v1/push", protocol.PushRequest{
 		Base:   "",
 		Device: "mac",
 		Changes: []reconcile.Change{
@@ -185,7 +185,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("push = %d: %s", w.Code, w.Body)
 	}
-	var pr pushResponse
+	var pr protocol.PushResponse
 	json.Unmarshal(w.Body.Bytes(), &pr)
 	if pr.Head == "" {
 		t.Fatal("push returned no head")
@@ -195,7 +195,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	}
 
 	w = do(t, h, "GET", "/v1/snapshot", nil, true)
-	var snap snapshotResponse
+	var snap protocol.SnapshotResponse
 	json.Unmarshal(w.Body.Bytes(), &snap)
 	if _, ok := snap.Files["notes/a.md"]; !ok {
 		t.Errorf("snapshot = %+v, want notes/a.md", snap.Files)
@@ -205,7 +205,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	}
 
 	w = do(t, h, "GET", "/v1/changes?since=", nil, true)
-	var ch changesResponse
+	var ch protocol.ChangesResponse
 	json.Unmarshal(w.Body.Bytes(), &ch)
 	if len(ch.Entries) != 1 || ch.Entries[0].Path != "notes/a.md" {
 		t.Errorf("changes = %+v", ch.Entries)
@@ -214,7 +214,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 
 func TestPushWithBadPathIs400NotPanic(t *testing.T) {
 	h, _, _ := newServer(t)
-	w := do(t, h, "POST", "/v1/push", pushRequest{
+	w := do(t, h, "POST", "/v1/push", protocol.PushRequest{
 		Device:  "mac",
 		Changes: []reconcile.Change{{Path: "../escape.md", Op: "put", Hash: "x"}},
 	}, true)
@@ -404,14 +404,14 @@ func putContent(t *testing.T, h http.Handler, hash string, content []byte) {
 
 func pushOne(t *testing.T, h http.Handler, base, path, hash string) string {
 	t.Helper()
-	w := do(t, h, "POST", "/v1/push", pushRequest{
+	w := do(t, h, "POST", "/v1/push", protocol.PushRequest{
 		Base: base, Device: "test",
 		Changes: []reconcile.Change{{Path: path, Op: "put", Hash: hash}},
 	}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("push: %d %s", w.Code, w.Body)
 	}
-	var pr pushResponse
+	var pr protocol.PushResponse
 	json.Unmarshal(w.Body.Bytes(), &pr)
 	return pr.Head
 }
@@ -462,8 +462,8 @@ func TestIndexAndHealthzReportTheProtocol(t *testing.T) {
 			Version  string `json:"version"`
 		}
 		json.Unmarshal(w.Body.Bytes(), &got)
-		if got.Protocol != version.Protocol {
-			t.Errorf("%s protocol = %d, want %d", path, got.Protocol, version.Protocol)
+		if got.Protocol != protocol.Version {
+			t.Errorf("%s protocol = %d, want %d", path, got.Protocol, protocol.Version)
 		}
 		if got.Version == "" {
 			t.Errorf("%s reports no version", path)
@@ -487,7 +487,7 @@ func TestEmptyTokenIsRefusedRatherThanServingAnOpenVault(t *testing.T) {
 
 func TestOversizedUploadIs413NotASilentTruncation(t *testing.T) {
 	h, _, _ := newServer(t)
-	big := bytes.Repeat([]byte("x"), maxUpload+64)
+	big := bytes.Repeat([]byte("x"), protocol.MaxUploadBytes+64)
 	req := httptest.NewRequest("PUT", "/v1/content/"+strings.Repeat("a", 40), bytes.NewReader(big))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()

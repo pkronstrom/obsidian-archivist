@@ -35,6 +35,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 // ErrUnknownBase means the client's cursor is not a commit we know: it is from
@@ -44,37 +45,23 @@ var ErrUnknownBase = errors.New("repo: unknown base commit")
 
 func IsUnknownBase(err error) bool { return errors.Is(err, ErrUnknownBase) }
 
-// Entry is one file in a snapshot.
-type Entry struct {
-	Hash string `json:"hash"`
-	Size int64  `json:"size"`
-}
+// Entry and Change are the wire types. Aliased rather than redefined so there
+// is exactly one definition of each shape in the codebase -- repo, reconcile
+// and api previously carried near-identical copies that could drift.
+type Entry = protocol.Entry
 
-// Change is one path-level difference between two commits.
-//
-// Ext and Kind exist so a consumer can triage without fetching anything. This
-// is the SAME shape the event stream carries, deliberately: the stream says
-// when, this says what, and an agent must be able to use one interchangeably
-// with the other.
-type Change struct {
-	Path string `json:"path"`
-	Op   string `json:"op"`   // "put" or "del"
-	Hash string `json:"hash"` // empty for "del"
-	Size int64  `json:"size"`
-	Ext  string `json:"ext"`  // lowercase, no dot
-	Kind string `json:"kind"` // "text" or "binary", sniffed from content
-}
+type Change = protocol.Change
 
 // describe fills in Ext and Kind. Kind is sniffed from the bytes rather than
 // guessed from the name, so an agent can trust it to decide what it can read.
 func (r *Repo) describe(c Change) Change {
 	c.Ext = strings.ToLower(strings.TrimPrefix(path.Ext(c.Path), "."))
-	c.Kind = "text"
-	if c.Op == "del" {
+	c.Kind = protocol.KindText
+	if c.Op == protocol.OpDel {
 		return c
 	}
 	if content, err := r.ReadBlob(c.Hash); err == nil && isBinary(content) {
-		c.Kind = "binary"
+		c.Kind = protocol.KindBinary
 	}
 	return c
 }
@@ -208,7 +195,7 @@ func (r *Repo) Snapshot(rev string) (map[string]Entry, error) {
 		return out, err
 	}
 	err = t.Files().ForEach(func(f *object.File) error {
-		out[f.Name] = Entry{Hash: f.Hash.String(), Size: f.Size}
+		out[f.Name] = protocol.Entry{Hash: f.Hash.String(), Size: f.Size}
 		return nil
 	})
 	return out, err
@@ -242,14 +229,14 @@ func (r *Repo) Changes(from, to string) ([]Change, error) {
 		}
 		switch action.String() {
 		case "Delete":
-			out = append(out, Change{Path: ch.From.Name, Op: "del"})
+			out = append(out, protocol.Change{Path: ch.From.Name, Op: protocol.OpDel})
 		default: // Insert, Modify
 			name := ch.To.Name
 			_, toFile, err := ch.Files()
 			if err != nil {
 				return nil, err
 			}
-			c := Change{Path: name, Op: "put"}
+			c := protocol.Change{Path: name, Op: protocol.OpPut}
 			if toFile != nil {
 				c.Hash = toFile.Hash.String()
 				c.Size = toFile.Size

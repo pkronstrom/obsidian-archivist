@@ -20,11 +20,11 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/internal/version"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 // maxUpload bounds a single content upload. Generous for an attachment,
 // bounded enough that a broken client cannot exhaust memory.
-const maxUpload = 512 << 20 // 512 MiB
 
 type Server struct {
 	rc    *reconcile.Reconciler
@@ -69,78 +69,45 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		got := []byte(r.Header.Get("Authorization"))
 		if subtle.ConstantTimeCompare(got, want) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist"`)
-			httpError(w, http.StatusUnauthorized, "unauthorized")
+			fail(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// ---- responses -------------------------------------------------------------
-
-type headResponse struct {
-	Head string `json:"head"`
-}
-
-type snapshotResponse struct {
-	Head  string                `json:"head"`
-	Files map[string]repo.Entry `json:"files"`
-}
-
-type changesResponse struct {
-	Head    string        `json:"head"`
-	Entries []repo.Change `json:"entries"`
-}
-
-type haveRequest struct {
-	Hashes []string `json:"hashes"`
-}
-
-type haveResponse struct {
-	Missing []string `json:"missing"`
-}
-
-type pushRequest struct {
-	Base    string             `json:"base"`
-	Device  string             `json:"device"`
-	Changes []reconcile.Change `json:"changes"`
-}
-
-type pushResponse struct {
-	Head    string             `json:"head"`
-	Results []reconcile.Result `json:"results"`
-}
+// Wire types live in the protocol package.
 
 // ---- handlers --------------------------------------------------------------
 
 func (s *Server) head(w http.ResponseWriter, r *http.Request) {
 	h, err := s.repo.Head()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, headResponse{Head: h})
+	writeJSON(w, protocol.HeadResponse{Head: h})
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	h, err := s.repo.Head()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	files, err := s.repo.Snapshot(h)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, snapshotResponse{Head: h, Files: files})
+	writeJSON(w, protocol.SnapshotResponse{Head: h, Files: files})
 }
 
 func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 	since := r.URL.Query().Get("since")
 	h, err := s.repo.Head()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	entries, err := s.repo.Changes(since, h)
@@ -149,22 +116,22 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 		// rewrite. 409 tells the client to re-bootstrap from /snapshot; a 500
 		// would suggest the server was at fault and invite a retry loop.
 		if repo.IsUnknownBase(err) {
-			httpError(w, http.StatusConflict, "unknown base; re-bootstrap from /v1/snapshot")
+			fail(w, http.StatusConflict, protocol.CodeUnknownBase, "unknown base; re-bootstrap from /v1/snapshot")
 			return
 		}
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	if entries == nil {
 		entries = []repo.Change{}
 	}
-	writeJSON(w, changesResponse{Head: h, Entries: entries})
+	writeJSON(w, protocol.ChangesResponse{Head: h, Entries: entries})
 }
 
 func (s *Server) have(w http.ResponseWriter, r *http.Request) {
-	var req haveRequest
+	var req protocol.HaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
 	missing := []string{}
@@ -173,23 +140,23 @@ func (s *Server) have(w http.ResponseWriter, r *http.Request) {
 			missing = append(missing, h)
 		}
 	}
-	writeJSON(w, haveResponse{Missing: missing})
+	writeJSON(w, protocol.HaveResponse{Missing: missing})
 }
 
 func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	claimed := r.PathValue("hash")
-	// maxUpload+1 so an oversized body is DETECTED rather than silently
+	// protocol.MaxUploadBytes+1 so an oversized body is DETECTED rather than silently
 	// truncated. LimitReader alone would hash the first 512 MiB, and a client
 	// whose claimed hash happened to match that prefix would get a 200 for a
 	// request whose tail was discarded.
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxUpload+1))
+	body, err := io.ReadAll(io.LimitReader(r.Body, protocol.MaxUploadBytes+1))
 	if err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 		return
 	}
-	if int64(len(body)) > maxUpload {
-		httpError(w, http.StatusRequestEntityTooLarge,
-			fmt.Sprintf("content exceeds the %d byte limit", maxUpload))
+	if int64(len(body)) > protocol.MaxUploadBytes {
+		fail(w, http.StatusRequestEntityTooLarge, protocol.CodeTooLarge,
+			fmt.Sprintf("content exceeds the %d byte limit", protocol.MaxUploadBytes))
 		return
 	}
 	// Verify the address before storing. A store that trusts the client's hash
@@ -197,16 +164,16 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	// idempotency, the merge base -- rests on the address being true.
 	actual, err := repo.HashContent(body)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	if !strings.EqualFold(actual, claimed) {
-		httpError(w, http.StatusBadRequest,
+		fail(w, http.StatusBadRequest, protocol.CodeHashMismatch,
 			"content hash mismatch: claimed "+claimed+", actual "+actual)
 		return
 	}
 	if _, err := s.repo.WriteBlob(body); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"hash": actual})
@@ -215,7 +182,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
 	content, err := s.repo.ReadBlob(r.PathValue("hash"))
 	if err != nil {
-		httpError(w, http.StatusNotFound, "no such object")
+		fail(w, http.StatusNotFound, protocol.CodeNotFound, "no such object")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -223,24 +190,30 @@ func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) push(w http.ResponseWriter, r *http.Request) {
-	var req pushRequest
+	var req protocol.PushRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
 	head, results, err := s.rc.Push(req.Base, req.Device, req.Changes)
 	if err != nil {
 		switch {
 		case repo.IsUnknownBase(err):
-			httpError(w, http.StatusConflict, "unknown base; re-bootstrap from /v1/snapshot")
-		case isClientFault(err):
-			httpError(w, http.StatusBadRequest, err.Error())
+			fail(w, http.StatusConflict, protocol.CodeUnknownBase, "unknown base; re-bootstrap from /v1/snapshot")
+		// Client faults get a specific code so a client can act on them
+		// rather than parsing prose.
+		case errors.Is(err, vault.ErrInvalidPath):
+			fail(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
+		case strings.Contains(err.Error(), "was never uploaded"):
+			fail(w, http.StatusBadRequest, protocol.CodeMissingContent, err.Error())
+		case strings.Contains(err.Error(), "appears twice"):
+			fail(w, http.StatusBadRequest, protocol.CodeDuplicatePath, err.Error())
 		default:
-			httpError(w, http.StatusInternalServerError, err.Error())
+			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		}
 		return
 	}
-	writeJSON(w, pushResponse{Head: head, Results: results})
+	writeJSON(w, protocol.PushResponse{Head: head, Results: results})
 }
 
 // events is a Server-Sent Events stream of commit hashes, for anything that
@@ -262,7 +235,7 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		httpError(w, http.StatusInternalServerError, "streaming unsupported")
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, "streaming unsupported")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -317,7 +290,7 @@ func writeEvent(w http.ResponseWriter, v any) {
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		httpError(w, http.StatusBadRequest, "path is required")
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "path is required")
 		return
 	}
 	limit := 50
@@ -328,7 +301,7 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	}
 	revs, err := s.repo.History(path, limit)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, map[string]any{"path": path, "revisions": revs})
@@ -340,17 +313,17 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 func (s *Server) at(w http.ResponseWriter, r *http.Request) {
 	rev, p := r.PathValue("rev"), r.PathValue("path")
 	if err := vault.ValidPath(p); err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 		return
 	}
 	resolved, err := s.repo.Resolve(rev)
 	if err != nil {
-		httpError(w, http.StatusNotFound, "unknown revision")
+		fail(w, http.StatusNotFound, protocol.CodeNotFound, "unknown revision")
 		return
 	}
 	content, err := s.repo.ReadAt(resolved, p)
 	if err != nil {
-		httpError(w, http.StatusNotFound, "no such path at that revision")
+		fail(w, http.StatusNotFound, protocol.CodeNotFound, "no such path at that revision")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -362,7 +335,7 @@ func (s *Server) at(w http.ResponseWriter, r *http.Request) {
 func (s *Server) check(w http.ResponseWriter, r *http.Request) {
 	rep, err := s.repo.Check()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, rep)
@@ -414,7 +387,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"service":  "archivist",
 		"version":  version.Version,
-		"protocol": version.Protocol,
+		"protocol": protocol.Version,
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
@@ -433,7 +406,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	// Version here as well as in /v1: a monitor without a token still wants to
 	// know what is running, and neither field is a secret.
 	writeJSON(w, map[string]any{
-		"status": "ok", "version": version.Version, "protocol": version.Protocol,
+		"status": "ok", "version": version.Version, "protocol": protocol.Version,
 	})
 }
 
@@ -452,23 +425,23 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 
 	tmp, err := os.CreateTemp("", "archivist-export-*.tar")
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
 	if err := s.rc.Freeze(func() error { return s.repo.Archive(tmp, compress) }); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	fi, err := tmp.Stat()
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 
@@ -482,20 +455,6 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, tmp)
 }
 
-// isClientFault distinguishes a bad request from a server failure. A path
-// outside the vault, or content that was never uploaded, are both the client's
-// mistakes and must not be reported as 500 -- that would hide a broken client
-// behind an apparent server bug.
-func isClientFault(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, vault.ErrInvalidPath) {
-		return true
-	}
-	return strings.Contains(err.Error(), "was never uploaded")
-}
-
 // ---- helpers ---------------------------------------------------------------
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -506,8 +465,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
-func httpError(w http.ResponseWriter, code int, msg string) {
+// fail writes the stable error envelope. Clients branch on Code; Message is for
+// humans and will be reworded. Before this, the only signal was an HTTP status
+// plus prose, so the plugin read every 409 as unknown-base -- correct only
+// while there was exactly one thing a 409 could mean.
+func fail(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(protocol.ErrorResponse{
+		Error: protocol.Error{Code: code, Message: msg},
+	})
 }

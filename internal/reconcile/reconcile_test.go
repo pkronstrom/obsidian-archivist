@@ -316,3 +316,38 @@ func TestConflictPathsAreUniquePerContent(t *testing.T) {
 		t.Error("identical content produced two different conflict paths")
 	}
 }
+
+// Every result must say what the server now holds, so a client repairing one
+// path does not have to download the whole snapshot to find out.
+func TestResultsReportTheResultingHash(t *testing.T) {
+	rc, _, r := newRec(t)
+	base, results, _ := rc.Push("", "mac", []Change{put(t, r, "a.md", "one\ntwo\nthree\n")})
+	if results[0].Hash == "" || results[0].Size == 0 {
+		t.Errorf("applied result carries no hash/size: %+v", results[0])
+	}
+
+	// Merge: the server holds bytes the client never sent.
+	rc.Push(base, "phone", []Change{put(t, r, "a.md", "one\ntwo\nTHREE\n")})
+	_, results, err := rc.Push(base, "mac", []Change{put(t, r, "a.md", "ONE\ntwo\nthree\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusMerged {
+		t.Fatalf("status = %s", results[0].Status)
+	}
+	merged, _ := repo.HashContent([]byte("ONE\ntwo\nTHREE\n"))
+	if results[0].Hash != merged {
+		t.Errorf("merged result hash = %q, want the merged content %q", results[0].Hash, merged)
+	}
+
+	// Conflict: both sides addressable.
+	base2, _ := r.Head()
+	rc.Push(base2, "phone", []Change{put(t, r, "c.md", "phone\n")})
+	_, results, _ = rc.Push(base2, "mac", []Change{put(t, r, "c.md", "mac\n")})
+	if results[0].Status != StatusConflict {
+		t.Fatalf("status = %s", results[0].Status)
+	}
+	if results[0].Hash == "" || results[0].ConflictHash == "" {
+		t.Errorf("conflict result missing a hash: %+v", results[0])
+	}
+}

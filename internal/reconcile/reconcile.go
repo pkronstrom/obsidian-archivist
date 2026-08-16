@@ -20,30 +20,21 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/merge"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
-// Statuses reported back per path.
+// Statuses and wire shapes come from the protocol package: one definition, so
+// the server and any client cannot disagree about them.
 const (
-	StatusApplied  = "applied"  // written as sent
-	StatusMerged   = "merged"   // three-way merged cleanly
-	StatusConflict = "conflict" // both versions kept, user must resolve
-	StatusRefused  = "refused"  // not applied, and why is the client's problem
+	StatusApplied  = protocol.StatusApplied
+	StatusMerged   = protocol.StatusMerged
+	StatusConflict = protocol.StatusConflict
+	StatusRefused  = protocol.StatusRefused
 )
 
-// Change is one path-level operation from a client.
-type Change struct {
-	Path string `json:"path"`
-	Op   string `json:"op"`   // "put" or "del"
-	Hash string `json:"hash"` // git object hash of content already uploaded
-}
+type Change = protocol.Change
 
-// Result is what happened to one Change.
-type Result struct {
-	Path         string `json:"path"`
-	Status       string `json:"status"`
-	ConflictPath string `json:"conflictPath,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-}
+type Result = protocol.Result
 
 type Reconciler struct {
 	// mu serialises the two ingress paths. Both mutate the working tree and
@@ -227,6 +218,7 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 				ch.Hash, ch.Path, err)
 		}
 		if !moved[ch.Path] {
+			res = rc.resultFor(res, content)
 			return res, rc.write(ch.Path, content)
 		}
 		return rc.resolve(base, device, ch.Path, content)
@@ -246,6 +238,7 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 		// The server deleted it while the client edited it. Keep the edit --
 		// content is recoverable, an absence is not.
 		res.Status = StatusApplied
+		res = rc.resultFor(res, theirs)
 		return res, rc.write(path, theirs)
 	}
 
@@ -270,6 +263,7 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 		return rc.keepBoth(device, path, theirs)
 	}
 	res.Status = StatusMerged
+	res = rc.resultFor(res, merged)
 	return res, rc.write(path, merged)
 }
 
@@ -280,6 +274,15 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 func (rc *Reconciler) keepBoth(device, path string, theirs []byte) (Result, error) {
 	cp := conflictPath(path, device, theirs)
 	res := Result{Path: path, Status: StatusConflict, ConflictPath: cp}
+	// Both hashes: what the server kept at the real path, and where the
+	// client's version went. A client can then repair itself with two content
+	// fetches rather than a whole-snapshot download.
+	if ours, err := rc.v.Read(path); err == nil {
+		res = rc.resultFor(res, ours)
+	}
+	if h, err := repo.HashContent(theirs); err == nil {
+		res.ConflictHash = h
+	}
 	return res, rc.write(cp, theirs)
 }
 
@@ -289,6 +292,18 @@ func (rc *Reconciler) write(path string, content []byte) error {
 	}
 	rc.noteWrite(path, content)
 	return nil
+}
+
+// resultFor fills in what the server now holds at a path. Without it a client
+// that got StatusMerged knows only that its bytes were not kept -- not what
+// replaced them -- and must fetch the whole snapshot to repair one file.
+func (rc *Reconciler) resultFor(res Result, content []byte) Result {
+	h, err := repo.HashContent(content)
+	if err == nil {
+		res.Hash = h
+	}
+	res.Size = int64(len(content))
+	return res
 }
 
 // conflictPath keeps the original extension so editors still recognise the

@@ -2,28 +2,20 @@ package repo
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 // Revision is one point in a file's history.
-type Revision struct {
-	Commit  string    `json:"commit"`
-	Short   string    `json:"short"`
-	When    time.Time `json:"when"`
-	Message string    `json:"message"`
-	Size    int64     `json:"size"`
-	Hash    string    `json:"hash"`
-	Deleted bool      `json:"deleted,omitempty"`
-}
+type Revision = protocol.Revision
 
 // History lists the revisions in which a path changed, newest first.
 //
 // Only commits that actually touched the path are returned -- a vault commits
 // on every edit anywhere, so an unfiltered log would be almost entirely noise.
-func (r *Repo) History(path string, limit int) ([]Revision, error) {
+func (r *Repo) History(path string, limit int) ([]protocol.Revision, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -33,12 +25,12 @@ func (r *Repo) History(path string, limit int) ([]Revision, error) {
 	}
 	defer iter.Close()
 
-	out := []Revision{}
+	out := []protocol.Revision{}
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(out) >= limit {
 			return object.ErrCanceled
 		}
-		rev := Revision{
+		rev := protocol.Revision{
 			Commit:  c.Hash.String(),
 			Short:   c.Hash.String()[:8],
 			When:    c.Author.When,
@@ -70,14 +62,7 @@ func firstLine(s string) string {
 }
 
 // CheckReport is the result of a consistency check.
-type CheckReport struct {
-	Head      string   `json:"head"`
-	Files     int      `json:"files"`
-	Missing   []string `json:"missing,omitempty"`   // in git, absent on disk
-	Extra     []string `json:"extra,omitempty"`     // on disk, not in git
-	Differing []string `json:"differing,omitempty"` // present in both, different content
-	OK        bool     `json:"ok"`
-}
+type CheckReport = protocol.CheckResponse
 
 // Check compares the working tree against HEAD.
 //
@@ -86,12 +71,12 @@ type CheckReport struct {
 // the process was stopped and never scanned. Extra and Differing are usually
 // benign and resolve on the next commit; Missing is the one to look at, because
 // it means git holds a file the vault does not.
-func (r *Repo) Check() (*CheckReport, error) {
+func (r *Repo) Check() (*protocol.CheckResponse, error) {
 	head, err := r.Head()
 	if err != nil {
 		return nil, err
 	}
-	rep := &CheckReport{Head: head}
+	rep := &protocol.CheckResponse{Head: head}
 
 	tracked, err := r.Snapshot(head)
 	if err != nil {

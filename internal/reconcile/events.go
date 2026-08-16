@@ -3,52 +3,16 @@ package reconcile
 import (
 	"sync"
 	"time"
+
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
-// maxInlineChanges bounds what a single event carries. A bulk import can touch
-// thousands of paths, and an event that large is useless to a consumer and
-// expensive to fan out. Past this the event says how many there were and the
-// consumer reads /v1/changes, which is the durable path anyway.
-const maxInlineChanges = 100
-
-// ChangedFile is one path in an event, with enough metadata to triage on
-// without a round-trip: is it a note or an attachment, how big, did it appear
-// or vanish.
-type ChangedFile struct {
-	Path string `json:"path"`
-	Op   string `json:"op"`   // "put" or "del"
-	Ext  string `json:"ext"`  // "md", "pdf", "" -- lowercase, no dot
-	Kind string `json:"kind"` // "text" or "binary"
-	Size int64  `json:"size"`
-	Hash string `json:"hash"`
-}
-
-// Event is one commit.
-type Event struct {
-	Head      string        `json:"head"`
-	Prev      string        `json:"prev"`
-	When      time.Time     `json:"when"`
-	Count     int           `json:"count"`
-	Truncated bool          `json:"truncated,omitempty"`
-	Changes   []ChangedFile `json:"changes"`
-}
-
-// Change notification.
-//
-// The DURABLE feed is already /v1/changes?since=<cursor>: git history is an
-// append-only log, so a consumer that stores a cursor can always ask what it
-// missed, however long it was away. That is the part worth relying on.
-//
-// What history cannot provide is latency -- a poller waits for its next tick.
-// So this carries a notification and nothing else: "head moved to X". It is
-// deliberately lossy. A consumer that misses one still reconciles correctly
-// from its cursor, which means there is no delivery guarantee to implement, no
-// queue to persist, and no backlog to manage.
-//
-// Notify, do not deliver.
+// Events carry protocol types directly: a duplicate ChangedFile here could
+// drift from the one /v1/changes returns, and the whole point is that a
+// consumer can use the two interchangeably.
 
 type subscriber struct {
-	ch chan Event
+	ch chan protocol.Event
 }
 
 type broadcaster struct {
@@ -61,8 +25,8 @@ func newBroadcaster() *broadcaster {
 }
 
 // Subscribe returns a channel of commit hashes and a function to stop.
-func (rc *Reconciler) Subscribe() (<-chan Event, func()) {
-	s := &subscriber{ch: make(chan Event, 8)}
+func (rc *Reconciler) Subscribe() (<-chan protocol.Event, func()) {
+	s := &subscriber{ch: make(chan protocol.Event, 8)}
 	rc.events.mu.Lock()
 	rc.events.subs[s] = struct{}{}
 	rc.events.mu.Unlock()
@@ -116,21 +80,19 @@ func (rc *Reconciler) notify(prev, head string) {
 	}
 }
 
-func (rc *Reconciler) buildEvent(prev, head string) Event {
-	ev := Event{Head: head, Prev: prev, When: time.Now().UTC(), Changes: []ChangedFile{}}
+func (rc *Reconciler) buildEvent(prev, head string) protocol.Event {
+	ev := protocol.Event{Head: head, Prev: prev, When: time.Now().UTC(), Changes: []protocol.Change{}}
 	changes, err := rc.r.Changes(prev, head)
 	if err != nil {
 		return ev
 	}
 	ev.Count = len(changes)
 	for i, c := range changes {
-		if i >= maxInlineChanges {
+		if i >= protocol.MaxInlineChanges {
 			ev.Truncated = true
 			break
 		}
-		ev.Changes = append(ev.Changes, ChangedFile{
-			Path: c.Path, Op: c.Op, Ext: c.Ext, Kind: c.Kind, Size: c.Size, Hash: c.Hash,
-		})
+		ev.Changes = append(ev.Changes, c)
 	}
 	return ev
 }

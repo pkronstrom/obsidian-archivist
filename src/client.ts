@@ -5,15 +5,46 @@ export type Change = { path: string; op: "put" | "del"; hash?: string; size?: nu
 export type Result = {
 	path: string;
 	status: "applied" | "merged" | "conflict" | "refused";
+	/** What the server now holds at `path`. For "merged" this is the merged
+	 *  content, which is NOT what we sent. */
+	hash?: string;
+	size?: number;
 	conflictPath?: string;
+	conflictHash?: string;
 	reason?: string;
 };
 
+/** Stable error codes from the server. Branch on these, never on the message:
+ *  messages are for humans and get reworded. */
+export const Code = {
+	Unauthorized: "unauthorized",
+	UnknownBase: "unknown_base",
+	InvalidPath: "invalid_path",
+	MissingContent: "missing_content",
+	HashMismatch: "hash_mismatch",
+	TooLarge: "too_large",
+	Malformed: "malformed",
+	NotFound: "not_found",
+	DuplicatePath: "duplicate_path",
+	Internal: "internal",
+} as const;
+
+/** An error carrying the server's stable code. */
+export class ServerError extends Error {
+	constructor(
+		readonly code: string,
+		message: string,
+		readonly status: number,
+	) {
+		super(message);
+	}
+}
+
 /** Thrown when the server does not recognise our cursor. The only recovery is
  *  to re-bootstrap from /snapshot -- never a retry. */
-export class UnknownBaseError extends Error {
-	constructor() {
-		super("server does not recognise our base; re-bootstrap required");
+export class UnknownBaseError extends ServerError {
+	constructor(message = "server does not recognise our base; re-bootstrap required") {
+		super(Code.UnknownBase, message, 409);
 	}
 }
 
@@ -46,12 +77,25 @@ export class Client {
 			body: binary ?? (body !== undefined ? JSON.stringify(body) : undefined),
 			throw: false,
 		});
-		if (res.status === 401) throw new Error("unauthorized: check the token");
-		if (res.status === 409) throw new UnknownBaseError();
-		if (res.status >= 400) {
-			throw new Error(`${method} ${path} -> ${res.status}: ${res.text.slice(0, 200)}`);
-		}
-		return res;
+		if (res.status < 400) return res;
+
+		// Prefer the server's code over the status. A 409 used to be assumed to
+		// mean unknown-base, which was only ever true because there was exactly
+		// one thing a 409 could mean -- a fragile assumption to leave in a
+		// client that outlives the server it was written against.
+		const code: string | undefined = res.json?.error?.code;
+		const message: string = res.json?.error?.message ?? res.text.slice(0, 200);
+
+		if (code === Code.UnknownBase) throw new UnknownBaseError(message);
+		if (code) throw new ServerError(code, message, res.status);
+
+		// No envelope: an older server, or something in front of it.
+		if (res.status === 409) throw new UnknownBaseError(message);
+		throw new ServerError(
+			res.status === 401 ? Code.Unauthorized : Code.Internal,
+			`${method} ${path} -> ${res.status}: ${message}`,
+			res.status,
+		);
 	}
 
 	async head(): Promise<string> {

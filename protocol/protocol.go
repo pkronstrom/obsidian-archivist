@@ -1,0 +1,204 @@
+// Package protocol is the wire contract between an Archivist server and any
+// client: the Obsidian plugin, the relay, or something someone else writes.
+//
+// It is a leaf package with no dependencies, deliberately. Every type here is
+// serialised over HTTP, so a change to it is a change to the contract, and
+// keeping it in one file with no imports makes that obvious.
+//
+// The rule for clients: branch on Code, never on message text. Messages are for
+// humans and will be reworded.
+package protocol
+
+import "time"
+
+// Version is the wire contract. It moves ONLY when a client must change --
+// a removed field, a changed meaning, a new required parameter. Adding an
+// optional field does not count, because clients ignore what they do not know.
+//
+//	1  head, snapshot, changes, have, content, push, events, history, at,
+//	   check, export. changes and events share one Change shape.
+const Version = 1
+
+// Operations.
+const (
+	OpPut = "put"
+	OpDel = "del"
+)
+
+// File kinds. Kind is sniffed from content, never guessed from the extension,
+// so a client can trust it when deciding what it is able to read.
+const (
+	KindText   = "text"
+	KindBinary = "binary"
+)
+
+// Per-path outcomes of a push.
+//
+// Only StatusApplied means the server now holds exactly the bytes that were
+// sent. Merged means it holds a three-way merge; Conflict means it kept its own
+// and parked the client's copy; Refused means it did nothing. A client that
+// records its own hash for anything but Applied ends up silently diverged.
+const (
+	StatusApplied  = "applied"
+	StatusMerged   = "merged"
+	StatusConflict = "conflict"
+	StatusRefused  = "refused"
+)
+
+// Error codes. Stable identifiers; the accompanying message is not.
+const (
+	CodeUnauthorized   = "unauthorized"
+	CodeUnknownBase    = "unknown_base"    // re-bootstrap from /v1/snapshot
+	CodeInvalidPath    = "invalid_path"    // not local to the vault
+	CodeMissingContent = "missing_content" // referenced but never uploaded
+	CodeHashMismatch   = "hash_mismatch"   // body does not hash to the address
+	CodeTooLarge       = "too_large"       // beyond MaxUploadBytes
+	CodeMalformed      = "malformed"       // unparseable request
+	CodeNotFound       = "not_found"       // no such object, path or revision
+	CodeDuplicatePath  = "duplicate_path"  // one path named twice in a push
+	CodeInternal       = "internal"        // the server's fault
+)
+
+// MaxUploadBytes bounds a single content upload. Beyond it the server answers
+// 413 rather than truncating.
+const MaxUploadBytes = 512 << 20
+
+// MaxInlineChanges bounds how many paths one event carries. Past it the event
+// is marked Truncated and the consumer reads /v1/changes instead.
+const MaxInlineChanges = 100
+
+// Entry is one file in a snapshot. The map key is the path, so there is no
+// Path field here.
+type Entry struct {
+	Hash string `json:"hash"`
+	Size int64  `json:"size"`
+}
+
+// Change is one path-level difference, used identically by /v1/changes and the
+// event stream. That is deliberate: a consumer uses the stream to learn WHEN
+// and /v1/changes to learn WHAT, so the two must be interchangeable.
+type Change struct {
+	Path string `json:"path"`
+	Op   string `json:"op"`
+	Hash string `json:"hash,omitempty"` // absent for OpDel
+	Size int64  `json:"size"`
+	Ext  string `json:"ext"`  // lowercase, no leading dot
+	Kind string `json:"kind"` // KindText or KindBinary
+}
+
+// Result is what happened to one pushed change.
+type Result struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
+	// Hash is what the server now holds at Path. For StatusMerged it is the
+	// merged content, which is NOT what the client sent -- without it a client
+	// must fetch the whole snapshot to repair a single path.
+	Hash         string `json:"hash,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	ConflictPath string `json:"conflictPath,omitempty"`
+	ConflictHash string `json:"conflictHash,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+// Event is one commit, pushed over /v1/events.
+type Event struct {
+	Head      string    `json:"head"`
+	Prev      string    `json:"prev,omitempty"`
+	When      time.Time `json:"when,omitempty"`
+	Count     int       `json:"count"`
+	Truncated bool      `json:"truncated,omitempty"`
+	Changes   []Change  `json:"changes"`
+}
+
+// Revision is one point in a path's history.
+type Revision struct {
+	Commit  string    `json:"commit"`
+	Short   string    `json:"short"`
+	When    time.Time `json:"when"`
+	Message string    `json:"message"`
+	Size    int64     `json:"size"`
+	Hash    string    `json:"hash"`
+	Deleted bool      `json:"deleted,omitempty"`
+}
+
+// ---- requests and responses ------------------------------------------------
+
+type HeadResponse struct {
+	Head string `json:"head"`
+}
+
+type SnapshotResponse struct {
+	Head  string           `json:"head"`
+	Files map[string]Entry `json:"files"`
+}
+
+type ChangesResponse struct {
+	Head    string   `json:"head"`
+	Entries []Change `json:"entries"`
+}
+
+type HaveRequest struct {
+	Hashes []string `json:"hashes"`
+}
+
+type HaveResponse struct {
+	Missing []string `json:"missing"`
+}
+
+type PushRequest struct {
+	// Base is the commit this change set was computed against. Required: an
+	// empty Base means "no common ancestor", which makes every existing path
+	// look concurrently changed and forbids deletion.
+	Base    string   `json:"base"`
+	Device  string   `json:"device"`
+	Changes []Change `json:"changes"`
+}
+
+type PushResponse struct {
+	Head    string   `json:"head"`
+	Results []Result `json:"results"`
+}
+
+type HistoryResponse struct {
+	Path      string     `json:"path"`
+	Revisions []Revision `json:"revisions"`
+}
+
+type CheckResponse struct {
+	Head      string   `json:"head"`
+	Files     int      `json:"files"`
+	Missing   []string `json:"missing,omitempty"`
+	Extra     []string `json:"extra,omitempty"`
+	Differing []string `json:"differing,omitempty"`
+	OK        bool     `json:"ok"`
+}
+
+type IndexResponse struct {
+	Service   string     `json:"service"`
+	Version   string     `json:"version"`  // build, changes constantly
+	Protocol  int        `json:"protocol"` // contract, changes rarely -- check this
+	Notes     []string   `json:"notes,omitempty"`
+	Endpoints []Endpoint `json:"endpoints"`
+}
+
+type Endpoint struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Does   string `json:"does"`
+}
+
+type HealthResponse struct {
+	Status   string `json:"status"`
+	Version  string `json:"version"`
+	Protocol int    `json:"protocol"`
+}
+
+// Error is the body of every non-2xx response.
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type ErrorResponse struct {
+	Error Error `json:"error"`
+}

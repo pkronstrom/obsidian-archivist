@@ -156,22 +156,28 @@ export class Sync {
 			// believes: the diff sees no local change, the cursor is already
 			// past the commit, and the device sits permanently diverged showing
 			// stale content with no error anywhere. Re-fetch instead.
-			const byPath = new Map(results.map((r) => [r.path, r.status]));
-			const needsRefetch: string[] = [];
+			const byPath = new Map(results.map((r) => [r.path, r]));
+			const needsRefetch: { path: string; hash: string; size: number }[] = [];
 			for (const c of local) {
-				const status = byPath.get(c.path);
-				if (status !== "applied") {
-					needsRefetch.push(c.path);
+				const r = byPath.get(c.path);
+				if (r?.status === "applied") {
+					if (c.op === "del") delete state.files[c.path];
+					else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
 					continue;
 				}
-				if (c.op === "del") delete state.files[c.path];
-				else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
+				// Anything else means the server holds bytes we do not have. It
+				// tells us their hash, so one content fetch per path repairs
+				// this -- previously it cost a whole-snapshot download to find
+				// out what to fetch.
+				if (r?.hash) needsRefetch.push({ path: c.path, hash: r.hash, size: r.size ?? 0 });
 			}
 			for (const r of results) {
-				if (r.conflictPath) needsRefetch.push(r.conflictPath);
+				if (r.conflictPath && r.conflictHash) {
+					needsRefetch.push({ path: r.conflictPath, hash: r.conflictHash, size: 0 });
+				}
 			}
-			if (needsRefetch.length > 0) {
-				await this.adoptFromServer(state, needsRefetch);
+			for (const f of needsRefetch) {
+				state.files[f.path] = await this.materialise(f.path, f.hash, f.size);
 			}
 		}
 
@@ -248,37 +254,6 @@ export class Sync {
 			mtime: st?.mtime ?? Date.now(),
 			size: st?.size ?? fallbackSize ?? content.byteLength,
 		};
-	}
-
-	/**
-	 * adoptFromServer brings this device in line for paths where the server
-	 * ended up with content we do not have: a merge it computed, a version it
-	 * kept over ours, or a conflict file it created.
-	 *
-	 * These are fetched now rather than on the next pull, because the push
-	 * already advanced our cursor past the commit that produced them -- an
-	 * ordinary pull would never mention them again.
-	 *
-	 * Nothing of ours is lost: a conflict keeps our version in the side file.
-	 */
-	private async adoptFromServer(state: SyncState, paths: string[]): Promise<void> {
-		const { files } = await this.client().snapshot();
-		for (const path of new Set(paths)) {
-			const entry = files[path];
-			if (!entry) {
-				// The server has no such path -- it deleted it, or the conflict
-				// file was named differently. Drop our record and let the next
-				// cycle work it out from a clean diff.
-				delete state.files[path];
-				continue;
-			}
-			const cur = await this.readState(path);
-			if (cur && cur.hash === entry.hash) {
-				state.files[path] = cur;
-				continue;
-			}
-			state.files[path] = await this.materialise(path, entry.hash, entry.size);
-		}
 	}
 
 	/**
