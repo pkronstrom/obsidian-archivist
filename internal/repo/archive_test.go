@@ -12,6 +12,27 @@ import (
 	"testing"
 )
 
+// Two archives of an unchanged repository must be byte-identical, or every
+// backup snapshot stores a fresh copy instead of deduplicating against the
+// last one.
+func TestUncompressedArchiveIsReproducible(t *testing.T) {
+	r, v, _ := newRepo(t)
+	v.Write("a.md", []byte("one\n"))
+	if _, err := r.Commit("first"); err != nil {
+		t.Fatal(err)
+	}
+	var a, b bytes.Buffer
+	if err := r.Archive(&a, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Archive(&b, false); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a.Bytes(), b.Bytes()) {
+		t.Errorf("archives differ: %d vs %d bytes", a.Len(), b.Len())
+	}
+}
+
 func TestArchiveRestoresToAWorkingRepository(t *testing.T) {
 	r, v, _ := newRepo(t)
 	v.Write("a.md", []byte("one\n"))
@@ -23,7 +44,7 @@ func TestArchiveRestoresToAWorkingRepository(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := r.Archive(&buf); err != nil {
+	if err := r.Archive(&buf, true); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	if buf.Len() == 0 {

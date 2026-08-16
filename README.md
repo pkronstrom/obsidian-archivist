@@ -120,8 +120,22 @@ taken under the identical workload restored `fsck`-clean.**
 
 ```bash
 curl -sf -H "Authorization: Bearer $TOKEN" https://vault.example.net/v1/export \
-  | restic backup --stdin --stdin-filename vault-personal.tar.gz
+  | restic backup --stdin --stdin-filename vault-personal.tar
 ```
+
+**The export is uncompressed on purpose.** Compressing before a
+deduplicating backup tool defeats it: a single deflate stream re-randomises
+everything after the first changed byte, so nothing matches the previous
+snapshot. Measured with restic 0.16.4, repository v2, two snapshots one small
+edit apart:
+
+| Format | Two snapshots cost |
+| --- | --- |
+| plain tar | **1.09×** — the second is a 9% delta |
+| tar.gz | **2.00×** — the second is a full copy |
+
+Thirty daily snapshots would be thirty full copies. restic compresses
+repository-side anyway. Add `?gzip=1` only when piping somewhere that will not.
 
 Restore with `tar xzf` into an empty directory and point `--git-dir` at it; the
 working tree rebuilds from `git checkout` or simply by starting vaultsync

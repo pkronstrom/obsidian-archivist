@@ -229,7 +229,11 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 // with the lock released -- otherwise a slow client would block every write for
 // the duration of the transfer.
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
-	tmp, err := os.CreateTemp("", "vaultsync-export-*.tar.gz")
+	// Uncompressed by default: gzip here would cost a full copy per backup
+	// snapshot rather than a delta. See repo.Archive.
+	compress := r.URL.Query().Get("gzip") == "1"
+
+	tmp, err := os.CreateTemp("", "vaultsync-export-*.tar")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -237,7 +241,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := s.rc.Freeze(func() error { return s.repo.Archive(tmp) }); err != nil {
+	if err := s.rc.Freeze(func() error { return s.repo.Archive(tmp, compress) }); err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -251,9 +255,13 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/gzip")
+	name, ctype := "vaultsync-git.tar", "application/x-tar"
+	if compress {
+		name, ctype = "vaultsync-git.tar.gz", "application/gzip"
+	}
+	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-	w.Header().Set("Content-Disposition", `attachment; filename="vaultsync-git.tar.gz"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	io.Copy(w, tmp)
 }
 
