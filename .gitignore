@@ -1,0 +1,5 @@
+node_modules/
+main.js
+dist-test/
+*.js.map
+data.json

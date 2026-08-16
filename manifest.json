@@ -1,0 +1,10 @@
+{
+  "id": "vaultsync",
+  "name": "vaultsync",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.7",
+  "description": "Sync your vault with a self-hosted vaultsync server.",
+  "author": "pkronstrom",
+  "authorUrl": "https://github.com/pkronstrom",
+  "isDesktopOnly": false
+}
