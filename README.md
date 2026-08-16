@@ -29,6 +29,76 @@ nothing to adapt — they are just files.
 Every change is committed to git, so you get history and point-in-time restore
 for free, and can recover a note you mangled three weeks ago.
 
+## How it flows
+
+```mermaid
+flowchart TB
+    subgraph devices ["Your devices"]
+        mac["Obsidian<br/>laptop"]
+        phone["Obsidian<br/>phone"]
+    end
+
+    subgraph server ["Your server"]
+        vs{{"vaultsync<br/><i>8 MB, one binary</i>"}}
+        vault[("~/knowledge/personal<br/><b>plain .md, .pdf, .png</b>")]
+        git[("git history<br/><i>outside the vault</i>")]
+    end
+
+    subgraph consumers ["Everything else, no adapter needed"]
+        web["Web viewer"]
+        agent["AI agent<br/>MCP tools"]
+        cli["grep, scripts,<br/>cron"]
+        backup["restic"]
+    end
+
+    mac <-->|"sync on save<br/>merged, not overwritten"| vs
+    phone <-->|"sync on focus"| vs
+    vs -->|"writes atomically"| vault
+    vs -->|"commits every change"| git
+
+    vault <-->|"ordinary file I/O"| web
+    vault <-->|"ordinary file I/O"| agent
+    vault <-->|"ordinary file I/O"| cli
+    vs -.->|"/v1/events<br/><i>something changed</i>"| agent
+    vs -.->|"/v1/export"| backup
+
+    classDef store fill:#eef,stroke:#88a
+    classDef core fill:#ffe,stroke:#aa6
+    class vault,git store
+    class vs core
+```
+
+The dotted lines are optional. The solid line from the vault to everything else
+is the point: those tools are reading files, not calling an API.
+
+## What this is good for
+
+**Capture anywhere, file it later.** Jot into a capture app on your phone; a
+small job on the server writes the keepers into `Inbox/` as Markdown. Your
+laptop has them the next time you open Obsidian.
+
+**Let an AI agent actually use your notes.** An agent on the server reads and
+writes the vault as files — no API client, no export, no sync SDK. It can answer
+"what did I decide about X in 2019" by grepping, and file its own notes back
+into the vault where you will see them on your phone.
+
+**React to changes.** Subscribe to `/v1/events`, and when a note changes,
+re-embed it, update an index, run a linter, post to a channel. The cursor in
+`/v1/changes` means a consumer that was down for a week catches up correctly.
+
+**Read your notes on the web** without another sync system. Point any viewer at
+the directory. Read-only is safest, since server-side edits cannot be merged.
+
+**Generate notes from scripts.** A cron job writing a daily note, a job pulling
+in your calendar, a script filing receipts. Write a file, and it is on your
+phone a second later.
+
+**Search across everything, with normal tools.** `grep`, `rg`, `fzf`, and every
+Unix thing you already know, over the actual files.
+
+**Keep history without thinking about it.** Every change is a commit, so
+"restore the version from before I deleted half of it" is always available.
+
 ## Philosophy
 
 **Small enough to read in an afternoon.** ~3,000 lines across both halves. If it
