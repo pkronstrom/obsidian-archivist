@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+# CGO_ENABLED=0 keeps it static, which is what allows the scratch image below.
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X github.com/pkronstrom/obsidian-archivist/internal/version.Version=${VERSION}" \
+    -o /archivist-relay ./cmd/archivist-relay
+
+# The relay talks to the server over HTTPS, so unlike the server it does need
+# root certificates.
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=build /archivist-relay /usr/local/bin/archivist-relay
+EXPOSE 8091
+ENTRYPOINT ["archivist-relay"]
