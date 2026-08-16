@@ -1,13 +1,14 @@
-# Go
-vaultsync
+# Built server binary. Anchored with a leading slash: a bare `vaultsync`
+# pattern also matches the DIRECTORY cmd/vaultsync, which silently kept the
+# server's entrypoint out of the repository until a CI cross-compile failed
+# with "cmd/vaultsync: directory not found".
+/vaultsync
+/dist/
 *.test
 
 # Plugin build output
 node_modules/
-main.js
+/main.js
 dist-test/
 *.js.map
 data.json
-
-# Scratch
-/tmp/
