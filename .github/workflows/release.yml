@@ -35,13 +35,15 @@ jobs:
           # CGO_ENABLED=0 everywhere: everything is pure Go, which is what makes
           # cross-compilation a matter of two environment variables and lets the
           # container image be FROM scratch.
-          for target in linux/amd64 linux/arm64 darwin/arm64; do
-            os="${target%/*}"; arch="${target#*/}"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags="-s -w" \
-              -o "dist/vaultsync-$os-$arch" ./cmd/vaultsync
+          for cmd in $(ls cmd); do
+            for target in linux/amd64 linux/arm64 darwin/arm64; do
+              os="${target%/*}"; arch="${target#*/}"
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                go build -trimpath -ldflags="-s -w" \
+                -o "dist/$cmd-$os-$arch" "./cmd/$cmd"
+            done
           done
-          cd dist && shasum -a 256 vaultsync-* > SHA256SUMS && cat SHA256SUMS
+          cd dist && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS
 
       - uses: actions/setup-node@v4
         with:

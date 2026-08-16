@@ -2,7 +2,8 @@
 # pattern also matches the DIRECTORY cmd/vaultsync, which silently kept the
 # server's entrypoint out of the repository until a CI cross-compile failed
 # with "cmd/vaultsync: directory not found".
-/vaultsync
+/vaultsync-server
+/vaultsync-client
 /dist/
 *.test
 

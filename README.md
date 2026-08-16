@@ -232,7 +232,7 @@ Copy it in and start the server:
 
 ```bash
 rsync -a ~/existing-vault/ ~/knowledge/personal/
-vaultsync -vault ~/knowledge/personal ...
+vaultsync-server -vault ~/knowledge/personal ...
 ```
 
 Then point each device at it. **Files that already match are recognised by hash
@@ -250,11 +250,11 @@ from the machine that owns the vault and it stays consistent.
 From the command line, without git installed:
 
 ```bash
-vaultsync history notes/idea.md        # revisions that touched it
-vaultsync show notes/idea.md 4f3538ca  # print an old version, changing nothing
-vaultsync restore notes/idea.md 4f3538ca
-vaultsync check                        # working tree versus history; non-zero on drift
-vaultsync export > vault.tar
+vaultsync-server history notes/idea.md        # revisions that touched it
+vaultsync-server show notes/idea.md 4f3538ca  # print an old version, changing nothing
+vaultsync-server restore notes/idea.md 4f3538ca
+vaultsync-server check                        # working tree versus history; non-zero on drift
+vaultsync-server export > vault.tar
 ```
 
 Or over HTTP, for agents and other containers — `GET /v1` lists every endpoint

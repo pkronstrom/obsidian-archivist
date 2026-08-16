@@ -46,17 +46,17 @@ Prebuilt binaries are attached to every [release](../../releases) for
 Nothing needs a Go toolchain on the target host:
 
 ```bash
-curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/vaultsync-linux-amd64
+curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/vaultsync-server-linux-amd64
 curl -fsSLO https://github.com/pkronstrom/vaultsync/releases/latest/download/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x vaultsync-linux-amd64
+chmod +x vaultsync-server-linux-amd64
 ```
 
 Or build it yourself:
 
 ```bash
-go build -o vaultsync ./cmd/vaultsync
-VAULTSYNC_TOKEN=secret ./vaultsync -vault ~/knowledge/personal
+go build -o vaultsync-server ./cmd/vaultsync-server
+VAULTSYNC_TOKEN=secret ./vaultsync-server -vault ~/knowledge/personal
 ```
 
 | Flag | Environment | Default |
