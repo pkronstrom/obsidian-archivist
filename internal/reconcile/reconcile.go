@@ -270,5 +270,17 @@ func (rc *Reconciler) Scan(msg string) (string, error) {
 	return rc.r.Commit(msg)
 }
 
+// Freeze runs fn while holding the commit lock, so no commit can land while it
+// executes. Used by the backup export: a git directory read without this can
+// capture a ref whose objects were not captured yet, which restores as
+// "invalid sha1 pointer". Measured at 1 in 8 naive copies under load.
+//
+// Keep fn short. Everything that writes to the vault waits on it.
+func (rc *Reconciler) Freeze(fn func() error) error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return fn()
+}
+
 // Head is the current commit.
 func (rc *Reconciler) Head() (string, error) { return rc.r.Head() }

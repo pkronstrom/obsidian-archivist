@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pkronstrom/vaultsync/internal/reconcile"
@@ -40,6 +42,7 @@ func New(rc *reconcile.Reconciler, r *repo.Repo, token string) http.Handler {
 	mux.HandleFunc("PUT /v1/content/{hash}", s.putContent)
 	mux.HandleFunc("GET /v1/content/{hash}", s.getContent)
 	mux.HandleFunc("POST /v1/push", s.push)
+	mux.HandleFunc("GET /v1/export", s.export)
 
 	return s.authenticate(mux)
 }
@@ -215,6 +218,43 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, pushResponse{Head: head, Results: results})
+}
+
+// export streams a consistent, gzipped archive of the git directory.
+//
+//	curl -sf -H "Authorization: Bearer $TOKEN" https://vault.example/v1/export \
+//	  | restic backup --stdin --stdin-filename vault-personal.tar.gz
+//
+// The archive is built into a temp file while commits are frozen, then streamed
+// with the lock released -- otherwise a slow client would block every write for
+// the duration of the transfer.
+func (s *Server) export(w http.ResponseWriter, r *http.Request) {
+	tmp, err := os.CreateTemp("", "vaultsync-export-*.tar.gz")
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if err := s.rc.Freeze(func() error { return s.repo.Archive(tmp) }); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fi, err := tmp.Stat()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.Header().Set("Content-Disposition", `attachment; filename="vaultsync-git.tar.gz"`)
+	io.Copy(w, tmp)
 }
 
 // isClientFault distinguishes a bad request from a server failure. A path
