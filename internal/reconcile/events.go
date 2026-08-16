@@ -1,13 +1,8 @@
 package reconcile
 
 import (
-	"path"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/pkronstrom/vaultsync/internal/merge"
-	"github.com/pkronstrom/vaultsync/internal/repo"
 )
 
 // maxInlineChanges bounds what a single event carries. A bulk import can touch
@@ -123,21 +118,9 @@ func (rc *Reconciler) buildEvent(prev, head string) Event {
 			ev.Truncated = true
 			break
 		}
-		ev.Changes = append(ev.Changes, rc.describe(c))
+		ev.Changes = append(ev.Changes, ChangedFile{
+			Path: c.Path, Op: c.Op, Ext: c.Ext, Kind: c.Kind, Size: c.Size, Hash: c.Hash,
+		})
 	}
 	return ev
-}
-
-func (rc *Reconciler) describe(c repo.Change) ChangedFile {
-	ext := strings.ToLower(strings.TrimPrefix(path.Ext(c.Path), "."))
-	f := ChangedFile{Path: c.Path, Op: c.Op, Ext: ext, Size: c.Size, Hash: c.Hash, Kind: "text"}
-	if c.Op == "del" {
-		return f
-	}
-	// Sniff rather than trust the extension: an agent deciding whether it can
-	// read something cares about the bytes, not the name.
-	if content, err := rc.r.ReadBlob(c.Hash); err == nil && merge.IsBinary(content) {
-		f.Kind = "binary"
-	}
-	return f
 }

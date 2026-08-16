@@ -216,8 +216,34 @@ Each event carries enough to triage without a follow-up call:
 skip what it cannot read. A commit touching more than 100 files is truncated
 with a count — read `/v1/changes` for those.
 
-An agent running on the same machine needs none of this. The vault is a
-directory; read and write the files and the server notices within a second.
+`/v1/changes` returns the **same shape**, so a consumer can use the stream and
+the catch-up path interchangeably.
+
+[`examples/watch-vault.py`](examples/watch-vault.py) is a working consumer in
+~120 lines of standard library — subscribe, triage, act, reconnect, resume from
+the cursor. Adapt the `handle()` function and you have an agent.
+
+An agent on the same machine should read the changed files straight off disk
+rather than fetching them; the vault is an ordinary directory.
+
+## Importing an existing vault
+
+Copy it in and start the server:
+
+```bash
+rsync -a ~/existing-vault/ ~/knowledge/personal/
+vaultsync -vault ~/knowledge/personal ...
+```
+
+Then point each device at it. **Files that already match are recognised by hash
+and never transferred**; files only one side has move across; files that
+genuinely differ merge, or become a conflict pair. There is no import command
+because there is nothing for one to do.
+
+One caveat with accented filenames: macOS writes them decomposed and Linux
+tools write them composed, and those are different bytes — so `Kronström.md`
+seeded from a Linux box and `Kronström.md` from a Mac would be two notes. Seed
+from the machine that owns the vault and it stays consistent.
 
 ## Looking at history
 

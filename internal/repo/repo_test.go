@@ -310,3 +310,36 @@ func TestCommitStagesDeletions(t *testing.T) {
 		t.Errorf("deletion was not staged: %+v", snap)
 	}
 }
+
+// The event stream and /v1/changes must describe a change identically, or an
+// agent written against one breaks on the other. Caught by running the
+// reference worker: a .md file arriving through catch-up had no `ext` and was
+// skipped as "not text".
+func TestChangesCarryTriageMetadata(t *testing.T) {
+	r, v, _ := newRepo(t)
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	v.Write("notes/a.md", []byte("# a note\n"))
+	v.Write("att/scan.pdf", []byte("\x00\x01not text at all"))
+	head, err := r.Commit("first")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := r.Changes("", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := map[string]Change{}
+	for _, c := range changes {
+		byPath[c.Path] = c
+	}
+
+	md := byPath["notes/a.md"]
+	if md.Ext != "md" || md.Kind != "text" {
+		t.Errorf("markdown described as ext=%q kind=%q", md.Ext, md.Kind)
+	}
+	pdf := byPath["att/scan.pdf"]
+	if pdf.Ext != "pdf" || pdf.Kind != "binary" {
+		t.Errorf("binary described as ext=%q kind=%q", pdf.Ext, pdf.Kind)
+	}
+}

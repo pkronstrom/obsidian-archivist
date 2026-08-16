@@ -21,9 +21,11 @@
 package repo
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 
@@ -49,11 +51,43 @@ type Entry struct {
 }
 
 // Change is one path-level difference between two commits.
+//
+// Ext and Kind exist so a consumer can triage without fetching anything. This
+// is the SAME shape the event stream carries, deliberately: the stream says
+// when, this says what, and an agent must be able to use one interchangeably
+// with the other.
 type Change struct {
 	Path string `json:"path"`
 	Op   string `json:"op"`   // "put" or "del"
 	Hash string `json:"hash"` // empty for "del"
 	Size int64  `json:"size"`
+	Ext  string `json:"ext"`  // lowercase, no dot
+	Kind string `json:"kind"` // "text" or "binary", sniffed from content
+}
+
+// describe fills in Ext and Kind. Kind is sniffed from the bytes rather than
+// guessed from the name, so an agent can trust it to decide what it can read.
+func (r *Repo) describe(c Change) Change {
+	c.Ext = strings.ToLower(strings.TrimPrefix(path.Ext(c.Path), "."))
+	c.Kind = "text"
+	if c.Op == "del" {
+		return c
+	}
+	if content, err := r.ReadBlob(c.Hash); err == nil && isBinary(content) {
+		c.Kind = "binary"
+	}
+	return c
+}
+
+// isBinary is git's own heuristic: a NUL byte in the first few KB. Duplicated
+// from internal/merge rather than imported, to keep repo free of that
+// dependency; the rule is three lines and will not drift.
+func isBinary(b []byte) bool {
+	const sniff = 8000
+	if len(b) > sniff {
+		b = b[:sniff]
+	}
+	return bytes.IndexByte(b, 0) >= 0
 }
 
 type Repo struct {
@@ -222,6 +256,9 @@ func (r *Repo) Changes(from, to string) ([]Change, error) {
 			}
 			out = append(out, c)
 		}
+	}
+	for i := range out {
+		out[i] = r.describe(out[i])
 	}
 	// Deterministic order makes responses diffable and tests stable.
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
