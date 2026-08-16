@@ -3,6 +3,7 @@
 # server's entrypoint out of the repository until a CI cross-compile failed
 # with "cmd/archivist: directory not found".
 /archivist-server
+/archivist-relay
 /archivist-client
 /dist/
 *.test

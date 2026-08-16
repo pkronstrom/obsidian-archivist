@@ -9,7 +9,12 @@
 // humans and will be reworded.
 package protocol
 
-import "time"
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"time"
+)
 
 // Version is the wire contract. It moves ONLY when a client must change --
 // a removed field, a changed meaning, a new required parameter. Adding an
@@ -201,4 +206,24 @@ type Error struct {
 
 type ErrorResponse struct {
 	Error Error `json:"error"`
+}
+
+// HashContent returns the git blob object id for content:
+//
+//	sha1("blob " + <byte length> + "\0" + content)
+//
+// It lives here, in the leaf package, so the server and every client compute
+// addresses the same way. The server used to derive this from go-git's
+// plumbing, which no client can import without pulling in 56 packages and a
+// full git implementation -- the exact weight the separate relay binary exists
+// to avoid.
+//
+// The header carries the BYTE length, not the character count. Getting that
+// wrong only diverges on non-ASCII content, so the tests include an emoji, and
+// every expected value is taken from `git hash-object --stdin`.
+func HashContent(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }

@@ -316,24 +316,11 @@ func (r *Repo) ReadBlob(hash string) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
-// HashContent computes the git object hash for content without storing it, so
-// the API can verify an upload's claimed address before writing anything.
+// HashContent is protocol.HashContent. Kept as a name here because callers
+// read better for it, but there is exactly one implementation, in the leaf
+// package that both the server and every client can import.
 func HashContent(content []byte) (string, error) {
-	obj := &plumbing.MemoryObject{}
-	obj.SetType(plumbing.BlobObject)
-	obj.SetSize(int64(len(content)))
-	w, err := obj.Writer()
-	if err != nil {
-		return "", err
-	}
-	if _, err := w.Write(content); err != nil {
-		w.Close()
-		return "", err
-	}
-	if err := w.Close(); err != nil {
-		return "", err
-	}
-	return obj.Hash().String(), nil
+	return protocol.HashContent(content), nil
 }
 
 func (r *Repo) HasBlob(hash string) bool {

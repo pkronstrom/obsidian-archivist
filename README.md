@@ -17,7 +17,7 @@ in the background.
 | --- | --- | --- |
 | `archivist-server` | owns the vault, keeps the history | **working** |
 | Obsidian plugin | syncs your laptop and phone | **working** |
-| `archivist-relay` | optional sidecar: MCP tools, webhooks, a friendlier API | **not built yet** |
+| `archivist-relay` | optional sidecar: MCP tools, webhooks, a friendlier API | **working** |
 
 The relay is for reaching the vault from somewhere that is *not* the server. If
 your tools run on the same machine, you do not need it — the vault is a
@@ -58,7 +58,7 @@ flowchart LR
     web["web viewer"]
     local["AI agent, grep,<br/>scripts, cron"]
     restic["restic"]
-    relay["archivist-relay<br/><i>not built yet</i>"]
+    relay["archivist-relay"]
     remote["remote agents<br/>n8n, Claude Code"]
 
     mac <==> vs
@@ -75,13 +75,13 @@ flowchart LR
     classDef hot fill:#fffbe6,stroke:#c9a227,stroke-width:2px
     classDef todo fill:#fff,stroke:#999,stroke-dasharray:4 3
     class vault,vs hot
-    class mac,phone,web,local,restic plain
-    class relay,remote todo
+    class mac,phone,web,local,restic,relay plain
+    class remote todo
 ```
 
 **Thick lines** are sync. **Thin lines are ordinary file I/O** — that is the
 whole point: anything on the server opens files rather than calling an API.
-Dotted lines are optional, and the dashed boxes are not built yet.
+Dotted lines are optional.
 
 ## What this is good for
 
@@ -118,8 +118,8 @@ grows past what one person can hold in their head, it has failed at its purpose.
 
 **One static binary. No database, no dependencies.** The container image is
 `FROM scratch` and 8 MB. Nothing to install on the server, nothing to keep
-running alongside it. The relay, when it exists, is a separate binary precisely
-so a laptop never carries a git implementation it will not use.
+running alongside it. The relay is a separate binary precisely so a laptop never
+carries a git implementation it will not use.
 
 **The server-side files are real and yours to modify.** Edit them with anything.
 The changes sync back to your devices.
@@ -197,11 +197,29 @@ They share nothing.
 ### Reaching it from elsewhere
 
 Everything on the server uses the files directly. For anything that is not on
-the server — an agent on your laptop, an n8n flow in another container — the
-plan is `archivist-relay`: one process offering MCP over HTTP, webhook fan-out
-and a friendlier write API, holding no vault and no sync state of its own.
+the server — an agent on your laptop, an n8n flow in another container —
+`archivist-relay` offers MCP over HTTP, webhook fan-out and a friendlier write
+API, holding no vault and no sync state of its own.
 
-Until it exists, the HTTP API is directly usable; `GET /v1` describes it.
+```
+archivist-relay -url http://archivist:8090 -token "$ARCHIVIST_TOKEN" \
+                -relay-token "$RELAY_TOKEN" -listen :8091
+```
+
+Writing a note is `curl -T`, and reading one gives you an `ETag`:
+
+```
+curl -T note.md -H "Authorization: Bearer $RELAY_TOKEN" \
+     localhost:8091/file/notes/idea.md
+```
+
+**If you read a note before editing it, send its ETag back as `If-Match`.**
+Without it the write is a blind overwrite and a change that landed in between is
+lost rather than merged. The MCP tools do the same thing with the `revision`
+that `read_note` returns and `write_note` accepts. `GET /` on the relay
+describes the rest.
+
+The server's own HTTP API remains directly usable; `GET /v1` describes it.
 
 ## Hooking things up to it
 
