@@ -6,8 +6,13 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 # CGO_ENABLED=0 keeps it static, which is what allows the scratch image below.
-RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags="-s -w -X github.com/pkronstrom/obsidian-archivist/internal/version.Version=${VERSION}" \
+# The module path is read from go.mod rather than written out here. A -X flag
+# naming a symbol that does not exist is silently IGNORED by the linker, so a
+# stale path does not fail the build -- it just leaves the version at "dev"
+# forever. That is exactly what the rename to obsidian-archivist did, and it
+# went unnoticed because nothing ever errored.
+RUN MOD="$(go list -m)" && CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X ${MOD}/internal/version.Version=${VERSION}" \
     -o /archivist-relay ./cmd/archivist-relay
 
 # The relay talks to the server over HTTPS, so unlike the server it does need
