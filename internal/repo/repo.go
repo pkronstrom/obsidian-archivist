@@ -61,6 +61,10 @@ type Repo struct {
 	git      *git.Repository
 	workTree string
 	gitDir   string
+
+	// syncable decides what may enter git. Injected rather than imported so
+	// this package stays independent of the vault package's policy.
+	syncable func(path string) bool
 }
 
 // Open initialises the repository if absent and opens it otherwise.
@@ -76,8 +80,15 @@ func Open(workTree, gitDir string) (*Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("repo: open %s: %w", gitDir, err)
 	}
-	return &Repo{git: r, workTree: workTree, gitDir: gitDir}, nil
+	return &Repo{
+		git: r, workTree: workTree, gitDir: gitDir,
+		syncable: func(string) bool { return true },
+	}, nil
 }
+
+// SetSyncable installs the predicate deciding which paths may be committed.
+// Without it every path is eligible, which is only correct in tests.
+func (r *Repo) SetSyncable(fn func(path string) bool) { r.syncable = fn }
 
 // Head is the current commit hash, or "" when nothing has been committed yet.
 func (r *Repo) Head() (string, error) {
@@ -100,16 +111,33 @@ func (r *Repo) Commit(msg string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// AddWithOptions(All) stages modifications and deletions as well as new
-	// files. wt.Add(".") alone does not stage deletions.
-	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return "", fmt.Errorf("repo: stage: %w", err)
-	}
+	// Stage only paths the caller says are syncable.
+	//
+	// AddWithOptions{All:true} was wrong and measurably so: it stages the WHOLE
+	// working tree, so .obsidian/ landed in git and would have been pushed to
+	// every device -- despite the watcher, the plugin and every document saying
+	// dotfiles are excluded. The exclusion has to be enforced where files enter
+	// git, not only where events are observed.
 	status, err := wt.Status()
 	if err != nil {
 		return "", err
 	}
-	if status.IsClean() {
+	staged := false
+	for path, st := range status {
+		if st.Worktree == git.Unmodified && st.Staging == git.Unmodified {
+			continue
+		}
+		if !r.syncable(path) {
+			continue
+		}
+		// Add stages deletions too when the file is gone; go-git needs the
+		// explicit path either way.
+		if _, err := wt.Add(path); err != nil {
+			return "", fmt.Errorf("repo: stage %s: %w", path, err)
+		}
+		staged = true
+	}
+	if !staged {
 		return r.Head()
 	}
 	h, err := wt.Commit(msg, &git.CommitOptions{

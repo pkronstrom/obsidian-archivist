@@ -17,6 +17,7 @@ package watcher
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -226,19 +227,7 @@ func summarise(paths []string) string {
 	if len(paths) == 1 {
 		return paths[0]
 	}
-	return paths[0] + " and " + itoa(len(paths)-1) + " more"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
+	return fmt.Sprintf("%s and %d more", paths[0], len(paths)-1)
 }
 
 func short(h string) string {

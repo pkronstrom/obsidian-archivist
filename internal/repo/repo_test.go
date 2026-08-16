@@ -263,3 +263,50 @@ func TestGitCLIInterop(t *testing.T) {
 	}
 	t.Logf("git log: %s", out)
 }
+
+// AddWithOptions{All:true} staged the entire working tree, so .obsidian/ landed
+// in git and would have reached every device -- while the watcher, the plugin
+// and every document claimed dotfiles were excluded. Verified against a running
+// server before the fix: the snapshot contained .obsidian/appearance.json.
+func TestCommitStagesOnlySyncablePaths(t *testing.T) {
+	r, v, _ := newRepo(t)
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+
+	if err := os.MkdirAll(filepath.Join(v.Dir(), ".obsidian"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(v.Dir(), ".obsidian/appearance.json"), []byte("{}"), 0o644)
+	v.Write("note.md", []byte("real content\n"))
+
+	head, err := r.Commit("mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := r.Snapshot(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, leaked := snap[".obsidian/appearance.json"]; leaked {
+		t.Errorf("dotfile entered git: %+v", snap)
+	}
+	if _, ok := snap["note.md"]; !ok {
+		t.Errorf("real note missing: %+v", snap)
+	}
+}
+
+// Staging per path must still record deletions.
+func TestCommitStagesDeletions(t *testing.T) {
+	r, v, _ := newRepo(t)
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	v.Write("gone.md", []byte("x\n"))
+	r.Commit("add")
+	v.Remove("gone.md")
+	head, err := r.Commit("remove")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := r.Snapshot(head)
+	if _, still := snap["gone.md"]; still {
+		t.Errorf("deletion was not staged: %+v", snap)
+	}
+}

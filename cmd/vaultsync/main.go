@@ -100,6 +100,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Dotfiles must not enter git. Enforced here, at the point files are
+	// staged, rather than only where events are observed.
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
 	rc := reconcile.New(v, r)
 
 	head, err := r.Head()
@@ -127,7 +130,11 @@ func run(cfg *config.Config, log *slog.Logger) error {
 			return err
 		}
 		log.Warn("filesystem watching is disabled; local edits will not be committed")
-		watchDone <- nil
+		// Deliberately does NOT signal watchDone. Sending nil here made the
+		// select below treat "the watcher finished" as a shutdown signal, so
+		// -watch=false exited immediately and the documented read-only mode was
+		// unusable. A nil channel blocks forever, which is what we want.
+		watchDone = nil
 	}
 
 	srv := &http.Server{

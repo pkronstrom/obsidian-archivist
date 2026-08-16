@@ -114,5 +114,48 @@ check("and deletes nothing on the server", stillThere);
 r = await mac.sync.run();
 check("a no-op sync pushes nothing", r.pushed === 0, JSON.stringify(r));
 
+// --- 9. a merged push must converge on the merged bytes ---------------------
+// Found by review: the plugin recorded its OWN hash for a "merged" result, so
+// it believed it was current while holding pre-merge content, with its cursor
+// already past the merge commit. Permanently diverged, silently.
+await fs.writeFile(path.join(mac.root, "notes/m.md"), "one\ntwo\nthree\n");
+await mac.sync.run();
+await phone.sync.run();
+await fs.writeFile(path.join(mac.root, "notes/m.md"), "ONE\ntwo\nthree\n");
+await mac.sync.run();
+await fs.writeFile(path.join(phone.root, "notes/m.md"), "one\ntwo\nTHREE\n");
+r = await phone.sync.run();
+check("merging push reports no conflict", r.conflicts.length === 0, JSON.stringify(r.conflicts));
+check("the merging device ends up with the MERGED content, not its own",
+  (await phone.read("notes/m.md")) === "ONE\ntwo\nTHREE\n",
+  JSON.stringify(await phone.read("notes/m.md")));
+r = await phone.sync.run();
+check("and a further sync finds nothing left to do", r.pushed === 0 && r.pulled === 0, JSON.stringify(r));
+
+// --- 10. a local delete must survive a concurrent remote edit ---------------
+// Found by review: pull wrote the remote version onto the deleted path, so the
+// deletion was never sent and vanished without trace.
+await fs.writeFile(path.join(mac.root, "notes/d.md"), "original\n");
+await mac.sync.run();
+await phone.sync.run();
+await fs.rm(path.join(phone.root, "notes/d.md"));            // deleted here
+await fs.writeFile(path.join(mac.root, "notes/d.md"), "edited elsewhere\n");
+await mac.sync.run();                                         // modified there
+r = await phone.sync.run();
+const resurrected = await phone.app.vault.adapter.exists("notes/d.md");
+const serverStill = await mac.app.vault.adapter.exists("notes/d.md");
+check("a local delete racing a remote edit is not silently discarded",
+  !resurrected || serverStill,
+  `resurrected=${resurrected} serverStill=${serverStill}`);
+check("and the remote edit is not lost either", serverStill);
+
+// --- 11. dotfiles never enter the synced set --------------------------------
+await fs.mkdir(path.join(mac.root, ".obsidian"), { recursive: true });
+await fs.writeFile(path.join(mac.root, ".obsidian/appearance.json"), "{}");
+await mac.sync.run();
+await phone.sync.run();
+check("`.obsidian` does not reach the other device",
+  !(await phone.app.vault.adapter.exists(".obsidian/appearance.json")));
+
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURES"}`);
 process.exit(failures === 0 ? 0 : 1);

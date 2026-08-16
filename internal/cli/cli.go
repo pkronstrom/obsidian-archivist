@@ -46,6 +46,7 @@ func Run(name string, args []string, env Env) error {
 	if err != nil {
 		return err
 	}
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
 	switch name {
 	case "history":
 		return history(r, args, env)

@@ -55,20 +55,41 @@ type Reconciler struct {
 
 	// written records content this process just wrote, so the filesystem
 	// watcher can recognise its own echo instead of treating it as a new edit.
+	//
+	// Entries expire. Suppression is only an optimisation -- a missed one costs
+	// a redundant no-op commit, nothing more -- whereas an unbounded map grows
+	// for the process lifetime whenever no matching event arrives, which is
+	// guaranteed with -watch=false and possible any time an event is dropped.
 	echoMu  sync.Mutex
-	written map[string]string
+	written map[string]writeRecord
 
 	events *broadcaster
 }
 
+// echoTTL is how long a write stays suppressible. Comfortably longer than any
+// sane debounce, far shorter than a process lifetime.
+const echoTTL = 60 * time.Second
+
+type writeRecord struct {
+	hash string
+	at   time.Time
+}
+
 func New(v *vault.Vault, r *repo.Repo) *Reconciler {
-	return &Reconciler{v: v, r: r, written: map[string]string{}, events: newBroadcaster()}
+	return &Reconciler{v: v, r: r, written: map[string]writeRecord{}, events: newBroadcaster()}
 }
 
 func (rc *Reconciler) noteWrite(path string, content []byte) {
 	rc.echoMu.Lock()
 	defer rc.echoMu.Unlock()
-	rc.written[path] = vault.Hash(content)
+	now := time.Now()
+	rc.written[path] = writeRecord{hash: vault.Hash(content), at: now}
+	// Opportunistic sweep: cheap, and it bounds the map without a goroutine.
+	for p, rec := range rc.written {
+		if now.Sub(rec.at) > echoTTL {
+			delete(rc.written, p)
+		}
+	}
 }
 
 // WasOurWrite reports whether the content now at path is exactly what this
@@ -76,8 +97,15 @@ func (rc *Reconciler) noteWrite(path string, content []byte) {
 func (rc *Reconciler) WasOurWrite(path string, content []byte) bool {
 	rc.echoMu.Lock()
 	defer rc.echoMu.Unlock()
-	want, ok := rc.written[path]
-	if ok && want == vault.Hash(content) {
+	rec, ok := rc.written[path]
+	if !ok {
+		return false
+	}
+	if time.Since(rec.at) > echoTTL {
+		delete(rc.written, path)
+		return false
+	}
+	if rec.hash == vault.Hash(content) {
 		delete(rc.written, path)
 		return true
 	}

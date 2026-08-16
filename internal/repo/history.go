@@ -108,6 +108,9 @@ func (r *Repo) Check() (*CheckReport, error) {
 		return nil, err
 	}
 	for path, st := range status {
+		if !r.syncable(path) {
+			continue // excluded by design; not drift
+		}
 		switch {
 		case st.Worktree == git.Deleted:
 			rep.Missing = append(rep.Missing, path)

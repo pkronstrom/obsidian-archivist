@@ -130,21 +130,34 @@ export class Sync {
 
 			// Adopt into the snapshot ONLY what the server actually took.
 			//
-			// A "conflict" result means the server kept its own version and
-			// parked ours beside it. Recording our hash as synced would be a
-			// lie: the next diff would see no local change, we would never pull
-			// the server's version, and this device would sit permanently
-			// diverged. Verified -- that is exactly what happened before.
+			// "applied" is the single case where our bytes are now the server's
+			// bytes. Every other status means the server holds something we do
+			// not have on disk:
+			//
+			//   merged   the server wrote the three-way merge -- NOT what we sent
+			//   conflict the server kept its own version, ours is in a side file
+			//   refused  the server declined, e.g. a delete of a path it changed
+			//
+			// Recording our own hash for any of those is a lie the next cycle
+			// believes: the diff sees no local change, the cursor is already
+			// past the commit, and the device sits permanently diverged showing
+			// stale content with no error anywhere. Re-fetch instead.
 			const byPath = new Map(results.map((r) => [r.path, r.status]));
+			const needsRefetch: string[] = [];
 			for (const c of local) {
 				const status = byPath.get(c.path);
-				if (status === "conflict" || status === "refused") continue;
+				if (status !== "applied") {
+					needsRefetch.push(c.path);
+					continue;
+				}
 				if (c.op === "del") delete state.files[c.path];
 				else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
 			}
-
-			if (report.conflicts.length > 0) {
-				await this.absorbConflicts(state, report.conflicts);
+			for (const r of results) {
+				if (r.conflictPath) needsRefetch.push(r.conflictPath);
+			}
+			if (needsRefetch.length > 0) {
+				await this.adoptFromServer(state, needsRefetch);
 			}
 		}
 
@@ -176,7 +189,19 @@ export class Sync {
 			return "applied";
 		}
 
-		if (await this.adapter.exists(e.path)) {
+		const exists = await this.adapter.exists(e.path);
+
+		// The path is in our snapshot but gone from disk: we deleted it locally
+		// while the server modified it. Writing the remote version here would
+		// silently discard the deletion -- the diff would then see the file
+		// present and matching, so the delete would never be sent at all.
+		// Defer instead, and let the push resolve it against the old base.
+		if (!exists && known) {
+			this.log(`${e.path} deleted locally but modified remotely; deferring to the push`);
+			return "deferred";
+		}
+
+		if (exists) {
 			const cur = await this.readState(e.path);
 			if (cur && cur.hash === e.hash) {
 				// Already identical -- record it and do no I/O.
@@ -202,26 +227,19 @@ export class Sync {
 	}
 
 	/**
-	 * absorbConflicts brings this device in line after the server refused our
-	 * version of a path.
+	 * adoptFromServer brings this device in line for paths where the server
+	 * ended up with content we do not have: a merge it computed, a version it
+	 * kept over ours, or a conflict file it created.
 	 *
-	 * Two files matter: the path itself, where the server's version now lives,
-	 * and the conflict file holding ours. Both are fetched here rather than
-	 * waiting for the next pull, because the push already advanced our cursor
-	 * past the commit that created them -- so an ordinary pull would never
-	 * mention them again.
+	 * These are fetched now rather than on the next pull, because the push
+	 * already advanced our cursor past the commit that produced them -- an
+	 * ordinary pull would never mention them again.
 	 *
-	 * Our content is not lost: it is in the conflict file, which is an ordinary
-	 * note the user can resolve by editing and deleting.
+	 * Nothing of ours is lost: a conflict keeps our version in the side file.
 	 */
-	private async absorbConflicts(state: SyncState, conflicts: Result[]): Promise<void> {
+	private async adoptFromServer(state: SyncState, paths: string[]): Promise<void> {
 		const { files } = await this.client().snapshot();
-		const wanted = new Set<string>();
-		for (const c of conflicts) {
-			wanted.add(c.path);
-			if (c.conflictPath) wanted.add(c.conflictPath);
-		}
-		for (const path of wanted) {
+		for (const path of new Set(paths)) {
 			const entry = files[path];
 			if (!entry) {
 				// The server has no such path -- it deleted it, or the conflict
