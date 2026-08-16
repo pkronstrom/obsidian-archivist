@@ -1,0 +1,78 @@
+// Package config resolves settings from flags, then the environment, then
+// built-in defaults.
+//
+// Flags win over the environment: the environment is the deployment's baseline
+// (set once in a compose file), so a flag on the command line is a deliberate
+// override of it.
+package config
+
+import (
+	"errors"
+	"flag"
+	"io"
+	"os"
+	"time"
+)
+
+type Config struct {
+	// Vault is the working tree -- the ordinary directory of notes.
+	Vault string
+	// Git is the git directory, deliberately OUTSIDE the vault so that no
+	// client and no other tool ever sees a .git inside the notes.
+	Git string
+	// Listen is the HTTP bind address.
+	Listen string
+	// Token is the bearer token every client must present.
+	Token string
+	// Debounce is how long a path must be quiet before a filesystem change is
+	// acted on.
+	Debounce time.Duration
+	// Watch enables the filesystem watcher. Off is useful in tests and for a
+	// read-only replica.
+	Watch bool
+}
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// Load parses args over environment defaults.
+func Load(args []string) (*Config, error) {
+	debounce, err := time.ParseDuration(env("VAULTSYNC_DEBOUNCE", "1s"))
+	if err != nil {
+		return nil, errors.New("VAULTSYNC_DEBOUNCE: " + err.Error())
+	}
+
+	fs := flag.NewFlagSet("vaultsync", flag.ContinueOnError)
+	// The caller reports errors; the flag package writing to stderr on its own
+	// makes test output unreadable.
+	fs.SetOutput(io.Discard)
+
+	c := &Config{}
+	fs.StringVar(&c.Vault, "vault", env("VAULTSYNC_VAULT", ""),
+		"vault directory (the notes themselves)")
+	fs.StringVar(&c.Git, "git", env("VAULTSYNC_GIT", "/var/lib/vaultsync/git"),
+		"git directory, kept outside the vault")
+	fs.StringVar(&c.Listen, "listen", env("VAULTSYNC_LISTEN", ":8090"),
+		"HTTP listen address")
+	fs.StringVar(&c.Token, "token", env("VAULTSYNC_TOKEN", ""),
+		"bearer token required from clients")
+	fs.DurationVar(&c.Debounce, "debounce", debounce,
+		"quiet period before a filesystem change is acted on")
+	fs.BoolVar(&c.Watch, "watch", env("VAULTSYNC_WATCH", "true") != "false",
+		"watch the vault for local edits")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if c.Vault == "" {
+		return nil, errors.New("vault directory is required (-vault or VAULTSYNC_VAULT)")
+	}
+	if c.Token == "" {
+		return nil, errors.New("bearer token is required (-token or VAULTSYNC_TOKEN)")
+	}
+	return c, nil
+}
