@@ -29,6 +29,20 @@ type RemoteOutcome = "applied" | "skipped" | "deferred";
  * if it ever happens, needs its own scan with different rules -- it is not a
  * matter of loosening this.
  */
+/**
+ * conflictName mirrors the server's naming so a locally-created conflict looks
+ * the same as a server-created one. Content is not hashed here: the server
+ * disambiguates by content, and this path only ever produces one copy.
+ */
+export function conflictName(path: string, device: string): string {
+	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
+	const safe = (device || "device").replace(/[^A-Za-z0-9-]/g, "-");
+	const slash = path.lastIndexOf("/");
+	const dot = path.lastIndexOf(".");
+	const suffix = `.conflict-${safe}-${stamp}-local`;
+	return dot > slash ? path.slice(0, dot) + suffix + path.slice(dot) : path + suffix;
+}
+
 export function skip(path: string): boolean {
 	return path.split("/").some((seg) => seg.startsWith("."));
 }
@@ -285,8 +299,25 @@ export class Sync {
 				continue;
 			}
 			if (cur) {
-				// Differs locally. Leave it alone and let the push resolve it
-				// with a real merge rather than clobbering it here.
+				// Differs locally, and we have NO common ancestor -- that is what
+				// re-bootstrapping means. Leaving it out of state.files was a
+				// silent data-loss bug: the next diff saw an untracked file,
+				// pushed it as a new put against the freshly adopted head, and
+				// because the path had not moved since that base the server
+				// applied our bytes over its own without merging.
+				//
+				// Keep both instead. Ours moves aside under a conflict name, the
+				// server's version lands at the real path, and nothing is lost.
+				const aside = conflictName(path, this.device());
+				await this.adapter.writeBinary(aside, await this.adapter.readBinary(path));
+				const asideStat = await this.adapter.stat(aside);
+				state.files[aside] = {
+					hash: cur.hash,
+					mtime: asideStat?.mtime ?? Date.now(),
+					size: asideStat?.size ?? cur.size,
+				};
+				this.log(`no common ancestor for ${path}; kept ours as ${aside}`);
+				state.files[path] = await this.materialise(path, entry.hash, entry.size);
 				continue;
 			}
 			state.files[path] = await this.materialise(path, entry.hash, entry.size);

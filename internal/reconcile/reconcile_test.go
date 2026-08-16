@@ -269,3 +269,50 @@ func exists(v *vault.Vault, path string) bool {
 	_, err := v.Stat(path)
 	return err == nil
 }
+
+// A batch with a bad entry must leave the working tree untouched. Before the
+// validation pass, applyOne mutated as it iterated: the caller was told the
+// push failed while earlier entries sat written-but-uncommitted, and the next
+// watcher scan committed exactly what the client believed was rejected.
+func TestBadEntryLeavesTheWholeBatchUnapplied(t *testing.T) {
+	rc, v, r := newRec(t)
+	good := put(t, r, "good.md", "should not be written\n")
+	bad := Change{Path: "missing.md", Op: "put", Hash: "0123456789012345678901234567890123456789"}
+
+	if _, _, err := rc.Push("", "mac", []Change{good, bad}); err == nil {
+		t.Fatal("want an error for the missing blob")
+	}
+	if exists(v, "good.md") {
+		t.Error("an earlier entry was written despite the batch failing")
+	}
+	head, _ := r.Head()
+	if head != "" {
+		t.Errorf("a commit was created for a failed push: %s", head)
+	}
+}
+
+func TestDuplicatePathInOnePushIsRejected(t *testing.T) {
+	rc, _, r := newRec(t)
+	a := put(t, r, "same.md", "first\n")
+	b := put(t, r, "same.md", "second\n")
+	if _, _, err := rc.Push("", "mac", []Change{a, b}); err == nil {
+		t.Fatal("want an error when one push names the same path twice")
+	}
+}
+
+// Two conflicts on one path from one device inside a second must not collide.
+func TestConflictPathsAreUniquePerContent(t *testing.T) {
+	a := conflictPath("notes/idea.md", "relay", []byte("version one\n"))
+	b := conflictPath("notes/idea.md", "relay", []byte("version two\n"))
+	if a == b {
+		t.Errorf("both conflicts landed on %s; the first would be overwritten", a)
+	}
+	if !strings.HasSuffix(a, ".md") {
+		t.Errorf("conflict path lost its extension: %s", a)
+	}
+	// Identical content collapsing to one path is correct, not a collision.
+	if conflictPath("notes/idea.md", "relay", []byte("same\n")) !=
+		conflictPath("notes/idea.md", "relay", []byte("same\n")) {
+		t.Error("identical content produced two different conflict paths")
+	}
+}

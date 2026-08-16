@@ -470,3 +470,36 @@ func TestIndexAndHealthzReportTheProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyTokenIsRefusedRatherThanServingAnOpenVault(t *testing.T) {
+	base := t.TempDir()
+	work := filepath.Join(base, "vault")
+	v, _ := vault.New(work)
+	defer v.Close()
+	r, _ := repo.Open(work, filepath.Join(base, "git"))
+	defer func() {
+		if recover() == nil {
+			t.Error("api.New accepted an empty token; 'Bearer ' would authenticate")
+		}
+	}()
+	New(reconcile.New(v, r), r, "")
+}
+
+func TestOversizedUploadIs413NotASilentTruncation(t *testing.T) {
+	h, _, _ := newServer(t)
+	big := bytes.Repeat([]byte("x"), maxUpload+64)
+	req := httptest.NewRequest("PUT", "/v1/content/"+strings.Repeat("a", 40), bytes.NewReader(big))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("code = %d, want 413 (got %s)", w.Code, w.Body.String()[:min(80, w.Body.Len())])
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

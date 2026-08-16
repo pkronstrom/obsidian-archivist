@@ -95,13 +95,23 @@ func (rc *Reconciler) notify(prev, head string) {
 		return // nobody listening; do not pay for the diff
 	}
 
+	// Built with the lock RELEASED: it does git I/O, and holding the lock
+	// across that would stall every unsubscribe for the duration.
 	ev := rc.buildEvent(prev, head)
+
 	rc.events.mu.Lock()
 	defer rc.events.mu.Unlock()
 	for _, s := range subs {
+		// Re-check membership under the same lock that guards close(). A
+		// subscriber can disconnect during the unlocked window above, and
+		// sending on a closed channel panics even inside a select -- which
+		// would take the whole server down because a client hung up mid-commit.
+		if _, live := rc.events.subs[s]; !live {
+			continue
+		}
 		select {
 		case s.ch <- ev:
-		default:
+		default: // slow subscriber: drop, the cursor still tells it what it missed
 		}
 	}
 }

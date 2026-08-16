@@ -32,7 +32,15 @@ type Server struct {
 	token string
 }
 
+// New panics on an empty token rather than serving an open vault. With token ==
+// "" the expected header is exactly "Bearer ", which any client can send -- an
+// authentication bypass that looks like working authentication. The server
+// binary rejects this in config, but nothing stops another caller (the relay,
+// a test, a future embedding) from constructing one directly.
 func New(rc *reconcile.Reconciler, r *repo.Repo, token string) http.Handler {
+	if token == "" {
+		panic("api.New: empty token would accept any request presenting 'Bearer '")
+	}
 	s := &Server{rc: rc, repo: r, token: token}
 
 	mux := http.NewServeMux()
@@ -170,9 +178,18 @@ func (s *Server) have(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	claimed := r.PathValue("hash")
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxUpload))
+	// maxUpload+1 so an oversized body is DETECTED rather than silently
+	// truncated. LimitReader alone would hash the first 512 MiB, and a client
+	// whose claimed hash happened to match that prefix would get a 200 for a
+	// request whose tail was discarded.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxUpload+1))
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if int64(len(body)) > maxUpload {
+		httpError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("content exceeds the %d byte limit", maxUpload))
 		return
 	}
 	// Verify the address before storing. A store that trusts the client's hash

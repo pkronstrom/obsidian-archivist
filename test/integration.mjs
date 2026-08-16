@@ -8,8 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FakeApp } from "./obsidian-shim.mjs";
-import { Sync } from "../dist-test/sync.mjs";
-import { Client } from "../dist-test/client.mjs";
+import { Sync, Client } from "../dist-test/entry.mjs";
 
 const [, , SERVER, TOKEN] = process.argv;
 if (!SERVER || !TOKEN) {
@@ -156,6 +155,33 @@ await mac.sync.run();
 await phone.sync.run();
 check("`.obsidian` does not reach the other device",
   !(await phone.app.vault.adapter.exists(".obsidian/appearance.json")));
+
+// --- 12. re-bootstrap must not overwrite the server's version ---------------
+// Found by review: rebootstrap left a locally-different path out of the
+// snapshot, so the next diff pushed it as a new put against the adopted head
+// and the server took our bytes over its own without merging.
+{
+  const reboot = await device("reboot");
+  await fs.writeFile(path.join(reboot.root, "notes/c.md"), "LOCAL divergent\n").catch(async () => {
+    await fs.mkdir(path.join(reboot.root, "notes"), { recursive: true });
+    await fs.writeFile(path.join(reboot.root, "notes/c.md"), "LOCAL divergent\n");
+  });
+  // A cursor the server has never heard of forces the 409 path.
+  reboot.app.saveLocalStorage("archivist.state", {
+    base: "0123456789012345678901234567890123456789",
+    files: { "notes/c.md": { hash: "deadbeef", mtime: 1, size: 1 } },
+  });
+  const serverBefore = await mac.read("notes/c.md");
+  r = await reboot.sync.run();
+  check("re-bootstrap happened", r.rebootstrapped, JSON.stringify(r));
+  await mac.sync.run();
+  const serverAfter = await mac.read("notes/c.md");
+  check("the server version survived a re-bootstrap",
+    serverAfter === serverBefore, `before=${JSON.stringify(serverBefore)} after=${JSON.stringify(serverAfter)}`);
+  const files = await fs.readdir(path.join(reboot.root, "notes"));
+  check("and the local divergent copy was kept aside",
+    files.some((f) => f.includes("conflict")), files.join(", "));
+}
 
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURES"}`);
 process.exit(failures === 0 ? 0 : 1);

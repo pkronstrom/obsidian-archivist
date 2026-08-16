@@ -136,10 +136,44 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 		}
 	}
 
+	// Validate EVERYTHING before touching the working tree.
+	//
+	// applyOne mutates as it goes, so a bad path or a missing blob halfway
+	// through used to leave earlier entries written but uncommitted -- and the
+	// caller was told the push failed. A later watcher scan would then commit
+	// exactly the changes the client believes were rejected.
+	seen := make(map[string]struct{}, len(changes))
+	for _, ch := range changes {
+		if err := vault.ValidPath(ch.Path); err != nil {
+			return "", nil, err
+		}
+		if _, dup := seen[ch.Path]; dup {
+			return "", nil, fmt.Errorf("reconcile: %q appears twice in one push", ch.Path)
+		}
+		seen[ch.Path] = struct{}{}
+		switch ch.Op {
+		case "del":
+		case "put":
+			if !rc.r.HasBlob(ch.Hash) {
+				return "", nil, fmt.Errorf(
+					"reconcile: content %s for %s was never uploaded", ch.Hash, ch.Path)
+			}
+		default:
+			return "", nil, fmt.Errorf("reconcile: unknown op %q for %s", ch.Op, ch.Path)
+		}
+	}
+
 	results := make([]Result, 0, len(changes))
 	for _, ch := range changes {
 		res, err := rc.applyOne(base, device, head, moved, ch)
 		if err != nil {
+			// Everything was validated above, so reaching here means an I/O
+			// failure mid-batch. Commit what landed rather than leaving the
+			// tree dirty and unrecorded: the watcher would commit it anyway,
+			// and an unrecorded change is worse than a recorded partial one.
+			if _, cerr := rc.r.Commit("partial push from " + device); cerr != nil {
+				return "", nil, fmt.Errorf("%w (and the partial state could not be committed: %v)", err, cerr)
+			}
 			return "", nil, err
 		}
 		results = append(results, res)
@@ -156,9 +190,7 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool, ch Change) (Result, error) {
 	res := Result{Path: ch.Path, Status: StatusApplied}
 
-	// An escaping path is a broken or hostile client. Fail the whole push
-	// loudly rather than quietly refusing one entry -- there is no benign
-	// reason for a client to send one, so continuing would hide a real problem.
+	// Paths were validated before any mutation began; this is belt and braces.
 	if err := vault.ValidPath(ch.Path); err != nil {
 		return res, err
 	}
@@ -246,7 +278,7 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 // an ordinary note, so it syncs everywhere and can be resolved on a phone by
 // editing and deleting it.
 func (rc *Reconciler) keepBoth(device, path string, theirs []byte) (Result, error) {
-	cp := conflictPath(path, device)
+	cp := conflictPath(path, device, theirs)
 	res := Result{Path: path, Status: StatusConflict, ConflictPath: cp}
 	return res, rc.write(cp, theirs)
 }
@@ -261,11 +293,17 @@ func (rc *Reconciler) write(path string, content []byte) error {
 
 // conflictPath keeps the original extension so editors still recognise the
 // file: notes/idea.md -> notes/idea.conflict-mac-20260816T093012.md
-func conflictPath(path, device string) string {
+func conflictPath(path, device string, content []byte) string {
+	// Device and second alone are not unique: two conflicts on the same path
+	// from the same relay inside one second would collide, and the second copy
+	// would overwrite the first -- breaking the keep-both promise. A short
+	// content fragment makes identical content collapse (which is correct) and
+	// different content diverge (which is the point).
 	stamp := time.Now().UTC().Format("20060102T150405")
+	frag := vault.Hash(content)[7:13]
 	dot := strings.LastIndex(path, ".")
 	slash := strings.LastIndex(path, "/")
-	suffix := fmt.Sprintf(".conflict-%s-%s", sanitise(device), stamp)
+	suffix := fmt.Sprintf(".conflict-%s-%s-%s", sanitise(device), stamp, frag)
 	if dot > slash {
 		return path[:dot] + suffix + path[dot:]
 	}
