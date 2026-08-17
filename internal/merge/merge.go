@@ -18,12 +18,21 @@ import (
 // and conflict is true. Callers decide what to do with that -- this package
 // takes no position.
 func Merge(base, ours, theirs []byte) (result []byte, conflict bool, err error) {
+	return MergeLabelled(base, ours, theirs, "ours", "theirs")
+}
+
+// MergeLabelled is Merge with the names that appear in the conflict markers.
+//
+// The labels matter more than they look. "ours" and "theirs" are meaningless to
+// someone opening a conflicted note on a phone a day later -- they cannot tell
+// which side is which. "server" and the device name say it outright.
+func MergeLabelled(base, ours, theirs []byte, ourLabel, theirLabel string) (result []byte, conflict bool, err error) {
 	r, err := diff3.Merge(
 		bytes.NewReader(ours),
 		bytes.NewReader(base),
 		bytes.NewReader(theirs),
 		true, // exclude false conflicts: identical edits on both sides are not a conflict
-		"ours", "theirs",
+		ourLabel, theirLabel,
 	)
 	if err != nil {
 		return nil, false, err

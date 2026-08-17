@@ -245,22 +245,27 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 	// Binary never merges. A merged binary is corrupt, and conflict markers in
 	// a PNG are worse than either version alone.
 	if merge.IsBinary(ours) || merge.IsBinary(theirs) {
-		return rc.keepBoth(device, path, theirs)
+		return rc.keepBoth(device, path, theirs, nil)
 	}
 
 	baseContent, err := rc.r.ReadAt(base, path)
 	if err != nil {
 		// No common ancestor for this path -- both sides created it
-		// independently. There is nothing to merge against.
-		return rc.keepBoth(device, path, theirs)
+		// independently. There is nothing to merge against, so there is nothing
+		// to mark up either.
+		return rc.keepBoth(device, path, theirs, nil)
 	}
 
-	merged, conflict, err := merge.Merge(baseContent, ours, theirs)
+	merged, conflict, err := merge.MergeLabelled(baseContent, ours, theirs, "server", device)
 	if err != nil {
 		return res, err
 	}
 	if conflict {
-		return rc.keepBoth(device, path, theirs)
+		// Hand the marked-up merge to the conflict file. It shows both sides
+		// against their common ancestor, which the raw losing version alone
+		// cannot: with only one side you have to diff it against the note by
+		// hand to find out what actually differs.
+		return rc.keepBoth(device, path, theirs, merged)
 	}
 	res.Status = StatusMerged
 	res = rc.resultFor(res, merged)
@@ -271,7 +276,21 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 // beside it. Deliberately the dumbest possible resolution: a conflict file is
 // an ordinary note, so it syncs everywhere and can be resolved on a phone by
 // editing and deleting it.
-func (rc *Reconciler) keepBoth(device, path string, theirs []byte) (Result, error) {
+//
+// marked is the three-way merge carrying git-style conflict markers, when one
+// could be produced. It goes in the conflict file rather than the note itself:
+// the note stays clean and readable, and markers only ever appear in a file
+// whose name says it needs attention. Markers in the note would render as
+// literal text in every preview on every device until someone resolved them.
+//
+// marked is nil for binaries and for paths with no common ancestor, where there
+// is no meaningful three-way result. Then the client's raw version is written,
+// as before.
+func (rc *Reconciler) keepBoth(device, path string, theirs, marked []byte) (Result, error) {
+	body := theirs
+	if marked != nil {
+		body = marked
+	}
 	cp := conflictPath(path, device, theirs)
 	res := Result{Path: path, Status: StatusConflict, ConflictPath: cp}
 	// Both hashes: what the server kept at the real path, and where the
@@ -280,10 +299,13 @@ func (rc *Reconciler) keepBoth(device, path string, theirs []byte) (Result, erro
 	if ours, err := rc.v.Read(path); err == nil {
 		res = rc.resultFor(res, ours)
 	}
-	if h, err := repo.HashContent(theirs); err == nil {
+	// The hash describes what is AT ConflictPath, so a client can fetch exactly
+	// what it will find there. The client's own unmarked version is still in the
+	// object store -- it uploaded it before pushing -- so nothing is unreachable.
+	if h, err := repo.HashContent(body); err == nil {
 		res.ConflictHash = h
 	}
-	return res, rc.write(cp, theirs)
+	return res, rc.write(cp, body)
 }
 
 func (rc *Reconciler) write(path string, content []byte) error {

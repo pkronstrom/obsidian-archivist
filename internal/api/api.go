@@ -403,7 +403,7 @@ func (s *Server) at(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("X-Vaultsync-Revision", resolved)
+	w.Header().Set("X-Archivist-Revision", resolved)
 	w.Write(content)
 }
 

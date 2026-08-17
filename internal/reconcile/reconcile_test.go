@@ -124,8 +124,14 @@ func TestOverlappingSameLineProducesAConflictFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conflict file unreadable: %v", err)
 	}
-	if string(side) != "from mac\n" {
-		t.Errorf("conflict file = %q, want the client version", side)
+	// The conflict file now carries the three-way merge with markers, not the
+	// bare losing version: with only one side you have to diff it against the
+	// note by hand to discover what actually differs.
+	if !strings.Contains(string(side), "from mac") {
+		t.Errorf("conflict file lost the client version: %q", side)
+	}
+	if !strings.Contains(string(side), "from phone") {
+		t.Errorf("conflict file does not show the server side: %q", side)
 	}
 	if !strings.Contains(results[0].ConflictPath, "mac") {
 		t.Errorf("conflict path %q does not name the device", results[0].ConflictPath)
@@ -349,5 +355,83 @@ func TestResultsReportTheResultingHash(t *testing.T) {
 	}
 	if results[0].Hash == "" || results[0].ConflictHash == "" {
 		t.Errorf("conflict result missing a hash: %+v", results[0])
+	}
+}
+
+// The conflict file shows both sides against their common ancestor, with the
+// sides named. "ours" and "theirs" are useless to someone opening this on a
+// phone the next day.
+func TestConflictFileCarriesGitStyleMarkers(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, _ := rc.Push("", "seed", []Change{put(t, r, "n.md", "line1\nline2\nline3\n")})
+	rc.Push(base, "phone", []Change{put(t, r, "n.md", "line1\nSERVER EDIT\nline3\n")})
+	_, results, err := rc.Push(base, "work-mac", []Change{put(t, r, "n.md", "line1\nCLIENT EDIT\nline3\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusConflict {
+		t.Fatalf("status = %q, want conflict", results[0].Status)
+	}
+
+	body, err := v.Read(results[0].ConflictPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, want := range []string{"<<<<<<<", "=======", ">>>>>>>", "SERVER EDIT", "CLIENT EDIT", "server", "work-mac"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("conflict file lacks %q:\n%s", want, got)
+		}
+	}
+	// Unconflicted context survives, so it still reads as a note.
+	if !strings.Contains(got, "line1") || !strings.Contains(got, "line3") {
+		t.Errorf("surrounding lines were dropped:\n%s", got)
+	}
+}
+
+// The note itself must stay clean. Markers there would render as literal text
+// in every preview on every device until someone resolved them.
+func TestTheNoteItselfNeverGetsMarkers(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, _ := rc.Push("", "seed", []Change{put(t, r, "n.md", "line1\nline2\nline3\n")})
+	rc.Push(base, "phone", []Change{put(t, r, "n.md", "line1\nSERVER EDIT\nline3\n")})
+	rc.Push(base, "work-mac", []Change{put(t, r, "n.md", "line1\nCLIENT EDIT\nline3\n")})
+
+	body, _ := v.Read("n.md")
+	if strings.Contains(string(body), "<<<<<<<") {
+		t.Errorf("the note carries conflict markers:\n%s", body)
+	}
+	if !strings.Contains(string(body), "SERVER EDIT") {
+		t.Errorf("the note is not the server version:\n%s", body)
+	}
+}
+
+// Conflict markers inside a binary are worse than either version alone, so a
+// binary conflict keeps the client's exact bytes and skips the merge entirely.
+//
+// The NUL byte is load-bearing: IsBinary uses git's heuristic, so content
+// without one is treated as text no matter what the extension says. A synthetic
+// 8-byte PNG header has no NUL and merges happily, which this test asserted the
+// opposite of on the first attempt.
+func TestBinaryConflictFileHasNoMarkersAndExactBytes(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, _ := rc.Push("", "seed", []Change{put(t, r, "i.png", "\x00\x01PNG base")})
+	rc.Push(base, "phone", []Change{put(t, r, "i.png", "\x00\x01PNG server")})
+	_, results, err := rc.Push(base, "work-mac", []Change{put(t, r, "i.png", "\x00\x01PNG client")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusConflict {
+		t.Fatalf("status = %q, want conflict", results[0].Status)
+	}
+	body, err := v.Read(results[0].ConflictPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "<<<<<<<") {
+		t.Errorf("binary conflict file got markers: %q", body)
+	}
+	if string(body) != "\x00\x01PNG client" {
+		t.Errorf("binary conflict file is not the client's exact bytes: %q", body)
 	}
 }

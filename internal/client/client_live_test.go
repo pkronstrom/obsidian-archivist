@@ -142,8 +142,17 @@ func TestLiveConflictReportsBothSides(t *testing.T) {
 	// Both versions must be fetchable without downloading the whole snapshot.
 	kept, _ := c.GetContent(ctx, r.Hash)
 	aside, _ := c.GetContent(ctx, r.ConflictHash)
-	if string(kept) != "from A\n" || string(aside) != "from B\n" {
-		t.Errorf("kept=%q aside=%q", kept, aside)
+	if string(kept) != "from A\n" {
+		t.Errorf("server did not keep its own version: %q", kept)
+	}
+	// The conflict copy is now the three-way merge with markers, not the bare
+	// losing version, so that opening it shows BOTH sides rather than one you
+	// then have to diff by hand. Both texts must still be in there.
+	if !strings.Contains(string(aside), "from B") {
+		t.Errorf("conflict copy lost the client version: %q", aside)
+	}
+	if !strings.Contains(string(aside), "from A") {
+		t.Errorf("conflict copy does not show the server side: %q", aside)
 	}
 }
 
