@@ -31,6 +31,13 @@ type Config struct {
 	// Watch enables the filesystem watcher. Off is useful in tests and for a
 	// read-only replica.
 	Watch bool
+	// NormalizeNFC renames files on disk whose names are not composed.
+	//
+	// Off by default because it MODIFIES the vault. macOS writes filenames
+	// decomposed and iOS writes them composed, and on Linux those are two
+	// different paths -- so the same note arrives twice, or devices rename it
+	// back and forth. Turn it on once and one spelling wins.
+	NormalizeNFC bool
 	// LogLevel is debug, info, warn or error.
 	LogLevel string
 	// LogFile, when set, also writes to a rotating file. Leave empty in a
@@ -79,6 +86,8 @@ func Load(args []string) (*Config, error) {
 		"bearer token required from clients")
 	fs.DurationVar(&c.Debounce, "debounce", debounce,
 		"quiet period before a filesystem change is acted on")
+	fs.BoolVar(&c.NormalizeNFC, "normalize-nfc", env("ARCHIVIST_NORMALIZE_NFC", "false") == "true",
+		"rename files whose names are not Unicode NFC, so macOS and iOS agree on one spelling")
 	fs.BoolVar(&c.Watch, "watch", env("ARCHIVIST_WATCH", "true") != "false",
 		"watch the vault for local edits")
 	fs.StringVar(&c.LogLevel, "log-level", env("ARCHIVIST_LOG_LEVEL", "info"),

@@ -137,6 +137,21 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Normalise BEFORE anything watches or commits, so the renames land as one
+	// tidy change rather than interleaved with edits.
+	rc.SetNormalizeNFC(cfg.NormalizeNFC)
+	if cfg.NormalizeNFC {
+		renamed, err := v.NormalizeToNFC(log)
+		if err != nil {
+			return fmt.Errorf("normalising filenames: %w", err)
+		}
+		if len(renamed) > 0 {
+			if _, err := rc.Scan(fmt.Sprintf("normalise %d filename(s) to NFC", len(renamed))); err != nil {
+				return err
+			}
+		}
+	}
+
 	watchDone := make(chan error, 1)
 	if cfg.Watch {
 		w := watcher.New(v, rc, cfg.Debounce, log)

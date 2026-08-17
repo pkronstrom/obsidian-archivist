@@ -55,6 +55,9 @@ type Reconciler struct {
 	written map[string]writeRecord
 
 	events *broadcaster
+
+	// normalizeNFC canonicalises incoming paths. Set once at startup.
+	normalizeNFC bool
 }
 
 // echoTTL is how long a write stays suppressible. Comfortably longer than any
@@ -107,6 +110,19 @@ func (rc *Reconciler) WasOurWrite(path string, content []byte) bool {
 func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Result, error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
+
+	// Canonicalise incoming paths when normalisation is on.
+	//
+	// Without this, a Mac pushing the decomposed spelling of a name whose
+	// composed spelling is already in the vault creates a SECOND file for the
+	// same note. Normalising here means every writer converges on one path,
+	// which is the whole point -- doing it only on disk at startup would leave
+	// the next push to undo it.
+	if rc.normalizeNFC {
+		for i := range changes {
+			changes[i].Path = vault.ToNFC(changes[i].Path)
+		}
+	}
 
 	head, err := rc.r.Head()
 	if err != nil {
@@ -418,6 +434,10 @@ func sanitise(s string) string {
 //
 // There is no merge here and there cannot be: a filesystem writer supplies no
 // base version, so this is last-writer-wins by construction.
+// SetNormalizeNFC turns path canonicalisation on. Off by default: it changes
+// what paths writes land on, so it is opt-in and set once at startup.
+func (rc *Reconciler) SetNormalizeNFC(on bool) { rc.normalizeNFC = on }
+
 func (rc *Reconciler) Scan(msg string) (string, error) {
 	rc.mu.Lock()
 	before, _ := rc.r.Head()
