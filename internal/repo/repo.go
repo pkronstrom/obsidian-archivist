@@ -88,6 +88,14 @@ type Repo struct {
 }
 
 // Open initialises the repository if absent and opens it otherwise.
+// GitDir is where the repository lives.
+//
+// Exposed so callers needing scratch space can use a directory that is
+// guaranteed to exist and be writable: the server writes here constantly, and it
+// is on the same filesystem as the objects being archived, so a rename is cheap
+// and a temp file cannot land on a different mount.
+func (r *Repo) GitDir() string { return r.gitDir }
+
 func Open(workTree, gitDir string) (*Repo, error) {
 	wt := osfs.New(workTree)
 	dot := osfs.New(gitDir)

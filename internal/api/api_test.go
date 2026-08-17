@@ -443,9 +443,25 @@ func TestIndexListsRoutesThatAllExist(t *testing.T) {
 			// Covered by TestEventsStreamsHeadOnConnectAndOnCommit instead.
 			continue
 		}
-		got := do(t, h, e.Method, e.Path, nil, true).Code
-		if got == http.StatusNotFound || got == http.StatusMethodNotAllowed {
-			t.Errorf("%s %s is advertised but answers %d", e.Method, e.Path, got)
+		// A 5xx counts as failing, not as "it answered".
+		//
+		// This check used to accept anything that was not 404 or 405, and that
+		// hole was expensive: /v1/export returned 500 on EVERY call in
+		// production from the day it shipped, and this test -- whose stated job
+		// is that everything advertised actually works -- passed the whole time.
+		// "Is it routed" is a much weaker property than the name suggested.
+		path := e.Path
+		if path == "/v1/wait" {
+			// Long-polling blocks until the head moves or the timeout expires,
+			// and on a fresh repo the caller's empty cursor already equals head
+			// -- so a bare call waits the full default 60 seconds and this test
+			// looked like it had hung. Ask for one second rather than skipping,
+			// so the route stays covered.
+			path += "?timeout=1"
+		}
+		got := do(t, h, e.Method, path, nil, true).Code
+		if got >= 500 || got == http.StatusNotFound || got == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s is advertised but answers %d", e.Method, path, got)
 		}
 	}
 }
@@ -502,4 +518,64 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// The export must not depend on /tmp.
+//
+// The image is FROM scratch, so /tmp does not exist, and os.CreateTemp("")
+// writes there. Every production call returned
+// "open /tmp/archivist-export-*.tar: no such file or directory" from the day the
+// endpoint shipped. It was invisible to tests because a developer machine and CI
+// both have /tmp -- so this test removes the assumption instead of relying on it,
+// by pointing TMPDIR at somewhere that does not exist.
+//
+// A tmpfs mount in compose also fixes the deployment, but the binary should not
+// need it.
+func TestExportDoesNotDependOnTmp(t *testing.T) {
+	h, _, r := newServer(t)
+	content := []byte("archive me\n")
+	hash, _ := repo.HashContent(content)
+	putContent(t, h, hash, content)
+	pushOne(t, h, "", "a.md", hash)
+
+	// Anything reading TMPDIR now fails, the way /tmp is absent in the image.
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "definitely-not-here"))
+
+	w := do(t, h, "GET", "/v1/export", nil, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("export = %d, body %s", w.Code, w.Body.String())
+	}
+	if w.Body.Len() == 0 {
+		t.Fatal("export produced no bytes")
+	}
+	// And it really is the archive, not an error page with a 200 on it.
+	if got := w.Body.Bytes(); len(got) < 512 {
+		t.Errorf("export is only %d bytes; that is not a tar of a repository", len(got))
+	}
+	_ = r
+}
+
+// Two exports of an unchanged vault must be byte-identical, or every backup run
+// stores a fresh copy of the whole history instead of nothing.
+//
+// The restic work first measured this as "some churn per run", which was an
+// artefact of comparing two 500 responses whose error text embeds a different
+// random temp filename each time. Worth pinning now that the endpoint works.
+func TestExportOfAnUnchangedVaultIsReproducible(t *testing.T) {
+	h, _, _ := newServer(t)
+	content := []byte("stable\n")
+	hash, _ := repo.HashContent(content)
+	putContent(t, h, hash, content)
+	pushOne(t, h, "", "a.md", hash)
+
+	first := do(t, h, "GET", "/v1/export", nil, true)
+	second := do(t, h, "GET", "/v1/export", nil, true)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("codes %d and %d", first.Code, second.Code)
+	}
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Errorf("two exports of an unchanged vault differ (%d vs %d bytes); "+
+			"every backup run would store a whole new copy",
+			first.Body.Len(), second.Body.Len())
+	}
 }

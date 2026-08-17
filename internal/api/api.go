@@ -505,7 +505,19 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	// snapshot rather than a delta. See repo.Archive.
 	compress := r.URL.Query().Get("gzip") == "1"
 
-	tmp, err := os.CreateTemp("", "archivist-export-*.tar")
+	// Scratch space beside the repository, NOT in /tmp.
+	//
+	// os.CreateTemp("") writes to /tmp, and the image is FROM scratch: there is
+	// no /tmp. Every call to this endpoint returned 500 with "no such file or
+	// directory" from the day it shipped -- the one endpoint whose whole job is
+	// preventing a corrupt backup was dead, and nothing noticed because a
+	// developer machine and CI both have /tmp.
+	//
+	// A tmpfs mount in compose also fixes it, and one is now in place, but a
+	// deployment detail should not be what makes the binary work. The git
+	// directory is writable by definition here and on the same filesystem as the
+	// objects being archived.
+	tmp, err := os.CreateTemp(s.repo.GitDir(), "archivist-export-*.tar")
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
