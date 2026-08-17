@@ -16,6 +16,19 @@ import (
 	"syscall"
 	"time"
 
+	// Embeds the timezone database in the binary.
+	//
+	// The container image is FROM scratch, so there is no /usr/share/zoneinfo
+	// for Go to read. Without this, TZ=Europe/Helsinki has NO effect: the lookup
+	// fails, the process falls back to UTC, and every commit in the vault
+	// history is stamped +0000 while the compose file claims Helsinki. That
+	// shipped, and was caught only by noticing timestamps three hours behind
+	// local.
+	//
+	// Costs 403 KB measured, which buys git timestamps that match the wall clock
+	// of whoever reads them.
+	_ "time/tzdata"
+
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
 	"github.com/pkronstrom/obsidian-archivist/internal/cli"
 	"github.com/pkronstrom/obsidian-archivist/internal/config"
