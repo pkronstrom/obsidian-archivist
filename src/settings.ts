@@ -8,6 +8,8 @@ export type Settings = {
 	device: string;
 	intervalSeconds: number;
 	syncOnChange: boolean;
+	/** Hold a long-poll open so remote changes arrive in about a second. */
+	watchRemote: boolean;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -16,6 +18,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	device: "",
 	intervalSeconds: 300,
 	syncOnChange: true,
+	watchRemote: true,
 };
 
 export class ArchivistSettingTab extends PluginSettingTab {
@@ -82,6 +85,21 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					this.plugin.settings.intervalSeconds = Math.floor(n);
 					await this.plugin.saveSettings();
 					this.plugin.restartTimer();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Watch for remote changes")
+			.setDesc(
+				"Hold a connection open so changes from other devices arrive in about a " +
+					"second instead of waiting for the interval. Costs one idle connection " +
+					"and no traffic while nothing changes. Turn off to rely on the interval alone.",
+			)
+			.addToggle((t) =>
+				t.setValue(this.plugin.settings.watchRemote).onChange(async (v) => {
+					this.plugin.settings.watchRemote = v;
+					await this.plugin.saveSettings();
+					this.plugin.restartWatcher();
 				}),
 			);
 

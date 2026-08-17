@@ -106,6 +106,14 @@ type Result struct {
 }
 
 // Event is one commit, pushed over /v1/events.
+// WaitResponse answers a long-poll. Changed is advisory: the caller still asks
+// /v1/changes what actually moved, so a spurious true costs one wasted sync and
+// a false negative is caught by the next poll.
+type WaitResponse struct {
+	Head    string `json:"head"`
+	Changed bool   `json:"changed"`
+}
+
 type Event struct {
 	Head      string    `json:"head"`
 	Prev      string    `json:"prev,omitempty"`

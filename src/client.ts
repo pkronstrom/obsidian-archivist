@@ -98,6 +98,27 @@ export class Client {
 		);
 	}
 
+	// wait long-polls: the server holds the request until the head moves past
+	// `since`, or `timeoutSeconds` elapses.
+	//
+	// This is how the plugin learns about remote changes without polling every
+	// few minutes. It is long-polling rather than the server's SSE stream
+	// because requestUrl returns a complete response rather than a stream, and
+	// requestUrl is the only transport that works on both desktop and iOS --
+	// native fetch would need CORS, and the preflight for an Authorization
+	// header is an unauthenticated OPTIONS the server answers with 401.
+	//
+	// `changed` is advisory. The caller still asks what actually moved, so a
+	// spurious wake costs one wasted sync and a missed one is caught by the
+	// interval.
+	async wait(since: string, timeoutSeconds: number): Promise<{ head: string; changed: boolean }> {
+		const res = await this.call(
+			"GET",
+			`/v1/wait?since=${encodeURIComponent(since)}&timeout=${timeoutSeconds}`,
+		);
+		return res.json as { head: string; changed: boolean };
+	}
+
 	async head(): Promise<string> {
 		return (await this.call("GET", "/v1/head")).json.head as string;
 	}

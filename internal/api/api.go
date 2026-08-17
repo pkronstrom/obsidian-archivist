@@ -287,6 +287,82 @@ func writeEvent(w http.ResponseWriter, v any) {
 }
 
 // history lists the revisions in which a path changed.
+// wait is long-polling: it holds the request open until the head moves past
+// ?since=, or ?timeout= seconds elapse, whichever comes first.
+//
+// This exists because /v1/events cannot be consumed by the Obsidian plugin.
+// Obsidian's requestUrl is the only HTTP transport that works on both desktop
+// and iOS -- it exists precisely to bypass CORS -- and it returns a complete
+// response rather than a stream. Native fetch would need CORS, and the
+// preflight for an Authorization header is an unauthenticated OPTIONS that this
+// server answers with 401, so the request would fail before it began.
+//
+// Long-polling gives the same properties as SSE for a single waiter: one idle
+// connection, no bytes while nothing happens, sub-second latency on a change.
+// It differs only in costing one request per change rather than per stream.
+//
+// The client is expected to loop: call wait, sync when it reports a change,
+// call wait again with the new cursor. `changed` is advisory -- the caller
+// still asks /v1/changes what actually moved, so a spurious wake is harmless
+// and a missed one is caught by the next poll.
+func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
+	since := r.URL.Query().Get("since")
+
+	timeout := 60 * time.Second
+	if v := r.URL.Query().Get("timeout"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			fail(w, http.StatusBadRequest, protocol.CodeMalformed, "timeout must be a positive number of seconds")
+			return
+		}
+		if d := time.Duration(n) * time.Second; d < maxWait {
+			timeout = d
+		} else {
+			timeout = maxWait
+		}
+	}
+
+	head, err := s.repo.Head()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	// Already behind: answer at once rather than making the caller wait for a
+	// change it has in fact already missed.
+	if head != since {
+		writeJSON(w, protocol.WaitResponse{Head: head, Changed: true})
+		return
+	}
+
+	// Subscribe BEFORE re-checking head. Subscribing after would leave a window
+	// in which a commit lands between the check and the subscription, and the
+	// caller would then block for the full timeout on news that already exists.
+	ch, stop := s.rc.Subscribe()
+	defer stop()
+
+	if head, err := s.repo.Head(); err == nil && head != since {
+		writeJSON(w, protocol.WaitResponse{Head: head, Changed: true})
+		return
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			writeJSON(w, protocol.WaitResponse{Head: since, Changed: false})
+			return
+		}
+		writeJSON(w, protocol.WaitResponse{Head: ev.Head, Changed: true})
+	case <-timer.C:
+		// A timeout is a normal outcome, not an error: it means "still nothing".
+		writeJSON(w, protocol.WaitResponse{Head: since, Changed: false})
+	case <-r.Context().Done():
+		// The caller went away. Nothing to write.
+	}
+}
+
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -353,6 +429,11 @@ type route struct {
 	handle http.HandlerFunc
 }
 
+// maxWait caps how long a long-poll may hold a request open. Proxies and
+// phone radios drop idle connections well before this, so a longer ceiling
+// buys nothing and just hides a stuck client.
+const maxWait = 120 * time.Second
+
 func (s *Server) routes() []route {
 	return []route{
 		{"GET", "/v1", "this list", nil},
@@ -364,6 +445,7 @@ func (s *Server) routes() []route {
 		{"GET", "/v1/content/{hash}", "download content by hash", s.getContent},
 		{"POST", "/v1/push", "{base,device,changes:[...]} apply a change set", s.push},
 		{"GET", "/v1/events", "SSE:one per commit with changed paths, kind, size", s.events},
+		{"GET", "/v1/wait", "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", s.wait},
 		{"GET", "/v1/history", "?path=&limit= revisions that touched a path", s.history},
 		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", s.at},
 		{"GET", "/v1/check", "working tree versus head", s.check},

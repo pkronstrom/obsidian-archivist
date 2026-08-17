@@ -2,6 +2,8 @@ import { Notice, Plugin, TAbstractFile, debounce } from "obsidian";
 import { Client } from "./client";
 import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
+import { Watcher } from "./watch";
+import { loadState } from "./state";
 
 export default class ArchivistPlugin extends Plugin {
 	settings: Settings = { ...DEFAULT_SETTINGS };
@@ -9,6 +11,7 @@ export default class ArchivistPlugin extends Plugin {
 
 	private status?: HTMLElement;
 	private timer?: number;
+	private watcher?: Watcher;
 	private scheduleSync = debounce(() => void this.runSync(), 2000, true);
 
 	async onload(): Promise<void> {
@@ -19,6 +22,19 @@ export default class ArchivistPlugin extends Plugin {
 			() => new Client(this.settings.serverUrl, this.settings.token),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
+		);
+
+		// Long-polls the server so remote changes land in about a second rather
+		// than waiting up to a full interval. See watch.ts for why this is
+		// long-polling and not the server's SSE stream.
+		this.watcher = new Watcher(
+			() =>
+				this.settings.serverUrl && this.settings.token
+					? new Client(this.settings.serverUrl, this.settings.token)
+					: null,
+			() => loadState(this.app).base,
+			() => this.runSync(),
+			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
 		);
 
 		this.status = this.addStatusBarItem();
@@ -70,14 +86,44 @@ export default class ArchivistPlugin extends Plugin {
 		// can be cut short: flush when backgrounding, and pull on focus so the
 		// other device is current the moment it is picked up -- which is the
 		// whole edit-on-phone-then-switch-to-laptop pattern.
-		this.registerDomEvent(window, "blur", () => void this.runSync());
-		this.registerDomEvent(window, "focus", () => void this.runSync());
+		//
+		// The watcher stops on blur and starts on focus for the same reason. A
+		// held connection does not survive the phone locking, and leaving one
+		// pending would keep the radio busy for an answer that can never arrive.
+		// Syncing on focus is what actually makes the phone current; the watcher
+		// keeps it current while you are looking at it.
+		this.registerDomEvent(window, "blur", () => {
+			this.watcher?.stop();
+			void this.runSync();
+		});
+		this.registerDomEvent(window, "focus", () => {
+			void this.runSync();
+			this.startWatching();
+		});
 
 		this.restartTimer();
+		this.startWatching();
 	}
 
 	onunload(): void {
 		if (this.timer !== undefined) window.clearInterval(this.timer);
+		this.watcher?.stop();
+	}
+
+	/**
+	 * The watcher is the low-latency path; the interval stays on as a backstop
+	 * for whatever the long-poll misses -- a dropped connection, a suspended
+	 * phone, a proxy that closed the request early.
+	 */
+	startWatching(): void {
+		if (!this.settings.watchRemote) return;
+		if (!this.settings.serverUrl || !this.settings.token) return;
+		this.watcher?.start();
+	}
+
+	restartWatcher(): void {
+		this.watcher?.stop();
+		this.startWatching();
 	}
 
 	restartTimer(): void {
