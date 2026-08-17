@@ -161,6 +161,22 @@ type writeOutput struct {
 	Status       string `json:"status"`
 	ConflictPath string `json:"conflictPath,omitempty"`
 	Note         string `json:"note,omitempty"`
+
+	// Current* carry the note as it now stands, sent only when the write did NOT
+	// land exactly as given.
+	//
+	// This is deliberately NOT an automatic retry. write_note takes finished
+	// content, not a transformation, so "re-read and write it again" is a blind
+	// overwrite of whatever the other writer just did -- the precise failure the
+	// base/revision machinery exists to prevent. A conflict means two writers
+	// disagree about the same lines and no machine can pick between them.
+	//
+	// What is safe is removing the reason to fumble the retry: the caller gets
+	// the current content and revision here, so re-applying its change is one
+	// call instead of read_note followed by write_note, and it cannot
+	// accidentally re-apply against a revision that has moved again in between.
+	CurrentContent  string `json:"currentContent,omitempty"`
+	CurrentRevision string `json:"currentRevision,omitempty"`
 }
 
 func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
@@ -173,6 +189,16 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 			return nil, writeOutput{}, err
 		}
 		out := writeOutput{Path: res.Path, Status: res.Status, ConflictPath: res.ConflictPath}
+
+		// Anything other than a clean apply means the stored content is not what
+		// was sent, so hand back what IS there. Best-effort: failing to fetch it
+		// must not turn a reported conflict into a reported error, which would
+		// lose the fact that the write was set aside safely.
+		if res.Status != protocol.StatusApplied {
+			if body, rev, err := c.ReadForEdit(ctx, in.Path); err == nil {
+				out.CurrentContent, out.CurrentRevision = string(body), rev
+			}
+		}
 		// Spell out the non-obvious outcomes: an agent that assumes its bytes
 		// were stored will report a lie to the user.
 		switch res.Status {
@@ -188,10 +214,11 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 			// vault.
 			out.Note = "a person edited the same lines while you were writing. Your version " +
 				"was NOT stored at " + res.Path + "; it was set aside at " + res.ConflictPath +
-				". Do this: read_note " + res.Path + " again, apply your change to what you " +
-				"find there, and write_note again with the revision it returns. Then " +
-				"delete_note " + res.ConflictPath + ", since your change is now in the note. " +
-				"Do not copy the conflict file over the note: that would discard their edit."
+				". currentContent and currentRevision below are the note as it now stands. " +
+				"Do this: apply your change to currentContent, then write_note again passing " +
+				"currentRevision. Then delete_note " + res.ConflictPath + ", since your change " +
+				"is now in the note. Do NOT send your original content unchanged and do NOT " +
+				"copy the conflict file over the note: either would discard their edit."
 		case protocol.StatusRefused:
 			out.Note = "the server declined this write: " + res.Reason
 		}
