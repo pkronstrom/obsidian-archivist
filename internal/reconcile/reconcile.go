@@ -289,7 +289,7 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 func (rc *Reconciler) keepBoth(device, path string, theirs, marked []byte) (Result, error) {
 	body := theirs
 	if marked != nil {
-		body = marked
+		body = fenceConflict(marked, device)
 	}
 	cp := conflictPath(path, device, theirs)
 	res := Result{Path: path, Status: StatusConflict, ConflictPath: cp}
@@ -306,6 +306,54 @@ func (rc *Reconciler) keepBoth(device, path string, theirs, marked []byte) (Resu
 		res.ConflictHash = h
 	}
 	return res, rc.write(cp, body)
+}
+
+// fenceConflict wraps a marked-up merge in a code fence.
+//
+// Git's markers are markdown syntax: ">>>>>>> device" at the start of a line is
+// a blockquote, and "=======" makes the line above it a heading. Unfenced, a
+// conflict renders as nested quote bars and phantom headings in every preview on
+// every device -- which is precisely what makes conflicts unpleasant to resolve
+// in the Obsidian Git plugin. Inside a fence everything is literal, so it reads
+// the same on a phone as in source mode.
+//
+// Obsidian's own Sync writes a plain copy of the other version and no markers at
+// all. That renders cleanly but tells you nothing about what differs; you diff
+// two files by hand. The fence keeps both sides visible AND renders correctly.
+func fenceConflict(marked []byte, device string) []byte {
+	fence := strings.Repeat("`", longestBacktickRun(marked)+1)
+	if len(fence) < 3 {
+		fence = "```"
+	}
+	var b strings.Builder
+	b.WriteString("Conflict: `server` and `" + device + "` changed the same lines.\n")
+	b.WriteString("Edit below, then delete the fence and the marker lines.\n\n")
+	b.WriteString(fence + "text\n")
+	b.Write(marked)
+	if len(marked) > 0 && marked[len(marked)-1] != '\n' {
+		b.WriteString("\n")
+	}
+	b.WriteString(fence + "\n")
+	return []byte(b.String())
+}
+
+// longestBacktickRun finds the longest run of backticks in the content, so the
+// wrapping fence can be made longer than anything inside it. A note containing
+// its own code block would otherwise terminate the fence early and the rest
+// would render as markdown again.
+func longestBacktickRun(b []byte) int {
+	longest, run := 0, 0
+	for _, c := range b {
+		if c == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	return longest
 }
 
 func (rc *Reconciler) write(path string, content []byte) error {

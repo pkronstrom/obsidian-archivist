@@ -178,10 +178,20 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		switch res.Status {
 		case protocol.StatusMerged:
 			out.Note = "another writer had changed this note; the two edits were merged, " +
-				"so the stored content is not exactly what you sent. Re-read it before editing again."
+				"so the stored content is not exactly what you sent. Re-read it before " +
+				"editing again, and check the merge did what you intended."
 		case protocol.StatusConflict:
-			out.Note = "another writer had changed the same lines; the server kept its version " +
-				"and saved yours alongside at " + res.ConflictPath + ". Both are in the vault."
+			// Actionable, not just descriptive. The agent's edit is
+			// reproducible and the human's half-finished typing is not, so the
+			// agent is the side that should yield and redo -- and it should
+			// clear up the file it caused rather than leaving it in someone's
+			// vault.
+			out.Note = "a person edited the same lines while you were writing. Your version " +
+				"was NOT stored at " + res.Path + "; it was set aside at " + res.ConflictPath +
+				". Do this: read_note " + res.Path + " again, apply your change to what you " +
+				"find there, and write_note again with the revision it returns. Then " +
+				"delete_note " + res.ConflictPath + ", since your change is now in the note. " +
+				"Do not copy the conflict file over the note: that would discard their edit."
 		case protocol.StatusRefused:
 			out.Note = "the server declined this write: " + res.Reason
 		}

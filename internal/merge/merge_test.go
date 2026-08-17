@@ -110,3 +110,46 @@ func TestIsBinaryDetectsNulBytes(t *testing.T) {
 		t.Error("IsBinary = true for empty content")
 	}
 }
+
+// The vendored diff3 emits nine-character markers. Nothing recognises nine --
+// not git, not a merge tool, not an editor's conflict highlighting -- so the
+// wrapper normalises them to git's seven.
+func TestConflictMarkersAreGitWidth(t *testing.T) {
+	base := []byte("one\ntwo\nthree\n")
+	ours := []byte("one\nSERVER\nthree\n")
+	theirs := []byte("one\nCLIENT\nthree\n")
+
+	out, conflict, err := MergeLabelled(base, ours, theirs, "server", "work-mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conflict {
+		t.Fatal("expected a conflict")
+	}
+	got := string(out)
+	for _, want := range []string{"<<<<<<< server\n", "=======\n", ">>>>>>> work-mac\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"<<<<<<<<<", "=========", ">>>>>>>>>"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("nine-character marker %q survived:\n%s", bad, got)
+		}
+	}
+}
+
+// A note containing its own row of angle brackets must not be rewritten.
+func TestUnrelatedAngleBracketsAreLeftAlone(t *testing.T) {
+	base := []byte("a\n<<<<<<<<< not a marker\nb\n")
+	ours := []byte("a\n<<<<<<<<< not a marker\nSERVER\n")
+	theirs := []byte("a\n<<<<<<<<< not a marker\nCLIENT\n")
+
+	out, _, err := MergeLabelled(base, ours, theirs, "server", "work-mac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "<<<<<<<<< not a marker") {
+		t.Errorf("rewrote content that only looked like a marker:\n%s", out)
+	}
+}

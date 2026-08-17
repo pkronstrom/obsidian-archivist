@@ -41,7 +41,36 @@ func MergeLabelled(base, ours, theirs []byte, ourLabel, theirLabel string) (resu
 	if err != nil {
 		return nil, false, err
 	}
+	if r.Conflicts {
+		out = gitWidthMarkers(out, ourLabel, theirLabel)
+	}
 	return fixTrailingNewline(out, ours, theirs), r.Conflicts, nil
+}
+
+// gitWidthMarkers rewrites the vendored diff3's nine-character markers to git's
+// seven. Nothing recognises nine: not git, not a merge tool, not an editor's
+// conflict highlighting.
+//
+// Done here rather than in diff3.go because that file is vendored verbatim and
+// its provenance note says so -- keeping it pristine means the next upstream
+// comparison is a clean diff.
+//
+// Only the exact lines diff3 emits are rewritten, label included, so a note that
+// happens to contain a row of angle brackets is left alone.
+func gitWidthMarkers(out []byte, ourLabel, theirLabel string) []byte {
+	for _, r := range []struct{ from, to string }{
+		{"<<<<<<<<< " + ourLabel, "<<<<<<< " + ourLabel},
+		{"=========", "======="},
+		{">>>>>>>>> " + theirLabel, ">>>>>>> " + theirLabel},
+	} {
+		out = bytes.ReplaceAll(out,
+			append([]byte("\n"), r.from...), append([]byte("\n"), r.to...))
+		// The first marker can also open the file, with no preceding newline.
+		if bytes.HasPrefix(out, []byte(r.from)) {
+			out = append([]byte(r.to), out[len(r.from):]...)
+		}
+	}
+	return out
 }
 
 // fixTrailingNewline restores a final newline the merge dropped.

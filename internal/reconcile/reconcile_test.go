@@ -435,3 +435,48 @@ func TestBinaryConflictFileHasNoMarkersAndExactBytes(t *testing.T) {
 		t.Errorf("binary conflict file is not the client's exact bytes: %q", body)
 	}
 }
+
+// Git markers are markdown syntax, so an unfenced conflict renders as nested
+// blockquotes and phantom headings in every preview. Inside a fence it is
+// literal and reads the same on a phone as in source mode.
+func TestConflictFileIsFencedSoItRendersLiterally(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, _ := rc.Push("", "seed", []Change{put(t, r, "n.md", "one\ntwo\nthree\n")})
+	rc.Push(base, "phone", []Change{put(t, r, "n.md", "one\nSERVER\nthree\n")})
+	_, results, _ := rc.Push(base, "work-mac", []Change{put(t, r, "n.md", "one\nCLIENT\nthree\n")})
+
+	body, err := v.Read(results[0].ConflictPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "```text\n") {
+		t.Errorf("conflict body is not fenced:\n%s", got)
+	}
+	if !strings.Contains(got, "<<<<<<< server") || !strings.Contains(got, ">>>>>>> work-mac") {
+		t.Errorf("markers missing or not git width:\n%s", got)
+	}
+	// The header has to say what to do; a bare fence explains nothing.
+	if !strings.Contains(got, "Conflict:") {
+		t.Errorf("no explanation for the reader:\n%s", got)
+	}
+}
+
+// A note containing its own code block would terminate a three-backtick fence
+// early, and everything after it would render as markdown again.
+func TestFenceWidensPastCodeBlocksInTheNote(t *testing.T) {
+	rc, v, r := newRec(t)
+	withCode := "one\n```js\nlet x = 1\n```\ntwo\n"
+	base, _, _ := rc.Push("", "seed", []Change{put(t, r, "n.md", withCode)})
+	rc.Push(base, "phone", []Change{put(t, r, "n.md", strings.Replace(withCode, "two", "SERVER", 1))})
+	_, results, _ := rc.Push(base, "work-mac", []Change{put(t, r, "n.md", strings.Replace(withCode, "two", "CLIENT", 1))})
+
+	body, _ := v.Read(results[0].ConflictPath)
+	got := string(body)
+	if !strings.Contains(got, "````text\n") {
+		t.Errorf("fence did not widen past the note's own code block:\n%s", got)
+	}
+	if !strings.Contains(got, "````\n") {
+		t.Errorf("closing fence did not widen to match:\n%s", got)
+	}
+}
