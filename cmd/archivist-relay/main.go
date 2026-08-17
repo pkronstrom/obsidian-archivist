@@ -23,6 +23,16 @@ import (
 	"syscall"
 	"time"
 
+	// Embeds the timezone database, for the same reason the server does it.
+	//
+	// This image is alpine rather than scratch, but alpine ships no tzdata
+	// either, so TZ=Europe/Helsinki was set and silently ignored: the relay
+	// logged in UTC while the server it fronts logged local, three hours apart.
+	// Noticed while checking a note_history timestamp that looked wrong and was
+	// not -- reading the two logs side by side is the case that would have
+	// wasted real time later.
+	_ "time/tzdata"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
 	"github.com/pkronstrom/obsidian-archivist/internal/logging"
