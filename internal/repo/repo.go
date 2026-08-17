@@ -88,6 +88,9 @@ type Repo struct {
 }
 
 // Open initialises the repository if absent and opens it otherwise.
+// WorkTree is the vault directory this repository tracks.
+func (r *Repo) WorkTree() string { return r.workTree }
+
 // GitDir is where the repository lives.
 //
 // Exposed so callers needing scratch space can use a directory that is

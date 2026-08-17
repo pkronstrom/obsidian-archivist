@@ -579,3 +579,25 @@ func TestExportOfAnUnchangedVaultIsReproducible(t *testing.T) {
 			first.Body.Len(), second.Body.Len())
 	}
 }
+
+// A server must say which vault it serves.
+//
+// Without it, pointing one Obsidian vault's plugin at another vault's server is
+// undetectable: the client bootstraps from whatever snapshot it is handed and
+// merges two unrelated vaults into both. Recoverable from history, but only if
+// somebody notices, and nothing would have told them.
+func TestIndexNamesTheVaultItServes(t *testing.T) {
+	h, v, _ := newServer(t)
+	w := do(t, h, "GET", "/v1", nil, true)
+	var idx protocol.IndexResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &idx); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Base(v.Dir())
+	if idx.Vault != want {
+		t.Errorf("vault = %q, want %q", idx.Vault, want)
+	}
+	if idx.Vault == "" {
+		t.Error("a server that will not say which vault it serves cannot be told from another")
+	}
+}

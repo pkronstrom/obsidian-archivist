@@ -1,7 +1,15 @@
 import type { App, DataAdapter } from "obsidian";
 import { Client, UnknownBaseError, type Change, type Result } from "./client";
 import { gitHash } from "./hash";
-import { emptyState, isFirstRun, loadState, saveState, type FileState, type SyncState } from "./state";
+import {
+	checkVault,
+	emptyState,
+	isFirstRun,
+	loadState,
+	saveState,
+	type FileState,
+	type SyncState,
+} from "./state";
 
 export type SyncReport = {
 	pulled: number;
@@ -97,6 +105,21 @@ export class Sync {
 		const client = this.client();
 		let state = loadState(this.app);
 		const report: SyncReport = { pulled: 0, pushed: 0, conflicts: [], rebootstrapped: false };
+
+		// Identity first, BEFORE anything is read or written.
+		//
+		// If the settings point at a different vault's server than this device
+		// adopted, syncing would merge two unrelated vaults into both -- and the
+		// damage lands on the very first cycle, so a check anywhere later is too
+		// late. Throwing here surfaces it as a Notice and leaves both vaults
+		// untouched.
+		const idx = await client.index();
+		checkVault(state, idx.vault);
+		if (!state.vault && idx.vault) {
+			// First run, or state from a version that did not record it. Adopt.
+			state.vault = idx.vault;
+			saveState(this.app, state);
+		}
 
 		// --- pull ------------------------------------------------------------
 		// Always before push, so the push is computed against the freshest base

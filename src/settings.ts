@@ -107,7 +107,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// says which beats asking someone to read a console on a phone.
 		new Setting(containerEl)
 			.setName("Test connection")
-			.setDesc("Calls /v1/head and reports what came back.")
+			.setDesc(
+				"Reports WHICH VAULT the server serves, so you can confirm you " +
+					"pointed this Obsidian vault at the right one. With more than one " +
+					"vault, the URL and token are the only things distinguishing them, " +
+					"and the local folder name tells you nothing: you create it empty " +
+					"before the plugin can connect.",
+			)
 			.addButton((b) =>
 				b.setButtonText("Test").onClick(async () => {
 					const { serverUrl, token } = this.plugin.settings;
@@ -116,8 +122,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						return;
 					}
 					try {
-						const head = await new Client(serverUrl, token).head();
-						new Notice(head ? `archivist: connected, head ${head.slice(0, 8)}` : "archivist: connected, empty vault");
+						const client = new Client(serverUrl, token);
+						const idx = await client.index();
+						const files = Object.keys((await client.snapshot()).files).length;
+						const name = idx.vault || "unnamed (older server)";
+						new Notice(
+							`archivist: connected to vault "${name}" — ${files} file(s), ` +
+								`server ${idx.version}`,
+							10000,
+						);
 					} catch (err) {
 						new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
 					}

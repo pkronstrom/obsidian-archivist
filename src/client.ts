@@ -119,6 +119,12 @@ export class Client {
 		return res.json as { head: string; changed: boolean };
 	}
 
+	// index is GET /v1: what the server is, and WHICH VAULT it serves.
+	async index(): Promise<{ service: string; version: string; protocol: number; vault: string }> {
+		const res = await this.call("GET", "/v1");
+		return res.json as { service: string; version: string; protocol: number; vault: string };
+	}
+
 	async head(): Promise<string> {
 		return (await this.call("GET", "/v1/head")).json.head as string;
 	}

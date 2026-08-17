@@ -192,6 +192,9 @@ type IndexResponse struct {
 	Protocol  int        `json:"protocol"` // contract, changes rarely -- check this
 	Notes     []string   `json:"notes,omitempty"`
 	Endpoints []Endpoint `json:"endpoints"`
+	// Vault names which vault this server serves, so a client can tell two
+	// servers apart. One vault per process makes it unambiguous.
+	Vault string `json:"vault"`
 }
 
 type Endpoint struct {

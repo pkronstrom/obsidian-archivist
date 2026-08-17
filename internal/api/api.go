@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -467,7 +468,16 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		out = append(out, doc{rt.Method, rt.Path, rt.Does})
 	}
 	writeJSON(w, map[string]any{
-		"service":  "archivist",
+		"service": "archivist",
+		// Which vault this process serves, so a client can tell one server from
+		// another. One vault per process, so this is unambiguous.
+		//
+		// Without it there is no way to notice the dangerous misconfiguration:
+		// point a Personal vault's plugin at the Work server and the client
+		// bootstraps from whatever snapshot it is handed, merging two unrelated
+		// vaults into both. Git history makes that recoverable, but only if
+		// someone notices.
+		"vault":    filepath.Base(s.repo.WorkTree()),
 		"version":  version.Version,
 		"protocol": protocol.Version,
 		"notes": []string{
