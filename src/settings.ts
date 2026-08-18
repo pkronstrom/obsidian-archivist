@@ -222,6 +222,27 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				}),
 			);
 
+		// A deferred pairing question is otherwise unreachable: the modal only
+		// reopens from a sync, and a deferred one stops syncing on purpose.
+		if (this.plugin.pendingPairing) {
+			const hazard = this.plugin.pendingPairing;
+			new Setting(containerEl)
+				.setName("This device is not syncing")
+				.setDesc(
+					`It holds ${hazard.localFiles} file(s) and has never synced, and the ` +
+						`server already has content. Nothing has been changed. Until you ` +
+						`choose, this device stays paused.`,
+				)
+				.addButton((b) =>
+					b
+						.setCta()
+						.setButtonText("Choose what happens")
+						.onClick(() => {
+							this.plugin.openPairingModal();
+						}),
+				);
+		}
+
 		this.renderConfigSync(containerEl);
 
 		new Setting(containerEl)

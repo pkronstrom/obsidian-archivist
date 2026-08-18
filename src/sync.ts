@@ -612,9 +612,23 @@ export class Sync {
 		return folder;
 	}
 
-	/** Discard local state and start over from the server. */
+	/**
+	 * Discard local state and start over from the server.
+	 *
+	 * This EMPTIES the sync state, which is exactly the condition the pairing
+	 * guard fires on -- never synced, local content, server content. So the
+	 * guard is marked resolved first: the user pressing this button has already
+	 * made the decision the guard exists to ask about, and asking again turns
+	 * the documented escape hatch into a dead end.
+	 *
+	 * The semantics are safe on their own terms. rebootstrap() deletes nothing:
+	 * a local file that differs from the server is moved aside under a conflict
+	 * name and the server's version lands at the real path, and a local-only
+	 * file is simply pushed on the next cycle.
+	 */
 	async forceRebootstrap(): Promise<void> {
 		saveState(this.app, emptyState());
+		this.pairingResolved = true;
 		await this.run();
 	}
 }

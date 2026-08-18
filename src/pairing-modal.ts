@@ -16,6 +16,7 @@ export class PairingModal extends Modal {
 		app: App,
 		private readonly hazard: PairingHazardError,
 		private readonly onChoice: (choice: PairingChoice) => void,
+		private readonly onDefer: () => void = () => {},
 	) {
 		super(app);
 	}
@@ -57,7 +58,9 @@ export class PairingModal extends Modal {
 			.setName("Merge anyway")
 			.setDesc(
 				"Take the union of both. Files present on both sides under the same " +
-					"name become conflict pairs you resolve by hand.",
+					"name become conflict pairs you resolve by hand. If this device's " +
+					"notes already match the server, this is a no-op: identical files " +
+					"are recognised by hash and never transferred.",
 			)
 			.addButton((b) =>
 				b
@@ -65,14 +68,31 @@ export class PairingModal extends Modal {
 					.setButtonText("Merge anyway")
 					.onClick(() => this.choose("merge")),
 			);
+
+		// An explicit way out. Without one the only exit is dismissing the
+		// modal, and because runSync fires on an interval, on focus, on blur
+		// and on every file change, the dialog reopens within seconds -- so
+		// "not now" was not actually available.
+		new Setting(contentEl)
+			.setName("Decide later")
+			.setDesc(
+				"Stop asking until you come back to it. This device will not sync " +
+					"meanwhile — reopen the choice from Archivist's settings.",
+			)
+			.addButton((b) => b.setButtonText("Not now").onClick(() => this.dismiss()));
+	}
+
+	private dismiss(): void {
+		this.close();
+		this.onDefer();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
 	}
 
 	private choose(choice: PairingChoice): void {
 		this.close();
 		this.onChoice(choice);
-	}
-
-	onClose(): void {
-		this.contentEl.empty();
 	}
 }

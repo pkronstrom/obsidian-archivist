@@ -113,3 +113,23 @@ test("config files alone do not trigger the pairing hazard", async () => {
 	await sync.run(); // must not throw
 	assert.ok(client.calls.includes("changes"), "an all-config vault was blocked from onboarding");
 });
+
+// Re-bootstrap EMPTIES the sync state, which is exactly what the guard fires
+// on. Without an exemption the documented escape hatch walks into the prompt
+// it exists to bypass -- reported from a real Mac.
+test("re-bootstrap does not trip the pairing guard", async () => {
+	const { root, app } = await device();
+	await fs.writeFile(path.join(root, "mine.md"), "local\n");
+	app.saveLocalStorage("archivist.state", {
+		base: "oldhead",
+		files: { "mine.md": { hash: "x", mtime: 1, size: 1 } },
+		vault: "personal",
+	});
+
+	const client = fakeClient({ head: "serverhead" });
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+
+	await sync.forceRebootstrap(); // must not throw
+	assert.ok(client.calls.includes("snapshot") || client.calls.includes("changes"),
+		"re-bootstrap never reached the server");
+});

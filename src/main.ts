@@ -21,6 +21,16 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 
 	private status?: HTMLElement;
+	/**
+	 * The pending pairing question, once the user has said "not now".
+	 *
+	 * Kept so the settings tab can reopen exactly the same choice, and so the
+	 * modal stops reappearing: runSync fires on an interval, on focus, on blur
+	 * and on every file change, so without this a dismissed dialog came back
+	 * within seconds and there was no way to defer at all.
+	 */
+	pendingPairing?: PairingHazardError;
+	private pairingDeferred = false;
 	private timer?: number;
 	private watcher?: Watcher;
 	private scheduleSync = debounce(() => void this.runSync(), 2000, true);
@@ -210,8 +220,14 @@ export default class ArchivistPlugin extends Plugin {
 			if (err instanceof PairingHazardError) {
 				// Not an error to report and move past: it is a question, and
 				// until it is answered this device does not sync at all.
+				this.pendingPairing = err;
+				if (this.pairingDeferred) {
+					// Already asked and deferred. Say so and stay quiet.
+					this.setStatus("paused — pairing undecided");
+					return;
+				}
 				this.setStatus("needs a decision");
-				new PairingModal(this.app, err, (choice) => void this.resolvePairing(choice)).open();
+				this.openPairingModal();
 				return;
 			}
 			const msg = err instanceof Error ? err.message : String(err);
@@ -221,10 +237,32 @@ export default class ArchivistPlugin extends Plugin {
 		}
 	}
 
+	/** Open the pairing choice. Also called from the settings tab. */
+	openPairingModal(): void {
+		const hazard = this.pendingPairing;
+		if (!hazard) return;
+		new PairingModal(
+			this.app,
+			hazard,
+			(choice) => void this.resolvePairing(choice),
+			() => {
+				this.pairingDeferred = true;
+				this.setStatus("paused — pairing undecided");
+				new Notice(
+					"archivist: not syncing until you choose. Reopen it in " +
+						"Archivist's settings when you are ready.",
+					8000,
+				);
+			},
+		).open();
+	}
+
 	private async resolvePairing(choice: PairingChoice): Promise<void> {
 		this.setStatus("syncing…");
 		try {
 			await this.sync.resolvePairing(choice);
+			this.pendingPairing = undefined;
+			this.pairingDeferred = false;
 			new Notice(
 				choice === "adopt"
 					? "archivist: local files moved to _archivist-rescued-…, server adopted"
