@@ -13,6 +13,8 @@ package notify
 
 import (
 	"bytes"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -27,15 +29,27 @@ type Notifier struct {
 	// every second must not produce a push every second.
 	Cooldown time.Duration
 
-	mu   sync.Mutex
-	last map[string]time.Time
+	// log reports delivery failures. Best-effort must not mean invisible: a
+	// notifier that can never deliver looks exactly like a quiet one, and the
+	// first version of this package proved it -- the scratch image had no CA
+	// certificates, every HTTPS post failed, and nothing anywhere said so.
+	log *slog.Logger
+
+	mu        sync.Mutex
+	last      map[string]time.Time
+	failures  int
+	delivered bool
 }
 
-func New(url string, now func() time.Time) *Notifier {
+func New(url string, now func() time.Time, log *slog.Logger) *Notifier {
 	if now == nil {
 		now = time.Now
 	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	return &Notifier{
+		log:      log,
 		url:      url,
 		now:      now,
 		c:        &http.Client{Timeout: 15 * time.Second},
@@ -74,6 +88,7 @@ func (n *Notifier) SendKeyed(key, title, body string, urgent bool) {
 func (n *Notifier) post(title, body string, urgent bool) {
 	req, err := http.NewRequest(http.MethodPost, n.url, bytes.NewReader([]byte(body)))
 	if err != nil {
+		n.reportFailure(err)
 		return
 	}
 	req.Header.Set("Title", title)
@@ -86,7 +101,37 @@ func (n *Notifier) post(title, body string, urgent bool) {
 	}
 	resp, err := n.c.Do(req)
 	if err != nil {
+		n.reportFailure(err)
 		return
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		n.reportFailure(fmt.Errorf("ntfy answered %s", resp.Status))
+		return
+	}
+
+	n.mu.Lock()
+	n.delivered = true
+	n.failures = 0
+	n.mu.Unlock()
+}
+
+// reportFailure logs a delivery failure without ever touching the caller.
+//
+// The FIRST failure is an error, because a notifier that has never delivered
+// anything is almost always misconfigured rather than unlucky -- a wrong URL,
+// or no CA certificates in the image. Later failures drop to warn so a flaky
+// endpoint cannot flood the log.
+func (n *Notifier) reportFailure(err error) {
+	n.mu.Lock()
+	n.failures++
+	count, everDelivered := n.failures, n.delivered
+	n.mu.Unlock()
+
+	if count == 1 && !everDelivered {
+		n.log.Error("ntfy delivery failed and this notifier has never delivered; "+
+			"alerts are silently going nowhere", "url", n.url, "err", err)
+		return
+	}
+	n.log.Warn("ntfy delivery failed", "err", err, "consecutive", count)
 }

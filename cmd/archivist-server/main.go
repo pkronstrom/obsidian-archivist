@@ -153,7 +153,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}, time.Now, guard.FreeOn(cfg.Vault))
 	rc.SetGuard(g)
 
-	n := notify.New(cfg.NtfyURL, time.Now)
+	n := notify.New(cfg.NtfyURL, time.Now, log)
 	rc.SetTripHandler(func(code, path, reason string) {
 		log.Warn("guard refused a write", "code", code, "path", path, "reason", reason)
 		n.SendKeyed(code+":"+path, "archivist: "+code, path+" -- "+reason, true)
