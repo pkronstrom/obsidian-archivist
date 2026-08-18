@@ -191,6 +191,35 @@ Plugin — install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from
 Community Plugins, add `pkronstrom/obsidian-archivist` as a beta plugin, then set the
 server URL and token in archivist's settings and press **Test connection**.
 
+### Connecting a vault that already has notes
+
+Getting started assumes an empty vault on one side. When both sides have
+content, the plugin stops on the first sync and asks, because the union of two
+unrelated vaults is not something you can undo by pressing something.
+
+| This device | The server | What happens | Do this |
+|---|---|---|---|
+| Empty | Empty | nothing to do | — |
+| Empty | Has notes | pulls everything | nothing; this is second-device onboarding |
+| Has notes, never synced | Empty | pushes everything | nothing; this is the first bootstrap |
+| **Has notes, never synced** | **Has notes** | **stops and asks** | pick one of the three below |
+| Already synced | a *different* vault | refuses, touches nothing | fix the URL, or use **Re-bootstrap from server** |
+| Already synced | same vault, new hostname | works | nothing; the plugin records the vault, not the host |
+
+The three choices, when it asks:
+
+- **Adopt server** — this vault's files move into a dated
+  `_archivist-rescued-…/` folder and the server's version is pulled. Nothing is
+  deleted, and because the folder is inside the vault it syncs to your other
+  devices too. Adopting twice never disturbs an earlier rescue.
+- **Publish local** — this vault is pushed over the server's. It needs no rescue
+  folder: every version of every server file is already in git history. Files
+  only the server has are kept and arrive on the next sync.
+- **Merge anyway** — the union of both. Same-name files on both sides become
+  conflict pairs to resolve by hand.
+
+Nothing is written until you choose, and dismissing the dialog changes nothing.
+
 Two vaults means two of everything: two containers, two tokens, two hostnames.
 They share nothing.
 

@@ -276,7 +276,7 @@ merged; both versions are kept.
 Anything under a dot-directory, including `.obsidian/`. Workspace layout is
 device-specific and config sync needs different rules; it is not implemented.
 
-## Two invariants worth knowing
+## Three invariants worth knowing
 
 **Sync state never lives in the vault.** It goes in `app.saveLocalStorage`, not
 `data.json`. If `.obsidian/` were ever synced, a shared `data.json` would give
@@ -286,6 +286,16 @@ changes from a snapshot it never built.
 **A device that has never synced cannot delete anything.** It has no idea what
 the server holds, so an absence tells it nothing. The server refuses such
 deletes too.
+
+**A first connect between two populated sides refuses.** Every other pairing
+combination is safe by construction, and this one is not: with `state.base` at
+`""`, `changes("")` returns the server's whole contents as puts, so the device
+writes them all and then pushes everything it had -- the union, with every
+same-path collision becoming a conflict file. The vault-identity guard cannot
+see it, because that compares an *adopted* vault name and on first connect
+there is not one yet. `src/pairing.ts` holds the check and the three
+resolutions, and it is deliberately free of any Obsidian import so the sync
+engine stays drivable from Node.
 
 ## Development
 
