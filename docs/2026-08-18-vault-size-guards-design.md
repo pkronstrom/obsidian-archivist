@@ -44,8 +44,33 @@ growth paths above, not for the current state.
 
 ## Design
 
-Five parts. 1–2 are server-side write guards, 3–4 are a CLI
-subcommand, 5 is the server-side complement to 4.
+Seven parts. 0 establishes where the guards sit, 1–2 are the write
+guards, 3 is notification, 4–5 are a CLI subcommand, 6 is the
+server-side complement to 5.
+
+### 0. Both write paths, not just Push
+
+The guards sit below `Push`, not inside it. There are **two** ways
+content enters the repository and an earlier draft of this design
+covered only one:
+
+| Path | Entry | Used by |
+|---|---|---|
+| Remote | `Reconciler.Push` (`reconcile.go:110`) | devices, relay, agents |
+| Local | `Reconciler.Scan` (`reconcile.go:441`), called by `watcher.go:217` | SilverBullet, memo-bridge, anything writing vault files on disk |
+
+The local path never touches `Push`. Guarding only `Push` would leave
+SilverBullet and memo-bridge — both of which write vault files
+directly — able to grow the repository without limit. Counters are
+therefore updated at the reconciler level and consulted by both
+entries.
+
+The two paths cannot respond the same way, because on the local path
+the bytes are already on disk by the time the guard sees them:
+
+- **Remote**: refuse the push with an error code. Nothing lands.
+- **Local**: never refuse. Deferring is the only useful response —
+  see part 2.
 
 ### 1. Per-path loop quarantine
 
@@ -89,6 +114,40 @@ All three thresholds are configurable
 `ARCHIVIST_QUARANTINE_COOLDOWN`); the defaults above apply when unset.
 Setting writes to `0` disables the guard.
 
+#### Byte counters on the same window
+
+Write count alone cannot see the case that matters most. A 9 MB
+attachment rewritten every 10 seconds is 30 writes per 5 minutes —
+comfortably under 300 — and 78 GB per day. So the same rolling window
+carries a byte counter with two thresholds:
+
+| Counter | Default | Env | Trips |
+|---|---|---|---|
+| Bytes, one path | 100 MB / 5 min | `ARCHIVIST_QUARANTINE_PATH_BYTES` | quarantines that path |
+| Bytes, whole vault | 2 GB / 5 min | `ARCHIVIST_QUARANTINE_TOTAL_BYTES` | throttles all writes |
+
+A legitimate single note never accumulates 100 MB of revisions in five
+minutes. The vault-wide counter is the wide guard, for
+many-paths-at-once traffic that no per-path counter can see. Both
+disable at `0`.
+
+**The per-path byte trigger requires at least 2 writes to that path
+in the window.** Without this a single legitimate 120 MB attachment
+would exceed a 100 MB threshold on its first upload and quarantine the
+path immediately. One write is never a loop, whatever its size. Single
+uploads are bounded by `protocol.MaxUploadBytes` (512 MB) and the
+relay's own 32 MB cap, which are separate controls and unchanged here.
+
+An oversized single file is already rejected **per file, not per
+sync**: `putContent` (`api.go:147`) is a per-content endpoint keyed by
+hash, so one file failing with `too_large` leaves every other file in
+the same sync unaffected. Quarantine preserves that property — a
+quarantined path blocks writes to that path only, and the rest of the
+vault keeps syncing.
+
+Bytes and writes share one window and one quarantine mechanism; the
+byte counter is a second trigger, not a second system.
+
 ### 2. Free-disk floor
 
 Before applying a push, the server checks free space on the vault
@@ -102,12 +161,94 @@ while still reserving enough that the server's other services do not hit a
 full disk before archivist stops writing. This floor, not the
 quarantine, is what bounds a slow loop or a hostile token holder.
 
+#### Deferral on the local path
+
+The local path cannot refuse: `watcher.go:217` sees changes that are
+already on disk. Refusing to commit would not reclaim a byte, and
+would silently diverge the vault from its history. So the local
+response to any tripped threshold is to **defer** — widen the commit
+cadence and let changes coalesce.
+
+The mechanism for this already exists and does not need building.
+`watcher.go` runs a debounce with a hard ceiling:
+
+```go
+maxDelay := 10 * debounce        // watcher.go:57
+```
+
+The comment above it records why the ceiling is there: *"A plain
+debounce re-arms on every event, so a steady stream of writes -- an
+rsync, a bulk import -- produced ZERO commits until the writes
+stopped."* That bug was found and fixed once already; do not
+reintroduce it by adding a second, uncapped debounce.
+
+Under pressure the guard multiplies the existing `debounce` and
+`maxDelay` (up to `ARCHIVIST_THROTTLE_MAX_DEBOUNCE`, default 60 s)
+rather than adding a mechanism beside them. A loop rewriting one file
+then costs one commit per minute instead of one per second, and only
+the file's final state in each window becomes a blob — the
+intermediate revisions are never stored. A legitimate bulk import
+still completes, in fewer and larger commits.
+
+Cadence returns to normal once the window falls below threshold.
+
+#### Why the remote path is not deferred
+
+`Push` commits synchronously and returns `newHead`
+(`reconcile.go:190`), which the device stores as its next `Base`. No
+commit means no head to return, so a deferred push cannot answer its
+client. Coalescing there would require either inventing a SHA that
+does not exist or blocking the caller until the window closed. The
+plugin's own 2 s debounce already bounds push frequency, and the loop
+risk on this path is an agent through the relay, which quarantine and
+the byte counters address directly.
+
 This is deliberately dumb. It is the one control that fires no matter
 the shape of the problem — multi-path loops, a hostile token holder,
 or something unanticipated — and its existence is why the other guards
 do not need to be exhaustive.
 
-### 3. `archivist reclaim` — the report
+### 3. ntfy notifications
+
+A guard that fires while nobody is watching is a log line nobody
+reads. When `ARCHIVIST_NTFY_URL` is set, the server posts a
+notification on:
+
+| Event | Priority | Tags |
+|---|---|---|
+| Path quarantined (writes or bytes) | high | `rotating_light` |
+| Vault-wide throttle engaged | high | `rotating_light` |
+| Free disk under the floor | urgent | `rotating_light` |
+| Prune completed (from the CLI) | default | `floppy_disk` |
+
+`ARCHIVIST_NTFY_URL` is a full URL including the topic, unset means
+disabled.
+
+**It is archivist's own variable and should point at its own topic**,
+separate from the backup notifier's. The two are deliberately not
+shared: restic posts on a schedule and its notifications are routine,
+so a vault throttle landing in the same topic would be read as more
+backup noise. Archivist's alerts are exceptional by construction — if
+that topic pings, something is wrong.
+
+The *shape* follows `lib/backup/notify.sh:10`, which the restic units
+already use: a full URL rather than a bare topic, `Title`/`Priority`/
+`Tags` headers, unset disables. Same convention, separate channel. A
+topic-only variable would be a second convention for no gain, and
+would not work against a self-hosted ntfy on a non-default host.
+
+**Delivery is best-effort and must never affect a write.** Fire and
+forget on a goroutine, 15 s timeout, all errors swallowed and logged
+at debug. The restic notifier states the rule that applies here too:
+a broken notifier must not turn a successful operation into a failed
+one. A notifier that can fail a sync is worse than no notifier.
+
+**Notifications are rate-limited independently of the guards.** A loop
+tripping quarantine repeatedly must not produce a push per attempt: at
+most one notification per event type per path per cooldown, with a
+count of suppressed occurrences included when the cooldown expires.
+
+### 4. `archivist reclaim` — the report
 
 New CLI subcommand beside `history`/`show`/`restore`/`check`/`export`,
 operating on the git dir directly. Read-only. Walks history and lists
@@ -131,7 +272,7 @@ revision. `--json` emits the same data for tooling. `--min-size` and
 The report is the decision input for pruning: run it, look at the
 number, and stop there if the number is small.
 
-### 4. `archivist reclaim --prune [--older-than 90d]`
+### 5. `archivist reclaim --prune [--older-than 90d]`
 
 The same binary performs the rewrite in go-git — no Python, no git
 binary, no host-side scripts. The image is `FROM scratch`, and the CLI
@@ -179,7 +320,7 @@ After a prune, `history`/`show`/`restore` on a pruned revision report
 `pruned` as a distinct state, not an error — it must read as
 deliberate, not as corruption.
 
-### 5. Head translation — no device re-bootstrap
+### 6. Head translation — no device re-bootstrap
 
 Devices remember the commit they last synced (`Base`) and send it with
 every push. A rewrite invalidates every historical SHA, so without
@@ -204,7 +345,8 @@ covered by any backup that covers the git dir's parent.
 
 | Condition | Code | Client behaviour |
 |---|---|---|
-| Path over write threshold | `path_quarantined` | back off; retry after cooldown |
+| Path over write or byte threshold | `path_quarantined` | back off; retry after cooldown |
+| Vault-wide byte threshold | `throttled` | back off; retry after cooldown |
 | Free space under floor | `disk_low` | stop writing; alert the human |
 | Base matches prune-map | (none — translated) | invisible |
 | Base unknown, not in map | `unknown_base` (existing) | re-bootstrap (existing) |
@@ -215,7 +357,18 @@ covered by any backup that covers the git dir's parent.
 - Quarantine: unit tests on the window/counter (trip, no-trip at
   threshold, cooldown expiry, distinct paths independent, disabled at
   0). The bulk-import case — hundreds of distinct paths in one push —
-  must not trip.
+  must not trip. A single 120 MB write must not trip the per-path byte
+  counter; the same bytes across three writes must. A quarantined path
+  must not block writes to any other path.
+- Both write paths: every guard asserted through `Push` AND through
+  `Scan`/the watcher. A test that only exercises `Push` would have
+  passed against the draft that left the local path unguarded.
+- Deferral: under a tripped threshold the watcher's effective debounce
+  widens and still respects a ceiling — assert commits keep landing
+  under a continuous write stream, since an uncapped debounce produced
+  zero commits in the bug recorded at `watcher.go:51`.
+- Notifier: a failing or hanging ntfy endpoint must not fail, delay or
+  alter any write. Assert suppression counts across the rate limit.
 - Disk floor: fake the statfs seam; verify refuse-below / allow-above
   and that reads are unaffected.
 - Reclaim report: repo fixtures with added/deleted/re-created paths;
@@ -232,8 +385,23 @@ covered by any backup that covers the git dir's parent.
 
 ## Rollout
 
-Ships in the next release after implementation. Server-side guards
-are inert until the env vars are read (defaults on), and `reclaim`
-is invisible until run. No compose changes required beyond optional
-threshold overrides; no migration; no device update needed — head
-translation is entirely server-side.
+Ships in the next release after implementation. `reclaim` is invisible
+until run. No migration, and no device update: every guard and head
+translation is server-side.
+
+Every threshold is configurable from the environment, so tuning needs
+a compose edit and a restart, never a rebuild:
+
+| Env | Default | Effect |
+|---|---|---|
+| `ARCHIVIST_QUARANTINE_WRITES` | 300 | writes / path / window |
+| `ARCHIVIST_QUARANTINE_PATH_BYTES` | 100 MB | bytes / path / window (needs ≥2 writes) |
+| `ARCHIVIST_QUARANTINE_TOTAL_BYTES` | 2 GB | bytes / vault / window |
+| `ARCHIVIST_QUARANTINE_WINDOW` | 5m | rolling window for all three |
+| `ARCHIVIST_QUARANTINE_COOLDOWN` | 15m | how long a quarantine holds |
+| `ARCHIVIST_THROTTLE_MAX_DEBOUNCE` | 60s | ceiling when deferring locally |
+| `ARCHIVIST_MIN_FREE_BYTES` | 20 GB | free-disk floor |
+| `ARCHIVIST_NTFY_URL` | unset | alert channel; unset disables |
+
+`0` disables any individual counter. Defaults are active when unset,
+so a deployment that changes nothing still gets the guards.
