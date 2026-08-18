@@ -386,10 +386,24 @@ export class Sync {
 		}
 	}
 
+	/**
+	 * mkdirs creates every missing ancestor of a path.
+	 *
+	 * Segment by segment, because Obsidian's DataAdapter.mkdir is not
+	 * documented as recursive. The old one-level version happened to work for
+	 * pulled files only because their parents usually already existed, and the
+	 * test shim's mkdir IS recursive -- so the harness could never have caught
+	 * it. The rescue folder nests every vault path one level deeper, which is
+	 * where a one-level mkdir stops working.
+	 */
 	private async mkdirs(path: string): Promise<void> {
-		const dir = path.split("/").slice(0, -1).join("/");
-		if (dir && !(await this.adapter.exists(dir))) {
-			await this.adapter.mkdir(dir);
+		const segments = path.split("/").slice(0, -1);
+		let built = "";
+		for (const seg of segments) {
+			if (!seg) continue;
+			built = built ? `${built}/${seg}` : seg;
+			if (await this.adapter.exists(built)) continue;
+			await this.adapter.mkdir(built);
 		}
 	}
 
