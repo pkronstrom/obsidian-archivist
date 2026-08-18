@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, Notice } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 import { Client } from "./client";
 import { loadToken, saveToken } from "./credentials";
 import {
@@ -9,6 +9,7 @@ import {
 	type ConfigSyncSettings,
 } from "./config-sync";
 import { scanForSecrets } from "./secrets";
+import { VaultPickerModal } from "./vault-picker";
 import type ArchivistPlugin from "./main";
 
 export type Settings = {
@@ -75,6 +76,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				});
 			});
 
+		let vaultField: TextComponent | null = null;
 		const vaultSetting = new Setting(containerEl)
 			.setName("Vault")
 			.setDesc(
@@ -83,17 +85,33 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"vault at different content, and the plugin refuses to sync if it does " +
 					"not match what this device already adopted.",
 			)
-			.addText((t) =>
+			.addText((t) => {
+				vaultField = t;
 				t.setPlaceholder("personal")
 					.setValue(this.plugin.settings.vault)
 					.onChange(async (v) => {
 						this.plugin.settings.vault = v.trim();
 						await this.plugin.saveSettings();
-					}),
-			);
+					});
+			});
+
+		// A token that opens one vault has one answer. Resolve it on open rather
+		// than making someone press a button to be told the only option.
+		void this.plugin.resolveVaultIfUnambiguous().then((ok) => {
+			if (ok) vaultField?.setValue(this.plugin.settings.vault);
+		});
+
+		const choose = async (vault: string) => {
+			this.plugin.settings.vault = vault;
+			await this.plugin.saveSettings();
+			// Fill the field in. A picker that tells you the answer and leaves
+			// you to type it is not a picker.
+			vaultField?.setValue(vault);
+			new Notice(`archivist: syncing vault "${vault}"`);
+		};
 
 		vaultSetting.addButton((b) =>
-			b.setButtonText("List").onClick(async () => {
+			b.setButtonText("Choose").onClick(async () => {
 				const { serverUrl } = this.plugin.settings;
 				const token = loadToken(this.app);
 				if (!serverUrl || !token) {
@@ -102,12 +120,17 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				}
 				try {
 					const { vaults } = await new Client(serverUrl, token, "").listVaults();
-					new Notice(
-						vaults.length === 0
-							? "archivist: this token opens no vaults"
-							: `archivist: this token opens ${vaults.join(", ")}`,
-						10000,
-					);
+					if (vaults.length === 0) {
+						new Notice("archivist: this token opens no vaults", 8000);
+						return;
+					}
+					// One vault is not a choice. Fill it in rather than making
+					// someone pick from a list of one.
+					if (vaults.length === 1) {
+						await choose(vaults[0]);
+						return;
+					}
+					new VaultPickerModal(this.app, vaults, (v) => void choose(v)).open();
 				} catch (err) {
 					new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
 				}

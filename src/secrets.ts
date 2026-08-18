@@ -34,8 +34,28 @@ export type Suspicion = {
 // called "k" is exactly the case name matching cannot catch, and pretending
 // otherwise is how a detector earns trust it has not got. The value detectors
 // below are what catch that one.
-const SUSPICIOUS_KEY =
-	/(^|[^a-z])(token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|private[-_]?key|credential|auth|bearer|session)([^a-z]|$)|^key$/i;
+// Names that mean a credential on their own, whatever the value looks like.
+// "token" is never a keyboard setting.
+const STRONG_KEY =
+	/(^|[^a-z])(token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|private[-_]?key|credential|bearer)([^a-z]|$)/i;
+
+// Names that mean a credential ONLY when the value also looks like one.
+//
+// A bare "key" is the obvious example and it is genuinely ambiguous: Excalidraw
+// stores `modifierKeyOverrides[0].key = "Alt"`, which is a keyboard key, and
+// flagging that refuses a whole plugin over a keystroke. "auth" and "session"
+// are the same shape -- an `authorPreference` or a `sessionLength` is not a
+// secret. So these need corroboration from the VALUE.
+const WEAK_KEY = /^(key|auth|session)$/i;
+
+/**
+ * A value that could plausibly BE a credential: long enough to be one, and
+ * with no spaces. "Alt", "Meta" and "en-GB" fail this; a 32-character opaque
+ * string passes.
+ */
+function valueLooksSecretish(v: string): boolean {
+	return v.length >= 16 && !/\s/.test(v);
+}
 
 /** user:pass@host in any URL. */
 const URL_WITH_USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
@@ -67,9 +87,21 @@ function walk(value: unknown, path: string, out: Suspicion[]): void {
 	if (value && typeof value === "object") {
 		for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
 			const child = path ? `${path}.${k}` : k;
-			if (typeof v === "string" && v.length > 0 && SUSPICIOUS_KEY.test(k)) {
-				out.push({ path: child, why: `the key name "${k}" is what a credential is usually called` });
-				continue;
+			if (typeof v === "string" && v.length > 0) {
+				if (STRONG_KEY.test(k)) {
+					out.push({
+						path: child,
+						why: `the key name "${k}" is what a credential is usually called`,
+					});
+					continue;
+				}
+				if (WEAK_KEY.test(k) && valueLooksSecretish(v)) {
+					out.push({
+						path: child,
+						why: `"${k}" holds a ${v.length}-character opaque value, which is the shape of a credential`,
+					});
+					continue;
+				}
 			}
 			walk(v, child, out);
 		}

@@ -127,3 +127,37 @@ test("turning the level DOWN does not delete the config off the server", async (
 		"downgrading the level pushed deletes for config, which would wipe it for every device",
 	);
 });
+
+test("accept-all syncs every plugin's data.json", () => {
+	const all = { ...DEFAULT_CONFIG_SYNC, level: "plugins", acceptAllPlugins: true };
+	assert.equal(configSyncable(".obsidian/plugins/dataview/data.json", all), true);
+	assert.equal(configSyncable(".obsidian/plugins/templater/data.json", all), true);
+});
+
+test("accept-all still cannot sync archivist's own data.json", () => {
+	const all = {
+		...DEFAULT_CONFIG_SYNC,
+		level: "plugins",
+		acceptAllPlugins: true,
+		acceptedPlugins: ["archivist", "obsidian-archivist"],
+	};
+	assert.equal(configSyncable(".obsidian/plugins/archivist/data.json", all), false);
+	assert.equal(configSyncable(".obsidian/plugins/obsidian-archivist/data.json", all), false);
+});
+
+test("accept-all does not widen anything beyond plugin data", () => {
+	const all = { ...DEFAULT_CONFIG_SYNC, level: "plugins", acceptAllPlugins: true };
+	for (const p of [
+		".obsidian/workspace.json",
+		".obsidian/plugins/dataview/main.js",
+		".obsidian/plugins/dataview/manifest.json",
+		".obsidian/graph.json",
+	]) {
+		assert.equal(configSyncable(p, all), false, p);
+	}
+});
+
+test("accept-all is inert below the plugins level", () => {
+	const appearanceAll = { ...DEFAULT_CONFIG_SYNC, level: "appearance", acceptAllPlugins: true };
+	assert.equal(configSyncable(".obsidian/plugins/dataview/data.json", appearanceAll), false);
+});

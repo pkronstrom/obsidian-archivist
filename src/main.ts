@@ -150,7 +150,40 @@ export default class ArchivistPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Fill in the vault when the token leaves no choice.
+	 *
+	 * A token minted for one vault has exactly one answer, so asking is
+	 * ceremony. This is also the whole migration for a device coming from
+	 * 0.4.x: it already has the URL and token, so it resolves itself and needs
+	 * no setting at all. With more than one vault it stays empty and the
+	 * settings tab's Choose button does the picking, because then there IS a
+	 * choice and guessing it would be worse than asking.
+	 *
+	 * Returns true when the vault is now known.
+	 */
+	async resolveVaultIfUnambiguous(): Promise<boolean> {
+		if (this.settings.vault) return true;
+		const token = loadToken(this.app);
+		if (!this.settings.serverUrl || !token) return false;
+		try {
+			const { vaults } = await new Client(this.settings.serverUrl, token, "").listVaults();
+			if (vaults.length !== 1) return false;
+			this.settings.vault = vaults[0];
+			await this.saveSettings();
+			console.log("[archivist] token opens one vault; adopted", vaults[0]);
+			return true;
+		} catch {
+			// Server down, wrong token, older server: none of those are worth a
+			// Notice here. The sync that follows reports the real failure.
+			return false;
+		}
+	}
+
 	private async runSync(): Promise<void> {
+		if (!this.settings.vault && (await this.resolveVaultIfUnambiguous())) {
+			// Resolved; fall through and sync.
+		}
 		if (!this.configured()) {
 			this.setStatus("not configured");
 			return;
