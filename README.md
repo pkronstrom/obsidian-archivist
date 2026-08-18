@@ -350,6 +350,65 @@ catch a person typing.
 A refused push answers `429` with `path_quarantined` or `throttled`, or `507`
 with `disk_low`.
 
+## Reclaiming space
+
+Deleting a file reclaims nothing. Every revision of it stays reachable from the
+commits it appeared in, and for binary content each revision is a full copy, so
+a 9 MB PDF added and then deleted costs 9 MB forever.
+
+Start with the report. It changes nothing:
+
+```bash
+archivist-server reclaim
+```
+
+```
+PATH                  SIZE      VERSIONS  ADDED       DELETED     GONE
+5. Sources/scan.pdf   390.6 KB  2         2026-05-01  2026-06-14  65d
+
+1 deleted path(s), 390.6 KB total.
+0 eligible to prune (deleted over 90d ago), 0 B.
+```
+
+If the number is small, stop. That is the report doing its job.
+
+To actually reclaim it, **stop the server first** — this rewrites history, and
+the server would be committing against a history being replaced underneath it:
+
+```bash
+docker compose stop archivist
+archivist-server reclaim --prune          # explains, changes nothing
+archivist-server reclaim --prune --yes    # does it
+docker compose start archivist
+```
+
+Selection is by deleted-at-HEAD, not by folder: an attachments directory is a
+convention that will drift, and the property that matters is large-and-gone
+wherever the file lives. Content still referenced by a live file is never
+counted, because git stores it once and removing the deleted name reclaims
+nothing.
+
+**Deletions newer than `--older-than` (90d by default) are never touched.**
+History is what makes a mistaken deletion recoverable, and that is worth more
+than the disk. There is no automatic mode, deliberately: unattended history
+rewriting would remove exactly the files you might want back, at 3 a.m.
+
+**Your devices do not re-download anything.** A prune changes every commit
+hash, so a device arriving with the head it last synced would normally
+re-bootstrap the whole vault. Because pruned paths are already absent at HEAD,
+the rewritten HEAD's tree is byte-identical and only the hash differs, so the
+server records the old-head/new-head pair in `prune-map` beside the git
+directory and translates on arrival. The diff comes out empty. A device that
+was offline across the prune and behind HEAD falls back to the ordinary
+re-bootstrap, which is correct — it may genuinely need the deletions.
+
+`prune-map` is small (one line per prune) but it is real state: back it up with
+the git directory.
+
+Pruning is also the only garbage collection this repository ever gets. go-git
+never runs `gc` and the image has no `git` binary, so objects otherwise stay
+loose forever; `--prune` collects and repacks as part of the same pass.
+
 ## Backups
 
 ```bash
