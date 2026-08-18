@@ -76,7 +76,15 @@ if (r.conflicts.length === 1) {
 	await phone.sync.run();
 	const cp = r.conflicts[0].conflictPath;
 	const side = await phone.read(cp).catch(() => "");
-	check("the losing version is preserved", side === "from phone\n", JSON.stringify(side));
+	// The conflict file holds the marked-up three-way merge inside a code
+	// fence, not the raw losing version -- that changed when fenceConflict
+	// shipped, and this assertion had been stale ever since. What it must
+	// guarantee is that BOTH sides are recoverable from the file, and that it
+	// renders as literal text rather than as markdown headings and blockquotes.
+	check("the losing version is preserved", side.includes("from phone"), JSON.stringify(side));
+	check("and the server's version is in there too", side.includes("from mac"), JSON.stringify(side));
+	check("and the markers are fenced, so they render literally",
+		side.includes("```text"), JSON.stringify(side));
 	check("the server version wins the real path", (await phone.read("notes/c.md")) === "from mac\n");
 }
 
@@ -100,9 +108,22 @@ check("mac receives the nested offline file",
 	(await mac.read("notes/deep/deeper/x.md")) === "nested offline\n");
 
 // --- 7. a fresh device never deletes ----------------------------------------
+// This device is populated and has never synced, and the server has content by
+// now -- the pairing hazard. It is the OLD behaviour that is under test here,
+// so resolve it as "merge anyway", which is what that behaviour now is.
 const fresh = await device("fresh");
 await fs.writeFile(path.join(fresh.root, "local-only.md"), "created before first sync\n");
-r = await fresh.sync.run();
+
+let freshRefused = null;
+try {
+	await fresh.sync.run();
+} catch (err) {
+	freshRefused = err;
+}
+check("a populated first-run device refuses rather than unioning",
+	freshRefused?.name === "PairingHazardError", String(freshRefused));
+
+r = await fresh.sync.resolvePairing("merge");
 await mac.sync.run();
 check("a first-run device adopts server state", await fresh.app.vault.adapter.exists("notes/c.md"));
 check("and keeps its own local-only file", await fresh.app.vault.adapter.exists("local-only.md"));
@@ -182,6 +203,71 @@ check("`.obsidian` does not reach the other device",
   check("and the local divergent copy was kept aside",
     files.some((f) => f.includes("conflict")), files.join(", "));
 }
+
+// --- pairing safety ---------------------------------------------------------
+// By this point the server has content, which is exactly the hazard: a fresh
+// device with its own notes must refuse rather than union the two.
+
+const stranger = await device("stranger");
+await fs.mkdir(path.join(stranger.root, "notes"), { recursive: true });
+await fs.writeFile(path.join(stranger.root, "notes/a.md"), "a totally different a.md\n");
+
+let refused = null;
+try {
+	await stranger.sync.run();
+} catch (err) {
+	refused = err;
+}
+check("a populated device refuses a populated server",
+	refused !== null && refused.name === "PairingHazardError", String(refused));
+check("nothing was pulled before refusing",
+	!(await stranger.app.vault.adapter.exists("att/img.bin")));
+check("the local file is untouched",
+	(await stranger.read("notes/a.md")) === "a totally different a.md\n");
+
+// Adopt server: local files move aside, the server's arrive.
+await stranger.sync.resolvePairing("adopt");
+const strangerEntries = await fs.readdir(stranger.root);
+const rescue = strangerEntries.find((e) => e.startsWith("_archivist-rescued-"));
+check("adopt created a rescue folder", Boolean(rescue), JSON.stringify(strangerEntries));
+check("the rescued copy survived",
+	(await stranger.read(`${rescue}/notes/a.md`)) === "a totally different a.md\n");
+// The stranger's own notes/a.md is gone from the real path -- that is what
+// makes room for the server's tree. The server has no notes/a.md of its own
+// here, so the path is simply absent rather than replaced; what matters is
+// that the server's content did arrive.
+check("the stranger's version no longer sits at the real path",
+	!(await stranger.app.vault.adapter.exists("notes/a.md")));
+check("and the server's tree arrived",
+	await stranger.app.vault.adapter.exists("att/img.bin"));
+
+// And the rescue folder reaches the other devices, because it is in the vault.
+await mac.sync.run();
+check("the rescue folder syncs to other devices",
+	(await mac.read(`${rescue}/notes/a.md`)) === "a totally different a.md\n");
+
+// Publish local: a second fresh device whose content wins every collision.
+const publisher = await device("publisher");
+await fs.mkdir(path.join(publisher.root, "notes"), { recursive: true });
+await fs.writeFile(path.join(publisher.root, "notes/a.md"), "published wins\n");
+
+let publisherRefused = null;
+try {
+	await publisher.sync.run();
+} catch (err) {
+	publisherRefused = err;
+}
+check("the second device also refuses", publisherRefused?.name === "PairingHazardError");
+
+await publisher.sync.resolvePairing("publish");
+await mac.sync.run();
+check("publish local overwrote the collision without a conflict file",
+	(await mac.read("notes/a.md")) === "published wins\n");
+
+const macNotes = await fs.readdir(path.join(mac.root, "notes"));
+check("publish local created no conflict file",
+	!macNotes.some((f) => f.includes(".conflict-") && f.startsWith("a.")),
+	JSON.stringify(macNotes));
 
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURES"}`);
 process.exit(failures === 0 ? 0 : 1);
