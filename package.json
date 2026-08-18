@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:unit",
+    "test:unit": "npm run build:test && node --test 'test/unit/*.test.mjs'",
+    "test:integration": "npm run build:test && node test/integration.mjs",
+    "build:test": "esbuild test/entry.ts --bundle --format=esm --platform=node --outfile=dist-test/entry.mjs --alias:obsidian=./test/obsidian-shim.mjs",
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production"
   },
