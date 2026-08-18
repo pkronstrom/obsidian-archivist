@@ -11,3 +11,5 @@ export { Client, UnknownBaseError } from "../src/client";
 export { PairingHazardError, rescueFolder } from "../src/pairing";
 
 export { isRescuePath } from "../src/pairing";
+
+export { loadToken, saveToken, migrateToken } from "../src/credentials";

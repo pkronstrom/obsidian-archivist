@@ -4,6 +4,7 @@ import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
+import { loadToken, migrateToken } from "./credentials";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
@@ -21,7 +22,7 @@ export default class ArchivistPlugin extends Plugin {
 
 		this.sync = new Sync(
 			this.app,
-			() => new Client(this.settings.serverUrl, this.settings.token),
+			() => new Client(this.settings.serverUrl, loadToken(this.app)),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
 		);
@@ -31,8 +32,8 @@ export default class ArchivistPlugin extends Plugin {
 		// long-polling and not the server's SSE stream.
 		this.watcher = new Watcher(
 			() =>
-				this.settings.serverUrl && this.settings.token
-					? new Client(this.settings.serverUrl, this.settings.token)
+				this.settings.serverUrl && loadToken(this.app)
+					? new Client(this.settings.serverUrl, loadToken(this.app))
 					: null,
 			() => loadState(this.app).base,
 			() => this.runSync(),
@@ -119,7 +120,7 @@ export default class ArchivistPlugin extends Plugin {
 	 */
 	startWatching(): void {
 		if (!this.settings.watchRemote) return;
-		if (!this.settings.serverUrl || !this.settings.token) return;
+		if (!this.settings.serverUrl || !loadToken(this.app)) return;
 		this.watcher?.start();
 	}
 
@@ -138,7 +139,7 @@ export default class ArchivistPlugin extends Plugin {
 	}
 
 	private async runSync(): Promise<void> {
-		if (!this.settings.serverUrl || !this.settings.token) {
+		if (!this.settings.serverUrl || !loadToken(this.app)) {
 			this.setStatus("not configured");
 			return;
 		}
@@ -204,10 +205,12 @@ export default class ArchivistPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		// Settings live in data.json, which is fine: they are configuration and
-		// losing them is an inconvenience. The sync cursor and snapshot are the
-		// dangerous state, and those live in device-local storage instead --
-		// see state.ts.
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// losing them is an inconvenience. The sync cursor, the snapshot and the
+		// TOKEN are the dangerous state, and those live in device-local storage
+		// instead -- see state.ts and credentials.ts.
+		const data = (await this.loadData()) ?? {};
+		if (migrateToken(this.app, data)) await this.saveData(data);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { token: "" });
 	}
 
 	async saveSettings(): Promise<void> {

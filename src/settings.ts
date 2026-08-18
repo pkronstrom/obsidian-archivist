@@ -1,9 +1,14 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import { Client } from "./client";
+import { loadToken, saveToken } from "./credentials";
 import type ArchivistPlugin from "./main";
 
 export type Settings = {
 	serverUrl: string;
+	/**
+	 * Kept for migration only. The live token is in device-local storage; see
+	 * credentials.ts. Anything reading the token must call loadToken.
+	 */
 	token: string;
 	device: string;
 	intervalSeconds: number;
@@ -44,12 +49,14 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Token")
-			.setDesc("Bearer token the server expects.")
+			.setDesc(
+				"Bearer token the server expects. Stored on this device only — " +
+					"never in the vault, so it cannot reach git history.",
+			)
 			.addText((t) => {
 				t.inputEl.type = "password";
-				t.setValue(this.plugin.settings.token).onChange(async (v) => {
-					this.plugin.settings.token = v.trim();
-					await this.plugin.saveSettings();
+				t.setValue(loadToken(this.app)).onChange(async (v) => {
+					saveToken(this.app, v.trim());
 				});
 			});
 
@@ -116,7 +123,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			)
 			.addButton((b) =>
 				b.setButtonText("Test").onClick(async () => {
-					const { serverUrl, token } = this.plugin.settings;
+					const { serverUrl } = this.plugin.settings;
+					const token = loadToken(this.app);
 					if (!serverUrl || !token) {
 						new Notice("archivist: set the server URL and token first");
 						return;
