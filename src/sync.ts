@@ -10,7 +10,7 @@ import {
 	type FileState,
 	type SyncState,
 } from "./state";
-import { PairingHazardError } from "./pairing";
+import { PairingHazardError, type PairingChoice } from "./pairing";
 
 export type SyncReport = {
 	pulled: number;
@@ -443,6 +443,60 @@ export class Sync {
 			out.push(...(await this.listAll(d)));
 		}
 		return out;
+	}
+
+	/**
+	 * Carry out the choice the user made when told about the pairing hazard,
+	 * then sync.
+	 *
+	 * The asymmetry between "adopt" and "publish" is the point. A push cannot
+	 * destroy server content: every version of every server file is already in
+	 * git history, so publishing needs no rescue folder. The local vault has no
+	 * such safety net, so adopting does. Only the side without a repository
+	 * needs rescuing.
+	 */
+	async resolvePairing(choice: PairingChoice): Promise<SyncReport | null> {
+		const state = loadState(this.app);
+		// Already resolved, or already synced. Nothing to do but sync.
+		if (!isFirstRun(state)) return this.run();
+
+		switch (choice) {
+			case "merge":
+				// The union, with conflict files: exactly what would have
+				// happened without the guard. Keeping base "" is what makes the
+				// server three-way merge each collision rather than overwrite.
+				break;
+
+			case "publish": {
+				// Adopt the server's head as our base WITHOUT pulling. Then the
+				// server sees base == head, so no path counts as moved, and every
+				// local file applies cleanly over whatever was there.
+				//
+				// With base "" instead, the server would treat every one of its
+				// own paths as moved-since-base and produce a conflict file for
+				// each collision -- which is "merge anyway", not "publish".
+				//
+				// No deletes are synthesised for server-only files. Those stay,
+				// and arrive here on a later cycle. Publishing means local wins
+				// every COLLISION, not that the server is emptied; a push has no
+				// business deleting content it did not put there.
+				const head = await this.client().head();
+				saveState(this.app, { ...state, base: head, files: {} });
+				break;
+			}
+
+			case "adopt":
+				await this.rescueLocalFiles();
+				break;
+		}
+
+		this.pairingResolved = true;
+		return this.run();
+	}
+
+	/** Move every synced local file into a dated rescue folder. Task 6. */
+	private async rescueLocalFiles(): Promise<string> {
+		throw new Error("not implemented");
 	}
 
 	/** Discard local state and start over from the server. */
