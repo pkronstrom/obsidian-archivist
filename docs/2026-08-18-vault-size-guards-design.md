@@ -50,7 +50,7 @@ subcommand, 5 is the server-side complement to 4.
 ### 1. Per-path loop quarantine
 
 The reconciler tracks writes per vault path in a rolling window.
-More than **20 writes to the same path within 5 minutes** quarantines
+More than **300 writes to the same path within 5 minutes** quarantines
 the path: further writes to it are refused with a new protocol error
 code `path_quarantined`, carrying the remaining cooldown. Everything
 else in the vault stays writable. The quarantine clears after a
@@ -60,10 +60,29 @@ within a minute, which is fine).
 
 Counts *writes, never bytes*: a 9 MB attachment uploaded once trips
 nothing; a bulk migration writing hundreds of distinct paths trips
-nothing. The observed legitimate worst case (a two-device editing
-burst) was 13 commits in 3 minutes, under the threshold — but note
-those were sync commits, each of which may carry several changes; the
-counter counts per-path changes inside `Push`, not commits.
+nothing. A write only counts when the content actually changed, so
+idle syncs and interval ticks cost nothing.
+
+**Where 300 comes from.** Obsidian auto-saves without user action, and
+the plugin debounces sync at `main.ts:15`:
+`debounce(() => runSync(), 2000, true)`. `resetTimer: true` restarts
+the timer on every edit, so a sync fires 2 s after typing stops. One
+device therefore cannot exceed roughly one write per 2 s to a path —
+about 150 per 5 minutes — and the 300 s interval backstop
+(`settings.ts:19`) adds one idle tick per device. 300 clears the
+two-device ceiling. A loop writes at network speed, orders of
+magnitude above it.
+
+An earlier draft of this design proposed 20, which would have
+quarantined ordinary editing: a real observed two-device session
+produced 13 commits in 3 minutes, and each commit may carry several
+per-path changes. The counter counts per-path changes inside `Push`,
+not commits.
+
+This guard catches fast loops only. A slow loop — one write every ten
+seconds — stays under the threshold and is left to the disk floor.
+That is deliberate: a threshold low enough to catch slow loops would
+catch human editing.
 
 All three thresholds are configurable
 (`ARCHIVIST_QUARANTINE_WRITES`, `ARCHIVIST_QUARANTINE_WINDOW`,
@@ -74,9 +93,14 @@ Setting writes to `0` disables the guard.
 
 Before applying a push, the server checks free space on the vault
 filesystem (`syscall.Statfs` on the vault root — vault and git dir
-share the mount). Below **5 GB** (`ARCHIVIST_MIN_FREE_BYTES`,
+share the mount). Below **20 GB** (`ARCHIVIST_MIN_FREE_BYTES`,
 `0` disables) the entire push is refused with error code `disk_low`,
 naming the floor and the observed free space. Reads are unaffected.
+
+20 GB against 146 GB free leaves ample room for the vault to grow
+while still reserving enough that the server's other services do not hit a
+full disk before archivist stops writing. This floor, not the
+quarantine, is what bounds a slow loop or a hostile token holder.
 
 This is deliberately dumb. It is the one control that fires no matter
 the shape of the problem — multi-path loops, a hostile token holder,
@@ -118,12 +142,32 @@ this is a manual operation run a few times a year.
 
 Mechanism: walk all commits in topological order; for each, build the
 tree minus the pruned paths' historical blobs; recreate the commit
-with rewritten parents; update refs; then prune unreferenced objects
-and repack (`Prune` + `RepackObjects` — this is also where the loose-
-object accumulation from go-git's no-gc life gets collected, so no
-separate repack timer exists). `--older-than` (default **90d**)
+with rewritten parents; update refs. `--older-than` (default **90d**)
 refuses to touch blobs deleted more recently, so recent deletions stay
 recoverable via `restore` regardless of what is asked for.
+
+**Garbage collection is part of prune, in this order:**
+
+1. `Repository.Prune` (`prune.go:33`) deletes unreferenced objects —
+   including everything the rewrite just orphaned.
+2. `Repository.RepackObjects` (`repository.go:1761`) packs what
+   remains into a single packfile.
+
+Both verified present in go-git v5.19.2. The ordering matters and the
+reason is not obvious: `Prune` only deletes **loose** objects
+(`DeleteLooseObject`). Repacking first would be safe anyway, because
+`createNewObjectPack` walks refs and packs only *reachable* objects
+before deleting the loose copies it packed — unreachable objects stay
+loose and remain prunable, and any packed garbage is dropped by the
+next repack, since repack always rebuilds from reachable objects only.
+Prune-then-repack is still preferred: less to walk, and one pack at
+the end.
+
+This is the only garbage collection the repository ever gets. go-git
+never runs `gc`, the image is `FROM scratch` so `gc.auto` cannot fire,
+and standalone repacking measured a 2% gain on the current repo. There
+is therefore no separate repack timer: collection happens when you
+prune, and prune is when there is something to collect.
 
 Because pruned paths are already deleted at HEAD, the new HEAD's
 *tree* is byte-identical to the old HEAD's tree; only commit SHAs
@@ -178,7 +222,9 @@ covered by any backup that covers the git dir's parent.
   assert selection, sizes, and that live blobs are never listed.
 - Prune: fixture repo → prune → assert old HEAD tree == new HEAD tree,
   reclaimed objects gone, `--older-than` respected, prune-map line
-  written, repo passes `check`.
+  written, repo passes `check`. Assert the repo ends with zero loose
+  objects and one pack, so a regression that skips collection is
+  caught rather than silently leaving the repo uncollected.
 - Translation: push with old-head base → empty diff, no snapshot;
   push with an older base → `unknown_base` as today.
 - End-to-end (manual, on the server against a copy): report → prune →
