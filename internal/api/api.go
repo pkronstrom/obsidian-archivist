@@ -1,7 +1,14 @@
-// Package api is the HTTP surface: seven routes behind a bearer token.
+// Package api is the HTTP surface: one set of vault-scoped routes per vault,
+// path-qualified as /{vault}/v1/..., plus two server-root routes.
 //
 // Content is addressed by git object hash, which gives deduplication,
 // resumability and idempotent uploads without any of them being designed.
+//
+// The empty-token guard that used to live in New moved to internal/auth when
+// the signature changed: Load refuses a server with no credentials at all, and
+// Lookup refuses the empty token whatever is in the table. Between them they
+// are the only thing standing between a typo and an open vault, because with
+// no check the expected header is exactly "Bearer ", which any client can send.
 package api
 
 import (
@@ -24,9 +31,6 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
-// maxUpload bounds a single content upload. Generous for an attachment,
-// bounded enough that a broken client cannot exhaust memory.
-
 type Server struct {
 	reg    *vaults.Registry
 	tokens *auth.Set
@@ -39,11 +43,6 @@ type ctxKey int
 
 const ctxPrincipal ctxKey = iota
 
-// New panics on an empty token rather than serving an open vault. With token ==
-// "" the expected header is exactly "Bearer ", which any client can send -- an
-// authentication bypass that looks like working authentication. The server
-// binary rejects this in config, but nothing stops another caller (the relay,
-// a test, a future embedding) from constructing one directly.
 // New builds the whole surface: one set of routes per vault, path-qualified,
 // from the SAME route table that generates the index. A route still cannot
 // exist without being documented, or be documented without existing.
