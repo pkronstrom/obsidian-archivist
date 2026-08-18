@@ -88,15 +88,64 @@ func TestCheckRootRefusesARootThatIsAVaultsChild(t *testing.T) {
 	}
 }
 
-// A linked worktree writes .git as a FILE, not a directory. IsDir() misses it.
-func TestCheckRootRefusesAGitFileNotJustADirectory(t *testing.T) {
+// $ROOT is not a vault, so no .git of any form belongs there -- pointer
+// included.
+func TestCheckRootRefusesAGitFileAtTheRoot(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".git"),
 		[]byte("gitdir: /somewhere/else/.git/worktrees/x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := (Layout{Root: root}).CheckRoot(); err == nil {
-		t.Fatal("a .git FILE (linked worktree) must be refused just like a directory")
+		t.Fatal("a .git FILE at the root must be refused just like a directory")
+	}
+}
+
+// THE case that took the server down on a correctly laid-out vault.
+//
+// This deployment writes `<vault>/.git` as a pointer to $ROOT/.archivist/<name>
+// on purpose, so `git -C <vault> log` works from the host. That is not an
+// embedded repository and must not be refused.
+func TestCheckRootAcceptsTheDeliberateGitdirPointer(t *testing.T) {
+	root := seedRoot(t, "personal")
+	if err := os.MkdirAll(filepath.Join(root, ".archivist", "personal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "vaults", "personal", ".git"),
+		[]byte("gitdir: ../../.archivist/personal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Layout{Root: root}).CheckRoot(); err != nil {
+		t.Errorf("the layout's own gitdir pointer was refused: %v", err)
+	}
+}
+
+// A pointer aimed anywhere else is still an embedded repository by another
+// name, and is refused.
+func TestCheckRootRefusesAPointerToSomewhereElse(t *testing.T) {
+	root := seedRoot(t, "personal")
+	if err := os.WriteFile(filepath.Join(root, "vaults", "personal", ".git"),
+		[]byte("gitdir: /somewhere/else\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Layout{Root: root}).CheckRoot(); err == nil {
+		t.Fatal("a pointer to a foreign git dir must be refused")
+	}
+}
+
+// An absolute pointer to the right place is still the right place.
+func TestCheckRootAcceptsAnAbsolutePointerToItsOwnGitDir(t *testing.T) {
+	root := seedRoot(t, "personal")
+	git := filepath.Join(root, ".archivist", "personal")
+	if err := os.MkdirAll(git, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "vaults", "personal", ".git"),
+		[]byte("gitdir: "+git+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Layout{Root: root}).CheckRoot(); err != nil {
+		t.Errorf("an absolute pointer to its own git dir was refused: %v", err)
 	}
 }
 
