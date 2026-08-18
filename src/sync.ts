@@ -149,7 +149,19 @@ export class Sync {
 		if (!this.pairingResolved && isFirstRun(state)) {
 			const serverHead = await client.head();
 			if (serverHead !== "") {
-				const localFiles = (await this.listAll("")).length;
+				// NOTES only, never config. Every Obsidian vault has a
+				// .obsidian/ directory, so counting config here would make a
+				// brand-new empty vault with config sync enabled refuse to
+				// onboard -- and there would be no way to turn it off, because
+				// the setting lives behind the sync that just refused.
+				//
+				// Config colliding is not the hazard either: allowlisted JSON
+				// is merged by key and everything else in there is refused, so
+				// there is no silent union to prevent. The hazard is two
+				// unrelated sets of NOTES becoming one.
+				const localFiles = (await this.listAll("")).filter(
+					(p) => !p.startsWith(CONFIG_DIR + "/"),
+				).length;
 				if (localFiles > 0) throw new PairingHazardError(localFiles, serverHead);
 			}
 		}

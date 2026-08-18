@@ -269,5 +269,64 @@ check("publish local created no conflict file",
 	!macNotes.some((f) => f.includes(".conflict-") && f.startsWith("a.")),
 	JSON.stringify(macNotes));
 
+// --- config sync ------------------------------------------------------------
+
+async function configDevice(name, level, acceptedPlugins = []) {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), `cfg-${name}-`));
+	const app = new FakeApp(root);
+	const config = { level, acceptedPlugins };
+	const sync = new Sync(app, () => new Client(SERVER, TOKEN), () => name, () => {}, () => config);
+	return { name, root, app, sync, config, read: (p) => fs.readFile(path.join(root, p), "utf8") };
+}
+
+const deskA = await configDevice("deskA", "appearance");
+const deskB = await configDevice("deskB", "appearance");
+
+await fs.mkdir(path.join(deskA.root, ".obsidian/snippets"), { recursive: true });
+await fs.writeFile(path.join(deskA.root, ".obsidian/snippets/dark.css"), "body { color: red }\n");
+await fs.writeFile(path.join(deskA.root, ".obsidian/appearance.json"), '{\n  "theme": "minimal"\n}\n');
+await fs.writeFile(path.join(deskA.root, ".obsidian/workspace.json"), '{\n  "left": {}\n}\n');
+
+await deskA.sync.run();
+await deskB.sync.run();
+
+check("a snippet reaches the other device",
+	(await deskB.read(".obsidian/snippets/dark.css")) === "body { color: red }\n");
+check("appearance.json reaches the other device",
+	JSON.parse(await deskB.read(".obsidian/appearance.json")).theme === "minimal");
+check("workspace.json does NOT travel",
+	!(await deskB.app.vault.adapter.exists(".obsidian/workspace.json")));
+
+// A device on "files only" gets none of it.
+const phoneFilesOnly = await configDevice("phoneFilesOnly", "files");
+await phoneFilesOnly.sync.run();
+check("a files-only device receives no config",
+	!(await phoneFilesOnly.app.vault.adapter.exists(".obsidian/appearance.json")));
+
+// Two devices editing different keys of one settings file both keep their edit.
+await fs.writeFile(path.join(deskA.root, ".obsidian/appearance.json"),
+	'{\n  "theme": "minimal",\n  "baseFontSize": 18\n}\n');
+await deskA.sync.run();
+await fs.writeFile(path.join(deskB.root, ".obsidian/appearance.json"),
+	'{\n  "theme": "minimal",\n  "accentColor": "#fff"\n}\n');
+await deskB.sync.run();
+await deskA.sync.run();
+const finalAppearance = JSON.parse(await deskA.read(".obsidian/appearance.json"));
+check("the settings file is still valid JSON after a merge",
+	typeof finalAppearance === "object" && finalAppearance !== null);
+check("both devices' disjoint key edits survived",
+	finalAppearance.baseFontSize === 18 && finalAppearance.accentColor === "#fff",
+	JSON.stringify(finalAppearance));
+
+// Archivist's own data.json is refused even if a device tries to push it.
+const sneaky = await configDevice("sneaky", "plugins", ["archivist", "obsidian-archivist"]);
+await fs.mkdir(path.join(sneaky.root, ".obsidian/plugins/archivist"), { recursive: true });
+await fs.writeFile(path.join(sneaky.root, ".obsidian/plugins/archivist/data.json"),
+	'{"token":"THE-BEARER-TOKEN"}\n');
+await sneaky.sync.run();
+await deskA.sync.run();
+check("archivist's own data.json never travels",
+	!(await deskA.app.vault.adapter.exists(".obsidian/plugins/archivist/data.json")));
+
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURES"}`);
 process.exit(failures === 0 ? 0 : 1);

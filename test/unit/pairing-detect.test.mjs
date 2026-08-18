@@ -94,3 +94,22 @@ test("an already-synced device is not asked again", async () => {
 	await sync.run();
 	assert.ok(client.calls.includes("changes"), "an established device was blocked");
 });
+
+// Every Obsidian vault has a .obsidian/ directory. Counting it as local content
+// would make a brand-new empty vault with config sync enabled refuse to
+// onboard -- and the setting to turn config sync off lives behind the sync that
+// just refused.
+test("config files alone do not trigger the pairing hazard", async () => {
+	const { root, app } = await device();
+	await fs.mkdir(path.join(root, ".obsidian"), { recursive: true });
+	await fs.writeFile(path.join(root, ".obsidian/appearance.json"), '{"theme":"minimal"}\n');
+
+	const client = fakeClient({ head: "serverhead" });
+	const sync = new Sync(app, () => client, () => "mac", () => {}, () => ({
+		level: "appearance",
+		acceptedPlugins: [],
+	}));
+
+	await sync.run(); // must not throw
+	assert.ok(client.calls.includes("changes"), "an all-config vault was blocked from onboarding");
+});
