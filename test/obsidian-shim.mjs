@@ -39,6 +39,8 @@ export class PluginSettingTab {}
 export class Setting {}
 export class Notice {}
 export class TAbstractFile {}
+export class Modal {}
+export const Platform = { isMobile: false };
 
 /** A DataAdapter backed by a real directory. */
 export class FsAdapter {
