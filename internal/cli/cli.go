@@ -1,4 +1,5 @@
-// Package cli is the offline subcommands: history, show, restore, check, export.
+// Package cli is the offline subcommands: history, show, restore, check,
+// export, reclaim.
 //
 // These work directly against the repository rather than over HTTP, so they
 // still function when the server is stopped -- which is exactly when `check`
@@ -28,7 +29,7 @@ var ErrDrift = errors.New("working tree differs from the last commit")
 // Handles reports whether name is one of our subcommands.
 func Handles(name string) bool {
 	switch name {
-	case "history", "show", "restore", "check", "export":
+	case "history", "show", "restore", "check", "export", "reclaim":
 		return true
 	}
 	return false
@@ -39,6 +40,9 @@ type Env struct {
 	Git   string
 	JSON  bool
 	Out   io.Writer
+	// Reclaim carries reclaim's own options, parsed by the caller on the same
+	// flagset as -vault/-git/-json. Nil elsewhere.
+	Reclaim *ReclaimFlags
 }
 
 func Run(name string, args []string, env Env) error {
@@ -58,6 +62,8 @@ func Run(name string, args []string, env Env) error {
 		return check(r, env)
 	case "export":
 		return export(r, args, env)
+	case "reclaim":
+		return reclaim(r, args, env)
 	}
 	return fmt.Errorf("unknown command %q", name)
 }

@@ -85,6 +85,10 @@ type Repo struct {
 	// syncable decides what may enter git. Injected rather than imported so
 	// this package stays independent of the vault package's policy.
 	syncable func(path string) bool
+
+	// pruneMap translates commit hashes invalidated by a prune. Empty for any
+	// repository that has never been pruned, which is most of them.
+	pruneMap map[string]string
 }
 
 // Open initialises the repository if absent and opens it otherwise.
@@ -115,6 +119,40 @@ func Open(workTree, gitDir string) (*Repo, error) {
 		git: r, workTree: workTree, gitDir: gitDir,
 		syncable: func(string) bool { return true },
 	}, nil
+}
+
+// SetPruneMap installs old-head -> new-head translations.
+//
+// A prune rewrites every commit hash, so a device arriving with the head it
+// last synced would get unknown_base and re-bootstrap the whole vault. Because
+// pruned paths are already absent at HEAD, the rewritten HEAD's TREE is
+// byte-identical to the old one -- only the commit hash differs -- so a device
+// whose base is a recorded old head can simply be told the new one. The diff
+// is empty and nothing is re-downloaded.
+//
+// A device that was BEHIND head at prune time is not in the map and falls back
+// to the ordinary re-bootstrap, which is correct: it may genuinely need the
+// deletions.
+func (r *Repo) SetPruneMap(m map[string]string) { r.pruneMap = m }
+
+// translate follows prune-map entries to the current name for a base, if any.
+//
+// Chained because a repository pruned twice has two hops; a device offline
+// across both must still land on the current head rather than the intermediate
+// one, which no longer exists either.
+func (r *Repo) translate(rev string) string {
+	seen := 0
+	for {
+		next, ok := r.pruneMap[rev]
+		if !ok {
+			return rev
+		}
+		rev = next
+		// A malformed or circular map must not hang the server.
+		if seen++; seen > 32 {
+			return rev
+		}
+	}
 }
 
 // SetSyncable installs the predicate deciding which paths may be committed.
@@ -186,6 +224,7 @@ func (r *Repo) tree(rev string) (*object.Tree, error) {
 	if rev == "" {
 		return nil, nil
 	}
+	rev = r.translate(rev)
 	h := plumbing.NewHash(rev)
 	if h.IsZero() {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownBase, rev)

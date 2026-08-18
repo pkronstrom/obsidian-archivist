@@ -87,18 +87,26 @@ func runCommand(name string, args []string) error {
 	gitDir := fs.String("git", envOr("ARCHIVIST_GIT", "/var/lib/archivist/git"), "git directory")
 	// Only history and check produce structured output; show, restore and
 	// export do not, and silently accepting -json there implied otherwise.
-	asJSON := fs.Bool("json", false, "machine-readable output (history and check only)")
+	asJSON := fs.Bool("json", false, "machine-readable output (history, check and reclaim only)")
+	// reclaim's flags go on THIS flagset. Go's flag package stops at the first
+	// unrecognised flag, so a second flagset inside the subcommand would never
+	// receive them.
+	var reclaimFlags *cli.ReclaimFlags
+	if name == "reclaim" {
+		reclaimFlags = cli.RegisterReclaimFlags(fs)
+	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *vaultDir == "" {
 		return errors.New("vault directory is required (-vault or ARCHIVIST_VAULT)")
 	}
-	if *asJSON && name != "history" && name != "check" {
-		return fmt.Errorf("-json is not supported by %s (history and check only)", name)
+	if *asJSON && name != "history" && name != "check" && name != "reclaim" {
+		return fmt.Errorf("-json is not supported by %s (history, check and reclaim only)", name)
 	}
 	return cli.Run(name, fs.Args(), cli.Env{
 		Vault: *vaultDir, Git: *gitDir, JSON: *asJSON, Out: os.Stdout,
+		Reclaim: reclaimFlags,
 	})
 }
 
@@ -123,6 +131,16 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	// Dotfiles must not enter git. Enforced here, at the point files are
 	// staged, rather than only where events are observed.
 	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+
+	// Head translations from past prunes. Without these a device arriving with
+	// the head it synced before a prune gets unknown_base and re-downloads the
+	// whole vault; with them the diff is empty and it notices nothing.
+	if pm, err := repo.ReadPruneMap(cfg.Git); err != nil {
+		return fmt.Errorf("reading prune map: %w", err)
+	} else if len(pm) > 0 {
+		r.SetPruneMap(pm)
+		log.Info("loaded head translations from past prunes", "entries", len(pm))
+	}
 	rc := reconcile.New(v, r)
 
 	head, err := r.Head()
