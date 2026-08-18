@@ -81,7 +81,7 @@ func TestToolsAreAdvertisedWithDescriptions(t *testing.T) {
 	want := map[string]bool{
 		"list_notes": false, "read_note": false, "write_note": false,
 		"delete_note": false, "note_history": false, "read_note_at": false,
-		"search_notes": false,
+		"search_notes": false, "list_folders": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {

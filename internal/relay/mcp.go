@@ -10,6 +10,7 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,9 +32,22 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_notes",
-		Description: "List notes and attachments in the vault. " +
-			"Optionally filter by a path prefix such as 'notes/' or 'Inbox/'.",
+		Description: "List notes and attachments. Returns at most 100 entries " +
+			"by default; check has_more and pass next_cursor to continue. " +
+			"On a large vault prefer recursive=false, which lists one folder " +
+			"like ls and collapses the rest into folder rows, or narrow with " +
+			"prefix such as '2. Areas/'. To find a note by content or name use " +
+			"search_notes instead; to see the shape of the vault use " +
+			"list_folders.",
 	}, listNotes(c))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "list_folders",
+		Description: "Map the vault: every folder with how many files and how " +
+			"many bytes it holds. Cheap on any vault size and the right first " +
+			"call when you do not yet know where something lives. Returns no " +
+			"file names -- follow up with list_notes and a prefix.",
+	}, listFolders(c))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "read_note",
@@ -84,32 +98,240 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 // Schemas are inferred from these types, and the jsonschema tags become the
 // property descriptions an agent reads. They are the tool's real documentation.
 
+// listLimits bound what one list_notes call can return.
+//
+// MCP does not paginate tool results. Its cursor mechanism covers only
+// resources/list, tools/list, prompts/list and resources/templates/list, so
+// anything here is convention rather than protocol. The convention that holds
+// up combines three things, and leaving any one out is a known failure:
+//
+//   - a server-enforced cap, because an unbounded default floods a context
+//     window with one call
+//   - total and has_more, so the caller knows what it did NOT see instead of
+//     silently believing it saw everything
+//   - a cursor, so full enumeration is still POSSIBLE; a cap without one just
+//     makes the data unreachable
+const (
+	defaultListLimit = 100
+	maxListLimit     = 500
+)
+
 type listInput struct {
-	Prefix string `json:"prefix,omitempty" jsonschema:"only list paths starting with this, e.g. 'notes/'"`
+	Prefix    string `json:"prefix,omitempty" jsonschema:"only list paths under this, e.g. '2. Areas/'"`
+	Recursive *bool  `json:"recursive,omitempty" jsonschema:"descend into subfolders. Default true. Set false to list one folder like ls, which is far cheaper on a large vault"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"how many entries to return, default 100, maximum 500"`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"opaque next_cursor from a previous call, to continue listing. Do not construct one"`
 }
 
 type noteSummary struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
+	// Kind is "file" or "dir". Only non-recursive listings report "dir".
+	Kind string `json:"kind,omitempty"`
+	// Files counts what a directory contains, recursively. Zero for files.
+	Files int `json:"files,omitempty"`
 }
 
 type listOutput struct {
 	Count int           `json:"count"`
 	Notes []noteSummary `json:"notes"`
+	// Total is how many entries matched before the limit was applied.
+	Total int `json:"total"`
+	// HasMore says whether entries were withheld. Without it a truncated
+	// listing is indistinguishable from a complete one.
+	HasMore bool `json:"has_more"`
+	// NextCursor continues the listing. Empty when there is nothing more.
+	NextCursor string `json:"next_cursor,omitempty"`
+	// Note tells an agent what to do about a truncated result, since it reads
+	// prose more reliably than it infers from flags.
+	Note string `json:"note,omitempty"`
 }
 
 func listNotes(c *client.Client) mcp.ToolHandlerFor[listInput, listOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, listOutput, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = defaultListLimit
+		}
+		if limit > maxListLimit {
+			limit = maxListLimit
+		}
+		after, err := decodeCursor(in.Cursor)
+		if err != nil {
+			return nil, listOutput{}, err
+		}
+
 		files, err := c.List(ctx, in.Prefix)
 		if err != nil {
 			return nil, listOutput{}, err
 		}
-		out := listOutput{Notes: []noteSummary{}}
-		for p, e := range files {
-			out.Notes = append(out.Notes, noteSummary{Path: p, Size: e.Size})
+
+		recursive := in.Recursive == nil || *in.Recursive
+		entries := flatEntries(files)
+		if !recursive {
+			entries = foldToOneLevel(files, in.Prefix)
 		}
-		sort.Slice(out.Notes, func(i, j int) bool { return out.Notes[i].Path < out.Notes[j].Path })
+
+		// Cursor is a position in a stable sort, so a note added elsewhere
+		// cannot shift the page under a caller mid-enumeration.
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+
+		total := len(entries)
+		if after != "" {
+			idx := sort.Search(len(entries), func(i int) bool { return entries[i].Path > after })
+			entries = entries[idx:]
+		}
+
+		out := listOutput{Notes: []noteSummary{}, Total: total}
+		if len(entries) > limit {
+			out.Notes = append(out.Notes, entries[:limit]...)
+			out.HasMore = true
+			out.NextCursor = encodeCursor(out.Notes[limit-1].Path)
+			out.Note = fmt.Sprintf("showing %d of %d; pass next_cursor to continue, "+
+				"or narrow with prefix, or use recursive=false to map folders first",
+				limit, total)
+		} else {
+			out.Notes = append(out.Notes, entries...)
+		}
 		out.Count = len(out.Notes)
+		return nil, out, nil
+	}
+}
+
+// flatEntries is every file, the full recursive listing.
+func flatEntries(files map[string]protocol.Entry) []noteSummary {
+	out := make([]noteSummary, 0, len(files))
+	for p, e := range files {
+		out = append(out, noteSummary{Path: p, Size: e.Size, Kind: "file"})
+	}
+	return out
+}
+
+// foldToOneLevel collapses everything below the prefix into directory rows,
+// the way ls shows a folder.
+//
+// This is the cheap path and usually the right one. A vault's breadth is small
+// and stays small -- 19 top-level entries against 321 files here -- while its
+// depth grows without limit, so listing one level costs a near-constant amount
+// however large the vault becomes.
+func foldToOneLevel(files map[string]protocol.Entry, prefix string) []noteSummary {
+	type dirAcc struct {
+		files int
+		bytes int64
+	}
+	dirs := map[string]*dirAcc{}
+	var out []noteSummary
+
+	for p, e := range files {
+		rest := strings.TrimPrefix(p, prefix)
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			name := prefix + rest[:i] + "/"
+			d := dirs[name]
+			if d == nil {
+				d = &dirAcc{}
+				dirs[name] = d
+			}
+			d.files++
+			d.bytes += e.Size
+			continue
+		}
+		out = append(out, noteSummary{Path: p, Size: e.Size, Kind: "file"})
+	}
+	for name, d := range dirs {
+		out = append(out, noteSummary{Path: name, Kind: "dir", Files: d.files, Size: d.bytes})
+	}
+	return out
+}
+
+// Cursors are opaque by contract: clients must not parse or build one. Base64
+// is the common convention and keeps that honest -- a caller reaching for
+// arithmetic on a page number has to work at it.
+func encodeCursor(after string) string {
+	return base64.StdEncoding.EncodeToString([]byte(after))
+}
+
+func decodeCursor(cursor string) (string, error) {
+	if cursor == "" {
+		return "", nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		// Never fall back to the first page. A caller that silently restarts
+		// enumerates forever.
+		return "", fmt.Errorf("invalid cursor: pass next_cursor from a previous " +
+			"list_notes result unchanged, or omit it to start over")
+	}
+	return string(raw), nil
+}
+
+type folderInput struct {
+	Depth int `json:"depth,omitempty" jsonschema:"how many folder levels to report, default 2. Use 1 for the broadest map"`
+}
+
+type folderSummary struct {
+	Path  string `json:"path"`
+	Files int    `json:"files"`
+	Bytes int64  `json:"bytes"`
+}
+
+type folderOutput struct {
+	Folders    []folderSummary `json:"folders"`
+	TotalFiles int             `json:"total_files"`
+	TotalBytes int64           `json:"total_bytes"`
+}
+
+// listFolders answers "what is in this vault" without naming a single file.
+//
+// It exists because that question is asked far more often than "give me every
+// path", and answering it with a full listing is what makes an agent's first
+// call its most expensive one. Cost here scales with the number of FOLDERS,
+// which stays small as a vault grows, rather than with the number of files,
+// which does not.
+func listFolders(c *client.Client) mcp.ToolHandlerFor[folderInput, folderOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in folderInput) (*mcp.CallToolResult, folderOutput, error) {
+		depth := in.Depth
+		if depth <= 0 {
+			depth = 2
+		}
+		files, err := c.List(ctx, "")
+		if err != nil {
+			return nil, folderOutput{}, err
+		}
+
+		type acc struct {
+			files int
+			bytes int64
+		}
+		dirs := map[string]*acc{}
+		out := folderOutput{Folders: []folderSummary{}}
+
+		for p, e := range files {
+			out.TotalFiles++
+			out.TotalBytes += e.Size
+
+			// Every ancestor of a file, capped at depth, gets credited with it,
+			// so a parent's count includes what its children hold.
+			parts := strings.Split(p, "/")
+			for i := 1; i < len(parts) && i <= depth; i++ {
+				name := strings.Join(parts[:i], "/") + "/"
+				d := dirs[name]
+				if d == nil {
+					d = &acc{}
+					dirs[name] = d
+				}
+				d.files++
+				d.bytes += e.Size
+			}
+		}
+
+		for name, d := range dirs {
+			out.Folders = append(out.Folders, folderSummary{
+				Path: name, Files: d.files, Bytes: d.bytes,
+			})
+		}
+		sort.Slice(out.Folders, func(i, j int) bool {
+			return out.Folders[i].Path < out.Folders[j].Path
+		})
 		return nil, out, nil
 	}
 }
