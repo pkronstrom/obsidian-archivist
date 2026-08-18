@@ -7,3 +7,5 @@
 // bit it silently, as an unhandled rejection three tests later.
 export { Sync, skip, conflictName } from "../src/sync";
 export { Client, UnknownBaseError } from "../src/client";
+
+export { PairingHazardError, rescueFolder } from "../src/pairing";
