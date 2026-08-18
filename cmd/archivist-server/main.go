@@ -160,6 +160,15 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	})
 	if cfg.NtfyURL == "" {
 		log.Info("ntfy alerts are disabled; set ARCHIVIST_NTFY_URL to enable them")
+	} else if err := n.Verify("archivist: started", "guards armed on vault "+cfg.Vault); err != nil {
+		// Loud, but NOT fatal. A broken notifier is not a reason to stop
+		// serving the vault -- it is a reason to know before the guards need
+		// it. Every other delivery path is silent by design, so this is the
+		// only place a misconfiguration can surface on its own.
+		log.Error("ntfy startup check FAILED; guard alerts will not reach you",
+			"url", cfg.NtfyURL, "err", err)
+	} else {
+		log.Info("ntfy startup check delivered", "url", cfg.NtfyURL)
 	}
 
 	// Normalise BEFORE anything watches or commits, so the renames land as one

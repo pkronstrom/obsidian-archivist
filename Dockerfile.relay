@@ -15,10 +15,15 @@ RUN MOD="$(go list -m)" && CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w -X ${MOD}/internal/version.Version=${VERSION}" \
     -o /archivist-relay ./cmd/archivist-relay
 
-# The relay talks to the server over HTTPS, so unlike the server it does need
-# root certificates.
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
-COPY --from=build /archivist-relay /usr/local/bin/archivist-relay
+# distroless/static, matching the server. See Dockerfile for the full reasoning.
+#
+# This was alpine:3.21, justified by a comment claiming the relay needs root
+# certificates because it talks to the server over HTTPS. That is not true:
+# compose sets ARCHIVIST_URL=http://archivist:8090, an in-network plaintext
+# hop. So a full distribution with a package manager was carried for a reason
+# that had stopped being real. distroless ships the certificates anyway, at a
+# fraction of the surface, so the claim is now satisfied AND cheap.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /archivist-relay /archivist-relay
 EXPOSE 8091
-ENTRYPOINT ["archivist-relay"]
+ENTRYPOINT ["/archivist-relay"]

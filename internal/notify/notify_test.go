@@ -169,3 +169,42 @@ func TestHTTPErrorStatusIsAFailure(t *testing.T) {
 	}
 	t.Fatalf("a 403 was not reported as a failure; got: %s", buf.String())
 }
+
+// Verify is the one synchronous path: it must return the error rather than
+// swallow it, because it is the only chance a misconfiguration has to surface
+// on its own.
+func TestVerifyReturnsDeliveryErrors(t *testing.T) {
+	n := New("http://127.0.0.1:1/never", nil, nil)
+	if err := n.Verify("t", "m"); err == nil {
+		t.Fatal("Verify returned nil for an unreachable endpoint")
+	}
+}
+
+func TestVerifySucceedsAndSendsAtMinPriority(t *testing.T) {
+	var gotPriority string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPriority = r.Header.Get("Priority")
+	}))
+	defer srv.Close()
+
+	n := New(srv.URL, nil, nil)
+	if err := n.Verify("archivist: started", "guards armed"); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	// Minimum priority: the startup check proves the path works, it is not
+	// meant to buzz a phone on every restart.
+	if gotPriority != "min" {
+		t.Errorf("Priority = %q, want min", gotPriority)
+	}
+}
+
+// A disabled notifier has nothing to verify and must not report a problem.
+func TestVerifyOnDisabledNotifierIsNil(t *testing.T) {
+	if err := New("", nil, nil).Verify("t", "m"); err != nil {
+		t.Fatalf("Verify on a disabled notifier: %v", err)
+	}
+	var nilN *Notifier
+	if err := nilN.Verify("t", "m"); err != nil {
+		t.Fatalf("Verify on a nil notifier: %v", err)
+	}
+}

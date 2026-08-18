@@ -85,35 +85,69 @@ func (n *Notifier) SendKeyed(key, title, body string, urgent bool) {
 	go n.post(title, body, urgent)
 }
 
+// Verify posts a startup notification SYNCHRONOUSLY and returns the error.
+//
+// This is the only synchronous path in the package, and it exists because
+// every other one is deliberately unobservable. Delivery must never fail a
+// write, so failures are swallowed -- which meant a notifier that could never
+// deliver was indistinguishable from a quiet one. The CA-certificate bug lived
+// in production that way and surfaced only because someone happened to poll
+// the topic.
+//
+// Doing it once at boot validates configuration, DNS, connectivity and TLS
+// together, at the one moment a human is watching, and costs one low-priority
+// message per restart. It is sent at minimum priority so it does not buzz a
+// phone; its job is to prove the path works, not to be read.
+//
+// The caller decides what to do with the error. It should not be fatal: a
+// broken notifier is not a reason to stop serving the vault.
+func (n *Notifier) Verify(title, body string) error {
+	if n == nil || n.url == "" {
+		return nil
+	}
+	return n.deliver(title, body, "min", "white_check_mark")
+}
+
 func (n *Notifier) post(title, body string, urgent bool) {
+	priority, tags := "default", "floppy_disk"
+	if urgent {
+		priority, tags = "high", "rotating_light"
+	}
+	// The error is already logged by deliver; post is the fire-and-forget
+	// path and has no caller to return it to.
+	_ = n.deliver(title, body, priority, tags)
+}
+
+// deliver posts once and reports the outcome. Failures are logged here so
+// every path through the package is observable, including the ones whose
+// callers discard the error.
+func (n *Notifier) deliver(title, body, priority, tags string) error {
 	req, err := http.NewRequest(http.MethodPost, n.url, bytes.NewReader([]byte(body)))
 	if err != nil {
 		n.reportFailure(err)
-		return
+		return err
 	}
 	req.Header.Set("Title", title)
-	if urgent {
-		req.Header.Set("Tags", "rotating_light")
-		req.Header.Set("Priority", "high")
-	} else {
-		req.Header.Set("Tags", "floppy_disk")
-		req.Header.Set("Priority", "default")
-	}
+	req.Header.Set("Priority", priority)
+	req.Header.Set("Tags", tags)
+
 	resp, err := n.c.Do(req)
 	if err != nil {
 		n.reportFailure(err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		n.reportFailure(fmt.Errorf("ntfy answered %s", resp.Status))
-		return
+		err := fmt.Errorf("ntfy answered %s", resp.Status)
+		n.reportFailure(err)
+		return err
 	}
 
 	n.mu.Lock()
 	n.delivered = true
 	n.failures = 0
 	n.mu.Unlock()
+	return nil
 }
 
 // reportFailure logs a delivery failure without ever touching the caller.
