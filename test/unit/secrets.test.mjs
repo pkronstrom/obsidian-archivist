@@ -56,3 +56,36 @@ test("the scanner never edits its input", () => {
 		"the scanner must detect and never strip: a filtered data.json is a broken file that looks fine",
 	);
 });
+
+// Reported from a real vault: Excalidraw stores modifierKeyOverrides[n].key,
+// where "key" is a KEYBOARD key. Flagging that refuses a whole plugin over a
+// keystroke, which is the false-positive cost the design accepted in the
+// abstract and is plainly wrong here.
+test("a keyboard key called 'key' is not a credential", () => {
+	const found = scanForSecrets({
+		modifierKeyOverrides: [
+			{ key: "Alt", shift: false },
+			{ key: "Meta", shift: true },
+			{ key: "Control", shift: false },
+		],
+	});
+	assert.deepEqual(found, [], JSON.stringify(found));
+});
+
+test("but a 'key' holding an opaque value still is", () => {
+	const found = scanForSecrets({ key: "sk-abcdefghijklmnopqrstuvwxyz012345" });
+	assert.equal(found.length, 1);
+	assert.match(found[0].why, /opaque/i);
+});
+
+test("'auth' and 'session' need corroboration too", () => {
+	assert.deepEqual(scanForSecrets({ auth: "basic", session: "30m" }), []);
+	assert.equal(scanForSecrets({ auth: "ZXlKaGJHY2lPaUpJVXpJMU5pSjkuYWJj" }).length, 1);
+});
+
+// A strong name is enough on its own -- "token" is never a keyboard setting.
+test("a short token is still reported", () => {
+	const found = scanForSecrets({ token: "abc123" });
+	assert.equal(found.length, 1);
+	assert.match(found[0].why, /name/i);
+});
