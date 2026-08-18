@@ -47,6 +47,7 @@ func IsCode(err error, code string) bool {
 
 type Client struct {
 	base   string
+	vault  string
 	token  string
 	device string
 	http   *http.Client
@@ -56,9 +57,19 @@ type Client struct {
 	// and the server can be redeployed under a running relay. Either way the
 	// relay would otherwise keep writing to a server whose protocol it has never
 	// agreed with.
-	compatMu  sync.Mutex
-	compatErr error
-	compatSet bool
+	//
+	// A POINTER, so WithVault's copy shares it rather than duplicating a mutex.
+	// Sharing is also the correct semantics: protocol compatibility is a
+	// property of the SERVER, and every vault-scoped copy talks to the same one,
+	// so one check answers for all of them. (`go vet` catches the copy-a-lock
+	// form; the sharing is the reason to prefer this shape anyway.)
+	compat *compatCache
+}
+
+type compatCache struct {
+	mu  sync.Mutex
+	err error
+	set bool
 }
 
 // New returns a client. device names this caller in commit messages and
@@ -71,14 +82,76 @@ func New(baseURL, token, device string) *Client {
 		// No global timeout: the events stream is long-lived by design, and a
 		// client-wide deadline would sever it. Per-call deadlines come from the
 		// context the caller passes.
-		http: &http.Client{},
+		http:   &http.Client{},
+		compat: &compatCache{},
 	}
 }
 
 func (c *Client) Device() string { return c.device }
 
+// WithVault returns a copy of the client addressing a different vault.
+//
+// A copy rather than a mutation, so the relay can hold one client per vault
+// over one connection pool without any of them racing on a shared field.
+func (c *Client) WithVault(name string) *Client {
+	cp := *c
+	cp.vault = name
+	return &cp
+}
+
+func (c *Client) Vault() string { return c.vault }
+
+// qualify is the ONE place a request path is built. Every call goes through
+// do(), and do() calls this -- which is what made changing the addressing
+// scheme a one-line change per layer rather than the "21 call sites" it looks
+// like from the outside.
+//
+// url.PathEscape, not raw concatenation: a vault called "My Own Vault" is legal
+// and must arrive as My%20Own%20Vault.
+func (c *Client) qualify(path string) string {
+	if c.vault == "" {
+		return c.base + path
+	}
+	return c.base + "/" + url.PathEscape(c.vault) + path
+}
+
+// atRoot is this client with no vault, for the SERVER-ROOT routes: /healthz and
+// /v1/vaults. Both exist above the vault namespace -- a healthcheck has no idea
+// which vaults there are, and a picker needs the list before it can choose one
+// -- so qualifying them asks for a path that does not exist.
+//
+// A copy with an empty vault rather than a flag on do(), so there is still
+// exactly one way a path gets qualified and no branch inside it to get
+// backwards. The compat cache is a pointer, so the copy shares it.
+func (c *Client) atRoot() *Client {
+	unqualified := *c
+	unqualified.vault = ""
+	return &unqualified
+}
+
+func (c *Client) doRoot(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	return c.atRoot().do(ctx, method, path, body, contentType)
+}
+
+// ListVaults asks what this token opens. A SERVER-root route: a caller needs it
+// before it knows which vault to address, so it cannot itself be qualified.
+func (c *Client) ListVaults(ctx context.Context) ([]string, error) {
+	resp, err := c.doRoot(ctx, "GET", "/v1/vaults", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Vaults []string `json:"vaults"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Vaults, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, c.qualify(path), body)
 	if err != nil {
 		return nil, err
 	}
@@ -180,9 +253,9 @@ func (c *Client) CheckCompatible(ctx context.Context) error {
 			"archivist: server speaks protocol %d, this client speaks %d (server build %s)",
 			idx.Protocol, protocol.Version, idx.Version)
 	}
-	c.compatMu.Lock()
-	c.compatErr, c.compatSet = verdict, true
-	c.compatMu.Unlock()
+	c.compat.mu.Lock()
+	c.compat.err, c.compat.set = verdict, true
+	c.compat.mu.Unlock()
 	return verdict
 }
 
@@ -194,16 +267,16 @@ func (c *Client) CheckCompatible(ctx context.Context) error {
 // A server that is merely unreachable does not block anything: the request goes
 // out and fails on its own terms, with its own error.
 func (c *Client) ensureCompatible(ctx context.Context) error {
-	c.compatMu.Lock()
-	set, verdict := c.compatSet, c.compatErr
-	c.compatMu.Unlock()
+	c.compat.mu.Lock()
+	set, verdict := c.compat.set, c.compat.err
+	c.compat.mu.Unlock()
 	if set {
 		return verdict
 	}
 	if err := c.CheckCompatible(ctx); err != nil {
-		c.compatMu.Lock()
-		set, verdict = c.compatSet, c.compatErr
-		c.compatMu.Unlock()
+		c.compat.mu.Lock()
+		set, verdict = c.compat.set, c.compat.err
+		c.compat.mu.Unlock()
 		if set {
 			return verdict // a real protocol mismatch
 		}
@@ -490,5 +563,7 @@ func (c *Client) Events(ctx context.Context) (<-chan protocol.Event, <-chan erro
 func (c *Client) Ping(ctx context.Context) (protocol.HealthResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return getJSON[protocol.HealthResponse](ctx, c, "/healthz")
+	// c.atRoot(): /healthz is unqualified and unauthenticated, so asking for it
+	// under a vault prefix is a 404 that reads as "the server is down".
+	return getJSON[protocol.HealthResponse](ctx, c.atRoot(), "/healthz")
 }

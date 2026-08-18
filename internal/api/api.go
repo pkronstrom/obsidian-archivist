@@ -5,21 +5,21 @@
 package api
 
 import (
-	"crypto/subtle"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 	"github.com/pkronstrom/obsidian-archivist/internal/version"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
@@ -28,61 +28,110 @@ import (
 // bounded enough that a broken client cannot exhaust memory.
 
 type Server struct {
-	rc    *reconcile.Reconciler
-	repo  *repo.Repo
-	token string
+	reg    *vaults.Registry
+	tokens *auth.Set
 }
+
+// ctxKey carries the resolved principal from the middleware to the handlers, so
+// a handler cannot forget to check the scope: by the time it runs, the check has
+// already happened.
+type ctxKey int
+
+const ctxPrincipal ctxKey = iota
 
 // New panics on an empty token rather than serving an open vault. With token ==
 // "" the expected header is exactly "Bearer ", which any client can send -- an
 // authentication bypass that looks like working authentication. The server
 // binary rejects this in config, but nothing stops another caller (the relay,
 // a test, a future embedding) from constructing one directly.
-func New(rc *reconcile.Reconciler, r *repo.Repo, token string) http.Handler {
-	if token == "" {
-		panic("api.New: empty token would accept any request presenting 'Bearer '")
-	}
-	s := &Server{rc: rc, repo: r, token: token}
+// New builds the whole surface: one set of routes per vault, path-qualified,
+// from the SAME route table that generates the index. A route still cannot
+// exist without being documented, or be documented without existing.
+func New(reg *vaults.Registry, tokens *auth.Set) http.Handler {
+	s := &Server{reg: reg, tokens: tokens}
 
 	mux := http.NewServeMux()
-	// Method patterns (Go 1.22+) give 405 rather than 404 on a method mismatch,
-	// with no router dependency.
-	mux.HandleFunc("GET /v1", s.index)
+
+	// Server-root routes. GET /v1/vaults is what makes a picker possible: a
+	// client needs it BEFORE it knows which vault to ask for, which is exactly
+	// why the vault cannot be baked into the base URL.
+	mux.HandleFunc("GET /v1/vaults", s.listVaults)
+	mux.HandleFunc("POST /v1/vaults", s.createVault)
+
+	// Per-vault routes. {vault} is a single path segment, so a name containing
+	// a space is addressable percent-encoded -- My%20Own%20Vault -- which the
+	// plugin does automatically and a human writing curl must remember.
+	mux.HandleFunc("GET /{vault}/v1", s.withVault(s.index))
 	for _, rt := range s.routes() {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
 		}
-		mux.HandleFunc(rt.Method+" "+rt.Path, rt.handle)
+		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.handle))
 	}
 
-	// healthz sits OUTSIDE the auth middleware, deliberately and alone.
+	// healthz sits OUTSIDE the auth middleware, deliberately and alone. It is
+	// also unqualified: a container healthcheck has no token and no idea which
+	// vaults exist.
 	outer := http.NewServeMux()
 	outer.HandleFunc("GET /healthz", s.healthz)
 	outer.Handle("/", s.authenticate(mux))
 	return outer
 }
 
-// authenticate compares in constant time, so a wrong token cannot be recovered
-// by timing the response.
+// authenticate resolves the bearer token to a principal.
+//
+// Constant-time comparison happens inside auth.Set.Lookup, over every entry, so
+// a wrong token cannot be recovered by timing the response.
 func (s *Server) authenticate(next http.Handler) http.Handler {
-	want := []byte("Bearer " + s.token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(r.Header.Get("Authorization"))
-		if subtle.ConstantTimeCompare(got, want) != 1 {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		p, ok := s.tokens.Lookup(token)
+		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist"`)
 			fail(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxPrincipal, p)))
 	})
+}
+
+// withVault resolves {vault}, checks the token's scope, and hands the handler a
+// request that already carries the instance.
+//
+// 403 for a vault outside the scope and 404 for one that does not exist. Those
+// differ deliberately: a token holder learning that "work" exists is not a
+// secret worth protecting here -- both vaults are the same person's -- and
+// collapsing them into one status makes a misconfigured token
+// indistinguishable from a typo, which is the failure people actually hit.
+func (s *Server) withVault(h func(http.ResponseWriter, *http.Request, *vaults.Instance)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("vault")
+		p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+
+		inst, err := s.reg.Get(name)
+		if err != nil {
+			if vaults.IsNotFound(err) {
+				fail(w, http.StatusNotFound, protocol.CodeNotFound, "no such vault: "+name)
+				return
+			}
+			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+			return
+		}
+		if !p.Opens(name) {
+			fail(w, http.StatusForbidden, protocol.CodeForbidden,
+				"this token does not open the vault "+name)
+			return
+		}
+		h(w, r, inst)
+	}
 }
 
 // Wire types live in the protocol package.
 
 // ---- handlers --------------------------------------------------------------
 
-func (s *Server) head(w http.ResponseWriter, r *http.Request) {
-	h, err := s.repo.Head()
+func (s *Server) head(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	h, err := inst.Repo.Head()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -90,13 +139,13 @@ func (s *Server) head(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, protocol.HeadResponse{Head: h})
 }
 
-func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
-	h, err := s.repo.Head()
+func (s *Server) snapshot(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	h, err := inst.Repo.Head()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	files, err := s.repo.Snapshot(h)
+	files, err := inst.Repo.Snapshot(h)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -104,14 +153,14 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, protocol.SnapshotResponse{Head: h, Files: files})
 }
 
-func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
+func (s *Server) changes(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	since := r.URL.Query().Get("since")
-	h, err := s.repo.Head()
+	h, err := inst.Repo.Head()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	entries, err := s.repo.Changes(since, h)
+	entries, err := inst.Repo.Changes(since, h)
 	if err != nil {
 		// The cursor is from another repository, or predates a history
 		// rewrite. 409 tells the client to re-bootstrap from /snapshot; a 500
@@ -129,7 +178,7 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, protocol.ChangesResponse{Head: h, Entries: entries})
 }
 
-func (s *Server) have(w http.ResponseWriter, r *http.Request) {
+func (s *Server) have(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.HaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
@@ -137,7 +186,7 @@ func (s *Server) have(w http.ResponseWriter, r *http.Request) {
 	}
 	missing := []string{}
 	for _, h := range req.Hashes {
-		if !s.repo.HasBlob(h) {
+		if !inst.Repo.HasBlob(h) {
 			missing = append(missing, h)
 		}
 	}
@@ -158,7 +207,7 @@ func statusFor(code string) int {
 	}
 }
 
-func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
+func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	claimed := r.PathValue("hash")
 	// protocol.MaxUploadBytes+1 so an oversized body is DETECTED rather than silently
 	// truncated. LimitReader alone would hash the first 512 MiB, and a client
@@ -187,15 +236,15 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 			"content hash mismatch: claimed "+claimed+", actual "+actual)
 		return
 	}
-	if _, err := s.repo.WriteBlob(body); err != nil {
+	if _, err := inst.Repo.WriteBlob(body); err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"hash": actual})
 }
 
-func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
-	content, err := s.repo.ReadBlob(r.PathValue("hash"))
+func (s *Server) getContent(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	content, err := inst.Repo.ReadBlob(r.PathValue("hash"))
 	if err != nil {
 		fail(w, http.StatusNotFound, protocol.CodeNotFound, "no such object")
 		return
@@ -204,13 +253,13 @@ func (s *Server) getContent(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-func (s *Server) push(w http.ResponseWriter, r *http.Request) {
+func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.PushRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
-	head, results, err := s.rc.Push(req.Base, req.Device, req.Changes)
+	head, results, err := inst.Reconciler.Push(req.Base, req.Device, req.Changes)
 	if err != nil {
 		var pe *protocol.Error
 		switch {
@@ -252,7 +301,7 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 //
 // Consumers should therefore: subscribe, and on each event call /v1/changes
 // with their own cursor. Never treat the stream as the record.
-func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, "streaming unsupported")
@@ -268,12 +317,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	// Send the current head immediately, so a consumer that just connected can
 	// orient itself without waiting for the next commit.
-	if head, err := s.repo.Head(); err == nil && head != "" {
+	if head, err := inst.Repo.Head(); err == nil && head != "" {
 		writeEvent(w, map[string]any{"head": head, "count": 0, "changes": []any{}})
 	}
 	flusher.Flush()
 
-	ch, stop := s.rc.Subscribe()
+	ch, stop := inst.Reconciler.Subscribe()
 	defer stop()
 
 	// Idle connections get dropped by proxies; a comment line is a valid SSE
@@ -325,7 +374,7 @@ func writeEvent(w http.ResponseWriter, v any) {
 // call wait again with the new cursor. `changed` is advisory -- the caller
 // still asks /v1/changes what actually moved, so a spurious wake is harmless
 // and a missed one is caught by the next poll.
-func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
+func (s *Server) wait(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	since := r.URL.Query().Get("since")
 
 	timeout := 60 * time.Second
@@ -342,7 +391,7 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	head, err := s.repo.Head()
+	head, err := inst.Repo.Head()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -357,10 +406,10 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
 	// Subscribe BEFORE re-checking head. Subscribing after would leave a window
 	// in which a commit lands between the check and the subscription, and the
 	// caller would then block for the full timeout on news that already exists.
-	ch, stop := s.rc.Subscribe()
+	ch, stop := inst.Reconciler.Subscribe()
 	defer stop()
 
-	if head, err := s.repo.Head(); err == nil && head != since {
+	if head, err := inst.Repo.Head(); err == nil && head != since {
 		writeJSON(w, protocol.WaitResponse{Head: head, Changed: true})
 		return
 	}
@@ -383,7 +432,7 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+func (s *Server) history(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "path is required")
@@ -395,7 +444,7 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	revs, err := s.repo.History(path, limit)
+	revs, err := inst.Repo.History(path, limit)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -406,18 +455,18 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 // at reads a file as it was at a revision, WITHOUT touching the working tree.
 // Inspecting is much more common than restoring, and conflating the two makes
 // looking at an old version a destructive act.
-func (s *Server) at(w http.ResponseWriter, r *http.Request) {
+func (s *Server) at(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	rev, p := r.PathValue("rev"), r.PathValue("path")
 	if err := vault.ValidPath(p); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 		return
 	}
-	resolved, err := s.repo.Resolve(rev)
+	resolved, err := inst.Repo.Resolve(rev)
 	if err != nil {
 		fail(w, http.StatusNotFound, protocol.CodeNotFound, "unknown revision")
 		return
 	}
-	content, err := s.repo.ReadAt(resolved, p)
+	content, err := inst.Repo.ReadAt(resolved, p)
 	if err != nil {
 		fail(w, http.StatusNotFound, protocol.CodeNotFound, "no such path at that revision")
 		return
@@ -428,8 +477,8 @@ func (s *Server) at(w http.ResponseWriter, r *http.Request) {
 }
 
 // check compares the working tree against HEAD.
-func (s *Server) check(w http.ResponseWriter, r *http.Request) {
-	rep, err := s.repo.Check()
+func (s *Server) check(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	rep, err := inst.Repo.Check()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -446,7 +495,7 @@ type route struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
 	Does   string `json:"does"`
-	handle http.HandlerFunc
+	handle func(http.ResponseWriter, *http.Request, *vaults.Instance)
 }
 
 // maxWait caps how long a long-poll may hold a request open. Proxies and
@@ -470,13 +519,13 @@ func (s *Server) routes() []route {
 		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", s.at},
 		{"GET", "/v1/check", "working tree versus head", s.check},
 		{"GET", "/v1/export", "consistent archive of history; ?gzip=1 to compress", s.export},
-		{"GET", "/healthz", "liveness, no auth", s.healthz},
+		{"GET", "/healthz", "liveness, no auth", nil},
 	}
 }
 
 // index describes the API to whatever is calling it. Agents and humans both
 // benefit, and it costs one struct rather than a specification to maintain.
-func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	type doc struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
@@ -496,7 +545,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		// bootstraps from whatever snapshot it is handed, merging two unrelated
 		// vaults into both. Git history makes that recoverable, but only if
 		// someone notices.
-		"vault":    filepath.Base(s.repo.WorkTree()),
+		"vault":    inst.Name,
 		"version":  version.Version,
 		"protocol": protocol.Version,
 		"notes": []string{
@@ -529,7 +578,7 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 // The archive is built into a temp file while commits are frozen, then streamed
 // with the lock released -- otherwise a slow client would block every write for
 // the duration of the transfer.
-func (s *Server) export(w http.ResponseWriter, r *http.Request) {
+func (s *Server) export(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	// Uncompressed by default: gzip here would cost a full copy per backup
 	// snapshot rather than a delta. See repo.Archive.
 	compress := r.URL.Query().Get("gzip") == "1"
@@ -546,7 +595,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	// deployment detail should not be what makes the binary work. The git
 	// directory is writable by definition here and on the same filesystem as the
 	// objects being archived.
-	tmp, err := os.CreateTemp(s.repo.GitDir(), "archivist-export-*.tar")
+	tmp, err := os.CreateTemp(inst.Repo.GitDir(), "archivist-export-*.tar")
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -554,7 +603,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
-	if err := s.rc.Freeze(func() error { return s.repo.Archive(tmp, compress) }); err != nil {
+	if err := inst.Reconciler.Freeze(func() error { return inst.Repo.Archive(tmp, compress) }); err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
@@ -598,4 +647,59 @@ func fail(w http.ResponseWriter, status int, code, msg string) {
 	json.NewEncoder(w).Encode(protocol.ErrorResponse{
 		Error: protocol.Error{Code: code, Message: msg},
 	})
+}
+
+// listVaults is the picker AND the authorisation check, from one fact: it
+// returns exactly what the presented token opens.
+//
+// Rescanned behind a short cache, so a vault rsynced in appears without a
+// restart -- avoiding the failure where nothing shows up and nothing says why.
+func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	all, err := s.reg.Names()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{
+		"vaults":    p.Visible(all),
+		"canCreate": p.CanCreateVaults,
+	})
+}
+
+// createVault makes a directory inside $ROOT/vaults and nothing else.
+//
+// This reverses an earlier decision, deliberately. The objection was that "an
+// API that can create state outside what it was configured with is a much
+// larger surface than one that reads and writes notes" -- and that reasoning
+// aimed wider than what this is: a POST that can only create a directory INSIDE
+// the configured root cannot create state outside it, which is the property the
+// objection protected. The residual risk, a leaked token creating vaults
+// endlessly, is bounded by the disk floor shipped in v0.4.0 and by
+// ARCHIVIST_MAX_VAULTS.
+func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
+	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	if !p.CanCreateVaults {
+		fail(w, http.StatusForbidden, protocol.CodeForbidden, "this token may not create vaults")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+		return
+	}
+	if err := s.reg.Create(req.Name); err != nil {
+		if vaults.ValidName(req.Name) != nil {
+			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+			return
+		}
+		// A collision or the limit: the request was well-formed and is refused.
+		fail(w, http.StatusConflict, protocol.CodeMalformed, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, map[string]any{"vault": req.Name})
 }

@@ -61,6 +61,7 @@ const (
 	CodeMalformed      = "malformed"        // unparseable request
 	CodeNotFound       = "not_found"        // no such object, path or revision
 	CodeDuplicatePath  = "duplicate_path"   // one path named twice in a push
+	CodeForbidden      = "forbidden"        // valid token, but it does not open this vault
 	CodeInternal       = "internal"         // the server's fault
 	CodeQuarantined    = "path_quarantined" // repeated writes to one path
 	CodeThrottled      = "throttled"        // vault-wide write rate exceeded

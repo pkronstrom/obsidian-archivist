@@ -4,8 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,20 +23,39 @@ import (
 
 const token = "test-token"
 
+// singleVaultRegistry builds a registry over a temp root holding one vault
+// named "personal", with a wildcard token. Every path in these tests is
+// therefore /personal/v1/... -- there is deliberately no unqualified alias.
+func singleVaultRegistry(t *testing.T, tok string) (*vaults.Registry, *auth.Set, string) {
+	t.Helper()
+	root := t.TempDir()
+	work := filepath.Join(root, "vaults", "personal")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := vaults.NewRegistry(vaults.Layout{Root: root}, vaults.Options{
+		MaxVaults:    5,
+		NormalizeNFC: false,
+		Log:          slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reg.Close() })
+	set := auth.NewSetForTest(map[string]auth.Principal{
+		tok: {Label: "test", Vaults: []string{"*"}, CanCreateVaults: true},
+	})
+	return reg, set, work
+}
+
 func newServer(t *testing.T) (http.Handler, *vault.Vault, *repo.Repo) {
 	t.Helper()
-	base := t.TempDir()
-	work := filepath.Join(base, "vault")
-	v, err := vault.New(work)
+	reg, set, _ := singleVaultRegistry(t, token)
+	inst, err := reg.Get("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := repo.Open(work, filepath.Join(base, "git"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { v.Close() })
-	return New(reconcile.New(v, r), r, token), v, r
+	return New(reg, set), inst.Vault, inst.Repo
 }
 
 func do(t *testing.T, h http.Handler, method, path string, body any, auth bool) *httptest.ResponseRecorder {
@@ -43,6 +66,13 @@ func do(t *testing.T, h http.Handler, method, path string, body any, auth bool) 
 		rdr = bytes.NewReader(b)
 	} else {
 		rdr = bytes.NewReader(nil)
+	}
+	// Every vault route is path-qualified now. Prefixing here keeps the test
+	// bodies readable and, more importantly, means a test that deliberately
+	// checks an UNQUALIFIED path (there is no alias) can still write it by
+	// starting with something other than /v1.
+	if strings.HasPrefix(path, "/v1") && !strings.HasPrefix(path, "/v1/vaults") {
+		path = "/personal" + path
 	}
 	req := httptest.NewRequest(method, path, rdr)
 	if auth {
@@ -64,7 +94,7 @@ func TestUnauthenticatedIsRejected(t *testing.T) {
 
 func TestWrongTokenIsRejected(t *testing.T) {
 	h, _, _ := newServer(t)
-	req := httptest.NewRequest("GET", "/v1/head", nil)
+	req := httptest.NewRequest("GET", "/personal/v1/head", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -92,7 +122,7 @@ func TestHeadOnEmptyRepo(t *testing.T) {
 // content-addressed. A client that miscomputes a hash must find out at once.
 func TestContentUploadRejectsAHashMismatch(t *testing.T) {
 	h, _, _ := newServer(t)
-	req := httptest.NewRequest("PUT", "/v1/content/"+strings.Repeat("a", 40),
+	req := httptest.NewRequest("PUT", "/personal/v1/content/"+strings.Repeat("a", 40),
 		bytes.NewReader([]byte("these bytes hash to something else")))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -110,7 +140,7 @@ func TestContentRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest("PUT", "/v1/content/"+hash, bytes.NewReader(content))
+	req := httptest.NewRequest("PUT", "/personal/v1/content/"+hash, bytes.NewReader(content))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -171,7 +201,7 @@ func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	content := []byte("hello\n")
 	hash, _ := repo.HashContent(content)
 
-	req := httptest.NewRequest("PUT", "/v1/content/"+hash, bytes.NewReader(content))
+	req := httptest.NewRequest("PUT", "/personal/v1/content/"+hash, bytes.NewReader(content))
 	req.Header.Set("Authorization", "Bearer "+token)
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
@@ -244,7 +274,7 @@ func TestEventsStreamsHeadOnConnectAndOnCommit(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/personal/v1/events", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -341,7 +371,7 @@ func TestEventsDistinguishBinaryFromText(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/v1/events", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/personal/v1/events", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -393,7 +423,7 @@ func TestEventsDistinguishBinaryFromText(t *testing.T) {
 
 func putContent(t *testing.T, h http.Handler, hash string, content []byte) {
 	t.Helper()
-	req := httptest.NewRequest("PUT", "/v1/content/"+hash, bytes.NewReader(content))
+	req := httptest.NewRequest("PUT", "/personal/v1/content/"+hash, bytes.NewReader(content))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -487,24 +517,36 @@ func TestIndexAndHealthzReportTheProtocol(t *testing.T) {
 	}
 }
 
+// The same property as before, relocated. api.New used to panic on an empty
+// token because the expected header would then be exactly "Bearer ", which any
+// client can send. That check now lives in auth: Load refuses a server with no
+// credentials at all, and Lookup refuses the empty token whatever is in the
+// table. Both are worth asserting, because between them they are the only
+// thing standing between a typo and an open vault.
 func TestEmptyTokenIsRefusedRatherThanServingAnOpenVault(t *testing.T) {
-	base := t.TempDir()
-	work := filepath.Join(base, "vault")
-	v, _ := vault.New(work)
-	defer v.Close()
-	r, _ := repo.Open(work, filepath.Join(base, "git"))
-	defer func() {
-		if recover() == nil {
-			t.Error("api.New accepted an empty token; 'Bearer ' would authenticate")
-		}
-	}()
-	New(reconcile.New(v, r), r, "")
+	if _, err := auth.Load("", ""); err == nil {
+		t.Error("a server with no credentials at all was accepted")
+	}
+
+	set := auth.NewSetForTest(map[string]auth.Principal{"": {Vaults: []string{"*"}}})
+	if _, ok := set.Lookup(""); ok {
+		t.Error("the empty token authenticated; 'Bearer ' would be enough")
+	}
+
+	h, _, _ := newServer(t)
+	req := httptest.NewRequest("GET", "/personal/v1/head", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("bare 'Bearer ' got %d, want 401", w.Code)
+	}
 }
 
 func TestOversizedUploadIs413NotASilentTruncation(t *testing.T) {
 	h, _, _ := newServer(t)
 	big := bytes.Repeat([]byte("x"), protocol.MaxUploadBytes+64)
-	req := httptest.NewRequest("PUT", "/v1/content/"+strings.Repeat("a", 40), bytes.NewReader(big))
+	req := httptest.NewRequest("PUT", "/personal/v1/content/"+strings.Repeat("a", 40), bytes.NewReader(big))
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

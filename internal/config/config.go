@@ -12,15 +12,28 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	// Vault is the working tree -- the ordinary directory of notes.
-	Vault string
-	// Git is the git directory, deliberately OUTSIDE the vault so that no
-	// client and no other tool ever sees a .git inside the notes.
-	Git string
+	// Root holds every vault and every history:
+	//
+	//	$ROOT/vaults/<name>/       the vault
+	//	$ROOT/.archivist/<name>/   its history
+	//
+	// This was a deployment convention -- compose already sets exactly these
+	// paths against one /data mount -- and multi-vault makes it the server's
+	// own, which is why the old per-vault -vault/-git defaults are gone.
+	Root string
+	// MaxVaults refuses creation past this many. Discovery finding more warns
+	// and serves them, so raising the value is always a way out. It is a guard
+	// against mistakes, not against an adversary.
+	MaxVaults int
+	// TokensFile maps tokens to the vaults they open. Empty falls back to
+	// Token, which opens EVERY vault -- convenient for one vault, and not
+	// isolation.
+	TokensFile string
 	// Listen is the HTTP bind address.
 	Listen string
 	// Token is the bearer token every client must present.
@@ -90,6 +103,20 @@ func env(key, def string) string {
 
 // Load parses args over environment defaults.
 func Load(args []string) (*Config, error) {
+	// The old single-vault flags. Rejecting them by name beats "flag provided
+	// but not defined", which says nothing about what to do instead. Prefix,
+	// not equality: `-vault=/path` is a single argv entry.
+	for _, a := range args {
+		if strings.HasPrefix(a, "-vault") || strings.HasPrefix(a, "--vault") ||
+			strings.HasPrefix(a, "-git") || strings.HasPrefix(a, "--git") {
+			return nil, errors.New(
+				"-vault and -git are gone: one process now serves every vault under " +
+					"-root (ARCHIVIST_ROOT), with vaults at $ROOT/vaults/<name> and their " +
+					"history at $ROOT/.archivist/<name>. The offline subcommands still " +
+					"accept -vault and -git for a single repository")
+		}
+	}
+
 	debounce, err := time.ParseDuration(env("ARCHIVIST_DEBOUNCE", "1s"))
 	if err != nil {
 		return nil, errors.New("ARCHIVIST_DEBOUNCE: " + err.Error())
@@ -114,10 +141,12 @@ func Load(args []string) (*Config, error) {
 	fs.SetOutput(io.Discard)
 
 	c := &Config{}
-	fs.StringVar(&c.Vault, "vault", env("ARCHIVIST_VAULT", ""),
-		"vault directory (the notes themselves)")
-	fs.StringVar(&c.Git, "git", env("ARCHIVIST_GIT", "/var/lib/archivist/git"),
-		"git directory, kept outside the vault")
+	fs.StringVar(&c.Root, "root", env("ARCHIVIST_ROOT", ""),
+		"directory holding vaults/ and .archivist/")
+	fs.IntVar(&c.MaxVaults, "max-vaults", int(envInt("ARCHIVIST_MAX_VAULTS", 5)),
+		"refuse creating more vaults than this; discovery past it warns and serves them")
+	fs.StringVar(&c.TokensFile, "tokens", env("ARCHIVIST_TOKENS", ""),
+		"JSON file mapping each token to the vaults it opens")
 	fs.StringVar(&c.Listen, "listen", env("ARCHIVIST_LISTEN", ":8090"),
 		"HTTP listen address")
 	fs.StringVar(&c.Token, "token", env("ARCHIVIST_TOKEN", ""),
@@ -161,11 +190,13 @@ func Load(args []string) (*Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	if c.Vault == "" {
-		return nil, errors.New("vault directory is required (-vault or ARCHIVIST_VAULT)")
+	if c.Root == "" {
+		return nil, errors.New("root directory is required (-root or ARCHIVIST_ROOT)")
 	}
-	if c.Token == "" {
-		return nil, errors.New("bearer token is required (-token or ARCHIVIST_TOKEN)")
+	if c.Token == "" && c.TokensFile == "" {
+		return nil, errors.New(
+			"credentials are required: -tokens/ARCHIVIST_TOKENS for per-vault tokens, " +
+				"or -token/ARCHIVIST_TOKEN for a single token that opens every vault")
 	}
 	return c, nil
 }

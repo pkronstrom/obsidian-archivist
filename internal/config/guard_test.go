@@ -9,7 +9,7 @@ import (
 // rather than whatever the developer's shell happens to export.
 func minimalEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("ARCHIVIST_VAULT", t.TempDir())
+	t.Setenv("ARCHIVIST_ROOT", t.TempDir())
 	t.Setenv("ARCHIVIST_GIT", t.TempDir())
 	t.Setenv("ARCHIVIST_TOKEN", "t")
 }

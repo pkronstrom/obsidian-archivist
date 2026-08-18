@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -15,10 +18,7 @@ import (
 
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
-	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/relay"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
-	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -28,21 +28,24 @@ func quiet() *slog.Logger {
 
 func liveClient(t *testing.T) *client.Client {
 	t.Helper()
-	base := t.TempDir()
-	work := filepath.Join(base, "vault")
-	v, err := vault.New(work)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "vaults", "personal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := vaults.NewRegistry(vaults.Layout{Root: root}, vaults.Options{
+		MaxVaults: 5,
+		Log:       slog.New(slog.DiscardHandler),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { v.Close() })
-	r, err := repo.Open(work, filepath.Join(base, "git"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
-	srv := httptest.NewServer(api.New(reconcile.New(v, r), r, "tok"))
+	t.Cleanup(func() { reg.Close() })
+	set := auth.NewSetForTest(map[string]auth.Principal{
+		"tok": {Label: "test", Vaults: []string{"*"}},
+	})
+	srv := httptest.NewServer(api.New(reg, set))
 	t.Cleanup(srv.Close)
-	return client.New(srv.URL, "tok", "relay")
+	return client.New(srv.URL, "tok", "relay").WithVault("personal")
 }
 
 // A collector stands in for n8n or Node-RED.

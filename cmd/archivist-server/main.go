@@ -1,7 +1,9 @@
-// Command archivist-server serves one vault.
+// Command archivist-server serves every vault under one root.
 //
-// One vault per process: two vaults means two containers, which is how they
-// would be deployed anyway, and it keeps every path in the API unqualified.
+// One process, one registry, N vaults. Each vault gets its own working tree,
+// repository, reconciler, guard and filesystem watcher, so nothing is shared
+// but the process and the listening socket -- which is what makes a leaked
+// token's blast radius exactly the vaults that token names.
 package main
 
 import (
@@ -30,15 +32,13 @@ import (
 	_ "time/tzdata"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/cli"
 	"github.com/pkronstrom/obsidian-archivist/internal/config"
 	"github.com/pkronstrom/obsidian-archivist/internal/guard"
 	"github.com/pkronstrom/obsidian-archivist/internal/logging"
 	"github.com/pkronstrom/obsidian-archivist/internal/notify"
-	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
-	"github.com/pkronstrom/obsidian-archivist/internal/vault"
-	"github.com/pkronstrom/obsidian-archivist/internal/watcher"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 )
 
 func main() {
@@ -83,8 +83,11 @@ func main() {
 // they deliberately do not require a token.
 func runCommand(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	root := fs.String("root", envOr("ARCHIVIST_ROOT", ""),
+		"root holding vaults/ and .archivist/; with -name this derives -vault and -git")
+	vaultName := fs.String("name", "", "vault name under -root")
 	vaultDir := fs.String("vault", envOr("ARCHIVIST_VAULT", ""), "vault directory")
-	gitDir := fs.String("git", envOr("ARCHIVIST_GIT", "/var/lib/archivist/git"), "git directory")
+	gitDir := fs.String("git", envOr("ARCHIVIST_GIT", ""), "git directory")
 	// Only history and check produce structured output; show, restore and
 	// export do not, and silently accepting -json there implied otherwise.
 	asJSON := fs.Bool("json", false, "machine-readable output (history, check and reclaim only)")
@@ -98,8 +101,18 @@ func runCommand(name string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// -root plus -name is the ergonomic form; explicit -vault/-git still works
+	// and wins, because a repository moved out of the layout must stay
+	// inspectable.
+	if *vaultDir == "" && *root != "" && *vaultName != "" {
+		l := vaults.Layout{Root: *root}
+		*vaultDir, *gitDir = l.VaultDir(*vaultName), l.GitDir(*vaultName)
+	}
 	if *vaultDir == "" {
-		return errors.New("vault directory is required (-vault or ARCHIVIST_VAULT)")
+		return errors.New("vault is required: -root with -name, or -vault with -git")
+	}
+	if *gitDir == "" {
+		return errors.New("git directory is required (-git), or use -root with -name")
 	}
 	if *asJSON && name != "history" && name != "check" && name != "reclaim" {
 		return fmt.Errorf("-json is not supported by %s (history, check and reclaim only)", name)
@@ -118,117 +131,88 @@ func envOr(key, def string) string {
 }
 
 func run(cfg *config.Config, log *slog.Logger) error {
-	v, err := vault.New(cfg.Vault)
+	tokens, err := auth.Load(cfg.TokensFile, cfg.Token)
 	if err != nil {
 		return err
 	}
-	defer v.Close()
 
-	r, err := repo.Open(cfg.Vault, cfg.Git)
+	n := notify.New(cfg.NtfyURL, time.Now, log)
+
+	layout := vaults.Layout{Root: cfg.Root}
+	reg, err := vaults.NewRegistry(layout, vaults.Options{
+		MaxVaults: cfg.MaxVaults,
+		Limits: guard.Limits{
+			Writes:       cfg.QuarantineWrites,
+			PathBytes:    cfg.QuarantinePathBytes,
+			TotalBytes:   cfg.QuarantineTotalBytes,
+			Window:       cfg.QuarantineWindow,
+			Cooldown:     cfg.QuarantineCooldown,
+			MinFreeBytes: cfg.MinFreeBytes,
+		},
+		Debounce:            cfg.Debounce,
+		ThrottleMaxDebounce: cfg.ThrottleMaxDebounce,
+		NormalizeNFC:        cfg.NormalizeNFC,
+		OnTrip: func(vaultName, code, path, reason string) {
+			log.Warn("guard refused a write", "vault", vaultName, "code", code,
+				"path", path, "reason", reason)
+			// Keyed by vault too, so a trip in one vault does not suppress the
+			// alert for the same path in another.
+			n.SendKeyed(vaultName+":"+code+":"+path,
+				"archivist: "+code+" in "+vaultName, path+" -- "+reason, true)
+		},
+		Log: log,
+		Now: time.Now,
+	})
 	if err != nil {
 		return err
 	}
-	// Dotfiles must not enter git. Enforced here, at the point files are
-	// staged, rather than only where events are observed.
-	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	defer reg.Close()
 
-	// Head translations from past prunes. Without these a device arriving with
-	// the head it synced before a prune gets unknown_base and re-downloads the
-	// whole vault; with them the diff is empty and it notices nothing.
-	if pm, err := repo.ReadPruneMap(cfg.Git); err != nil {
-		return fmt.Errorf("reading prune map: %w", err)
-	} else if len(pm) > 0 {
-		r.SetPruneMap(pm)
-		log.Info("loaded head translations from past prunes", "entries", len(pm))
-	}
-	rc := reconcile.New(v, r)
-
-	head, err := r.Head()
+	names, err := reg.Names()
 	if err != nil {
 		return err
 	}
 	log.Info("archivist-server starting",
-		"vault", cfg.Vault, "git", cfg.Git, "listen", cfg.Listen, "head", head,
+		"root", cfg.Root, "listen", cfg.Listen, "vaults", layout.Describe(names),
 		"level", cfg.LogLevel)
-	log.Debug("configuration", "debounce", cfg.Debounce, "watch", cfg.Watch,
-		"logFile", cfg.LogFile)
 
-	// SIGINT/SIGTERM cancels the watcher and starts a graceful HTTP shutdown.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// A single unscoped token is the one-vault convenience, not isolation. Say
+	// so once at startup rather than letting it be discovered after a leak.
+	if tokens.IsBootstrap() {
+		log.Warn("running on a single ARCHIVIST_TOKEN, which opens EVERY vault",
+			"fix", "set ARCHIVIST_TOKENS to a JSON file mapping each token to its vaults")
+	}
 
-	// The guard bounds how fast content may enter, on BOTH write paths: the
-	// reconciler consults it from Push for remote writes and from Scan for
-	// local ones. Installed before the normalisation pass below, which itself
-	// goes through Scan.
-	g := guard.New(guard.Limits{
-		Writes:       cfg.QuarantineWrites,
-		PathBytes:    cfg.QuarantinePathBytes,
-		TotalBytes:   cfg.QuarantineTotalBytes,
-		Window:       cfg.QuarantineWindow,
-		Cooldown:     cfg.QuarantineCooldown,
-		MinFreeBytes: cfg.MinFreeBytes,
-	}, time.Now, guard.FreeOn(cfg.Vault))
-	rc.SetGuard(g)
-
-	n := notify.New(cfg.NtfyURL, time.Now, log)
-	rc.SetTripHandler(func(code, path, reason string) {
-		log.Warn("guard refused a write", "code", code, "path", path, "reason", reason)
-		n.SendKeyed(code+":"+path, "archivist: "+code, path+" -- "+reason, true)
-	})
 	if cfg.NtfyURL == "" {
 		log.Info("ntfy alerts are disabled; set ARCHIVIST_NTFY_URL to enable them")
-	} else if err := n.Verify("archivist: started", "guards armed on vault "+cfg.Vault); err != nil {
+	} else if err := n.Verify("archivist: started",
+		fmt.Sprintf("guards armed on %s", layout.Describe(names))); err != nil {
 		// Loud, but NOT fatal. A broken notifier is not a reason to stop
-		// serving the vault -- it is a reason to know before the guards need
-		// it. Every other delivery path is silent by design, so this is the
-		// only place a misconfiguration can surface on its own.
+		// serving the vaults -- it is a reason to know before the guards need it.
 		log.Error("ntfy startup check FAILED; guard alerts will not reach you",
 			"url", cfg.NtfyURL, "err", err)
 	} else {
 		log.Info("ntfy startup check delivered", "url", cfg.NtfyURL)
 	}
 
-	// Normalise BEFORE anything watches or commits, so the renames land as one
-	// tidy change rather than interleaved with edits.
-	rc.SetNormalizeNFC(cfg.NormalizeNFC)
-	if cfg.NormalizeNFC {
-		renamed, err := v.NormalizeToNFC(log)
-		if err != nil {
-			return fmt.Errorf("normalising filenames: %w", err)
-		}
-		if len(renamed) > 0 {
-			if _, err := rc.Scan(fmt.Sprintf("normalise %d filename(s) to NFC", len(renamed))); err != nil {
-				return err
-			}
-		}
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	watchDone := make(chan error, 1)
 	if cfg.Watch {
-		w := watcher.New(v, rc, cfg.Debounce, log)
-		// Under pressure the watcher commits less often rather than refusing:
-		// its bytes are already on disk, so only deferral reduces what git
-		// stores.
-		w.SetPressure(g.Pressure, cfg.ThrottleMaxDebounce)
-		go func() { watchDone <- w.Run(ctx) }()
-	} else {
-		// Even without the watcher, reconcile once: whatever changed while the
-		// process was stopped still has to reach history.
-		if _, err := rc.Scan("startup scan"); err != nil {
+		// One watcher per vault. A registry that opened repositories but
+		// started fewer watchers would give a vault working remote sync and
+		// silently no local sync.
+		if err := reg.StartWatchers(ctx); err != nil {
 			return err
 		}
+	} else {
+		reg.ScanAll("startup scan")
 		log.Warn("filesystem watching is disabled; local edits will not be committed")
-		// Deliberately does NOT signal watchDone. Sending nil here made the
-		// select below treat "the watcher finished" as a shutdown signal, so
-		// -watch=false exited immediately and the documented read-only mode was
-		// unusable. A nil channel blocks forever, which is what we want.
-		watchDone = nil
 	}
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(rc, r, cfg.Token),
+		Handler:           api.New(reg, tokens),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -247,10 +231,11 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		log.Info("shutting down")
 	case err := <-serveDone:
 		return err
-	case err := <-watchDone:
-		if err != nil {
-			return err
-		}
+	case err := <-reg.WatchFailures():
+		// Fatal, as it was with one vault. A server that keeps answering pushes
+		// while a vault's local edits silently stop being committed is worse
+		// than one that stops and says why.
+		return err
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -258,9 +243,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
-	// A final scan so anything written during shutdown still reaches history.
-	if _, err := rc.Scan("shutdown scan"); err != nil {
-		log.Error("final scan failed", "err", err)
-	}
+	// Watchers stop with ctx; wait for them before the final scan so nothing
+	// commits underneath it.
+	reg.Wait()
+	reg.ScanAll("shutdown scan")
 	return nil
 }

@@ -2,7 +2,11 @@ package client_test
 
 import (
 	"context"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
+	"log/slog"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,8 +14,6 @@ import (
 
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
-	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
@@ -22,24 +24,32 @@ import (
 // start.
 func live(t *testing.T) (*client.Client, *vault.Vault) {
 	t.Helper()
-	base := t.TempDir()
-	work := filepath.Join(base, "vault")
-	v, err := vault.New(work)
+	root := t.TempDir()
+	work := filepath.Join(root, "vaults", "personal")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := vaults.NewRegistry(vaults.Layout{Root: root}, vaults.Options{
+		MaxVaults: 5,
+		Log:       slog.New(slog.DiscardHandler),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { v.Close() })
-
-	r, err := repo.Open(work, filepath.Join(base, "git"))
+	t.Cleanup(func() { reg.Close() })
+	inst, err := reg.Get("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	v := inst.Vault
 
-	srv := httptest.NewServer(api.New(reconcile.New(v, r), r, "live-token"))
+	set := auth.NewSetForTest(map[string]auth.Principal{
+		"live-token": {Label: "test", Vaults: []string{"*"}},
+	})
+	srv := httptest.NewServer(api.New(reg, set))
 	t.Cleanup(srv.Close)
 
-	return client.New(srv.URL, "live-token", "relay"), v
+	return client.New(srv.URL, "live-token", "relay").WithVault("personal"), v
 }
 
 func TestLiveWriteReadRoundTrip(t *testing.T) {

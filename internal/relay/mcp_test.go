@@ -3,7 +3,11 @@ package relay_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
+	"log/slog"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,10 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
-	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/relay"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
-	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -23,22 +24,25 @@ import (
 // memory. Nothing here is a double except the transport.
 func session(t *testing.T) (*mcp.ClientSession, *client.Client) {
 	t.Helper()
-	base := t.TempDir()
-	work := filepath.Join(base, "vault")
-	v, err := vault.New(work)
+	root := t.TempDir()
+	work := filepath.Join(root, "vaults", "personal")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := vaults.NewRegistry(vaults.Layout{Root: root}, vaults.Options{
+		MaxVaults: 5,
+		Log:       slog.New(slog.DiscardHandler),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { v.Close() })
-	r, err := repo.Open(work, filepath.Join(base, "git"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
-
-	srv := httptest.NewServer(api.New(reconcile.New(v, r), r, "tok"))
+	t.Cleanup(func() { reg.Close() })
+	set := auth.NewSetForTest(map[string]auth.Principal{
+		"tok": {Label: "test", Vaults: []string{"*"}},
+	})
+	srv := httptest.NewServer(api.New(reg, set))
 	t.Cleanup(srv.Close)
-	c := client.New(srv.URL, "tok", "relay")
+	c := client.New(srv.URL, "tok", "relay").WithVault("personal")
 
 	mcpSrv := relay.NewMCPServer(c, "archivist", "test")
 	ct, st := mcp.NewInMemoryTransports()

@@ -18,7 +18,7 @@ const zeroCursor = "0000000000000000000000000000000000000000"
 // it blocked, because the timing IS the behaviour under test.
 func waitFor(t *testing.T, url, since, timeout string) (protocol.WaitResponse, time.Duration) {
 	t.Helper()
-	u := url + "/v1/wait?since=" + since
+	u := url + "/personal/v1/wait?since=" + since
 	if timeout != "" {
 		u += "&timeout=" + timeout
 	}
@@ -137,7 +137,7 @@ func TestWaitReleasesWhenTheClientGivesUp(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/v1/wait?since="+head+"&timeout=60", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/personal/v1/wait?since="+head+"&timeout=60", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	if _, err := http.DefaultClient.Do(req); err == nil {
 		t.Error("expected the cancelled request to fail")
