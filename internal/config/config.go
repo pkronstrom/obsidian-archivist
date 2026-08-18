@@ -45,6 +45,23 @@ type Config struct {
 	LogFile     string
 	LogMaxBytes int64
 	LogKeep     int
+
+	// Guard thresholds. Zero disables an individual counter; it never means
+	// "block everything". See docs/2026-08-18-vault-size-guards-design.md.
+	QuarantineWrites     int
+	QuarantinePathBytes  int64
+	QuarantineTotalBytes int64
+	QuarantineWindow     time.Duration
+	QuarantineCooldown   time.Duration
+	// ThrottleMaxDebounce caps how far the local path may defer commits while
+	// a threshold is tripped.
+	ThrottleMaxDebounce time.Duration
+	// MinFreeBytes refuses writes below this much free disk.
+	MinFreeBytes int64
+	// NtfyURL is a full ntfy URL including the topic. Empty disables alerts.
+	// Archivist's own channel, deliberately not the backup notifier's: restic
+	// posts on a schedule, so a vault alarm in that topic reads as routine.
+	NtfyURL string
 }
 
 func envInt(key string, def int64) int64 {
@@ -54,6 +71,14 @@ func envInt(key string, def int64) int64 {
 		}
 	}
 	return def
+}
+
+func envDuration(key, def string) (time.Duration, error) {
+	d, err := time.ParseDuration(env(key, def))
+	if err != nil {
+		return 0, errors.New(key + ": " + err.Error())
+	}
+	return d, nil
 }
 
 func env(key, def string) string {
@@ -68,6 +93,19 @@ func Load(args []string) (*Config, error) {
 	debounce, err := time.ParseDuration(env("ARCHIVIST_DEBOUNCE", "1s"))
 	if err != nil {
 		return nil, errors.New("ARCHIVIST_DEBOUNCE: " + err.Error())
+	}
+
+	qWindow, err := envDuration("ARCHIVIST_QUARANTINE_WINDOW", "5m")
+	if err != nil {
+		return nil, err
+	}
+	qCooldown, err := envDuration("ARCHIVIST_QUARANTINE_COOLDOWN", "15m")
+	if err != nil {
+		return nil, err
+	}
+	maxDebounce, err := envDuration("ARCHIVIST_THROTTLE_MAX_DEBOUNCE", "60s")
+	if err != nil {
+		return nil, err
 	}
 
 	fs := flag.NewFlagSet("archivist-server", flag.ContinueOnError)
@@ -98,6 +136,27 @@ func Load(args []string) (*Config, error) {
 		"rotate the log file at this size")
 	fs.IntVar(&c.LogKeep, "log-keep", int(envInt("ARCHIVIST_LOG_KEEP", 5)),
 		"how many rotated log files to keep")
+
+	fs.IntVar(&c.QuarantineWrites, "quarantine-writes",
+		int(envInt("ARCHIVIST_QUARANTINE_WRITES", 300)),
+		"writes to one path per window before it is quarantined (0 disables)")
+	fs.Int64Var(&c.QuarantinePathBytes, "quarantine-path-bytes",
+		envInt("ARCHIVIST_QUARANTINE_PATH_BYTES", 100<<20),
+		"bytes to one path per window before it is quarantined (0 disables)")
+	fs.Int64Var(&c.QuarantineTotalBytes, "quarantine-total-bytes",
+		envInt("ARCHIVIST_QUARANTINE_TOTAL_BYTES", 2<<30),
+		"bytes to the whole vault per window before throttling (0 disables)")
+	fs.DurationVar(&c.QuarantineWindow, "quarantine-window", qWindow,
+		"rolling window for the guard counters")
+	fs.DurationVar(&c.QuarantineCooldown, "quarantine-cooldown", qCooldown,
+		"how long a quarantine holds")
+	fs.DurationVar(&c.ThrottleMaxDebounce, "throttle-max-debounce", maxDebounce,
+		"ceiling on the local path's deferred commit cadence")
+	fs.Int64Var(&c.MinFreeBytes, "min-free-bytes",
+		envInt("ARCHIVIST_MIN_FREE_BYTES", 20<<30),
+		"refuse writes below this much free disk (0 disables)")
+	fs.StringVar(&c.NtfyURL, "ntfy-url", env("ARCHIVIST_NTFY_URL", ""),
+		"full ntfy URL including the topic; empty disables alerts")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err

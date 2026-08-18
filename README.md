@@ -302,6 +302,54 @@ Or over HTTP, for agents and other containers — `GET /v1` lists every endpoint
 with a one-line description, generated from the same table that builds the
 routes, so it cannot describe something that does not exist.
 
+## Write guards
+
+Git keeps every revision, and for binary content every revision is a full
+copy. A client stuck in a write loop grows the repository until the disk is
+full, whether or not the vault itself looks large. These bound that.
+
+Every threshold is read from the environment, so tuning is a restart rather
+than a rebuild. `0` disables an individual counter; it never means "block
+everything". The defaults apply when unset, so a deployment that changes
+nothing still gets the guards.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ARCHIVIST_QUARANTINE_WRITES` | `300` | writes to one path per window |
+| `ARCHIVIST_QUARANTINE_PATH_BYTES` | `100MB` | bytes to one path per window (needs 2+ writes) |
+| `ARCHIVIST_QUARANTINE_TOTAL_BYTES` | `2GB` | bytes to the whole vault per window |
+| `ARCHIVIST_QUARANTINE_WINDOW` | `5m` | rolling window shared by all three |
+| `ARCHIVIST_QUARANTINE_COOLDOWN` | `15m` | how long a quarantine holds |
+| `ARCHIVIST_THROTTLE_MAX_DEBOUNCE` | `60s` | ceiling when deferring local commits |
+| `ARCHIVIST_MIN_FREE_BYTES` | `20GB` | refuse writes below this much free disk |
+| `ARCHIVIST_NTFY_URL` | unset | full ntfy URL including the topic |
+
+Four things worth knowing before you tune them:
+
+**A quarantined path blocks writes to that path only.** The rest of the vault
+keeps syncing, and an oversized single file is already rejected per file
+rather than per sync.
+
+**The per-path byte counter needs at least two writes.** One write is not a
+loop however large, so a single 120 MB attachment can never quarantine its own
+path. Single-upload size is bounded separately, by the 512 MB server cap and
+the relay's 32 MB one.
+
+**Local writes are never refused.** The watcher sees bytes that are already on
+disk, so refusing would not reclaim any of them and would silently diverge the
+vault from its history. It widens its commit debounce instead, which means
+only a file's final state in each window becomes a blob.
+
+**The write threshold is derived, not guessed.** Obsidian auto-saves and the
+plugin syncs 2s after typing stops, so one device cannot exceed roughly 150
+writes to a path in five minutes. 300 clears two devices; a loop runs orders
+of magnitude faster. It catches fast loops only — a slow one is the disk
+floor's job, deliberately, because a threshold low enough to catch it would
+catch a person typing.
+
+A refused push answers `429` with `path_quarantined` or `throttled`, or `507`
+with `disk_low`.
+
 ## Backups
 
 ```bash

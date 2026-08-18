@@ -43,6 +43,59 @@ type Watcher struct {
 	timer    *time.Timer
 	firstAt  time.Time
 	maxDelay time.Duration
+
+	// pressure reports whether a guard threshold is currently tripped. Nil
+	// means no guard, so no deferral.
+	pressure func() bool
+	// maxDebounce caps how far pressure may widen the debounce.
+	maxDebounce time.Duration
+}
+
+// SetPressure installs the guard's pressure probe and the deferral ceiling.
+// Passing a nil probe disables deferral.
+func (w *Watcher) SetPressure(fn func() bool, max time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pressure, w.maxDebounce = fn, max
+}
+
+// effectiveDebounce is the debounce to use right now.
+//
+// Under pressure it widens toward maxDebounce. That is the local path's only
+// useful response to a loop: it cannot refuse a write, because the bytes are
+// already on disk, but committing once a minute instead of once a second
+// means only the file's final state in each window becomes a blob and the
+// intermediate revisions are never stored at all.
+//
+// Callers must hold w.mu.
+func (w *Watcher) effectiveDebounce() time.Duration {
+	if w.pressure == nil || !w.pressure() {
+		return w.debounce
+	}
+	if w.maxDebounce > w.debounce {
+		return w.maxDebounce
+	}
+	return w.debounce
+}
+
+// effectiveMaxDelay keeps the ceiling proportional to the debounce in force.
+//
+// The ceiling is never removed, only scaled. Without one, a steady write
+// stream produces no commits at all -- see the measurement in New. Widening
+// the debounce without widening this would instead make maxDelay fire on
+// every event, which defeats the deferral.
+//
+// Callers must hold w.mu.
+func (w *Watcher) effectiveMaxDelay() time.Duration {
+	d := w.effectiveDebounce()
+	if d == w.debounce {
+		return w.maxDelay
+	}
+	max := 10 * d
+	if max < w.maxDelay {
+		return w.maxDelay
+	}
+	return max
 }
 
 func New(v *vault.Vault, rc *reconcile.Reconciler, debounce time.Duration, log *slog.Logger) *Watcher {
@@ -182,9 +235,10 @@ func (w *Watcher) queue(rel string) {
 	}
 	// Re-arm for the debounce, but never push the commit further out than
 	// maxDelay from the first pending change.
-	wait := w.debounce
-	if elapsed := time.Since(w.firstAt); elapsed+wait > w.maxDelay {
-		wait = w.maxDelay - elapsed
+	wait := w.effectiveDebounce()
+	maxDelay := w.effectiveMaxDelay()
+	if elapsed := time.Since(w.firstAt); elapsed+wait > maxDelay {
+		wait = maxDelay - elapsed
 		if wait < 0 {
 			wait = 0
 		}

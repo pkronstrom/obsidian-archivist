@@ -32,7 +32,9 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/api"
 	"github.com/pkronstrom/obsidian-archivist/internal/cli"
 	"github.com/pkronstrom/obsidian-archivist/internal/config"
+	"github.com/pkronstrom/obsidian-archivist/internal/guard"
 	"github.com/pkronstrom/obsidian-archivist/internal/logging"
+	"github.com/pkronstrom/obsidian-archivist/internal/notify"
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
@@ -137,6 +139,29 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The guard bounds how fast content may enter, on BOTH write paths: the
+	// reconciler consults it from Push for remote writes and from Scan for
+	// local ones. Installed before the normalisation pass below, which itself
+	// goes through Scan.
+	g := guard.New(guard.Limits{
+		Writes:       cfg.QuarantineWrites,
+		PathBytes:    cfg.QuarantinePathBytes,
+		TotalBytes:   cfg.QuarantineTotalBytes,
+		Window:       cfg.QuarantineWindow,
+		Cooldown:     cfg.QuarantineCooldown,
+		MinFreeBytes: cfg.MinFreeBytes,
+	}, time.Now, guard.FreeOn(cfg.Vault))
+	rc.SetGuard(g)
+
+	n := notify.New(cfg.NtfyURL, time.Now)
+	rc.SetTripHandler(func(code, path, reason string) {
+		log.Warn("guard refused a write", "code", code, "path", path, "reason", reason)
+		n.SendKeyed(code+":"+path, "archivist: "+code, path+" -- "+reason, true)
+	})
+	if cfg.NtfyURL == "" {
+		log.Info("ntfy alerts are disabled; set ARCHIVIST_NTFY_URL to enable them")
+	}
+
 	// Normalise BEFORE anything watches or commits, so the renames land as one
 	// tidy change rather than interleaved with edits.
 	rc.SetNormalizeNFC(cfg.NormalizeNFC)
@@ -155,6 +180,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	watchDone := make(chan error, 1)
 	if cfg.Watch {
 		w := watcher.New(v, rc, cfg.Debounce, log)
+		// Under pressure the watcher commits less often rather than refusing:
+		// its bytes are already on disk, so only deferral reduces what git
+		// stores.
+		w.SetPressure(g.Pressure, cfg.ThrottleMaxDebounce)
 		go func() { watchDone <- w.Run(ctx) }()
 	} else {
 		// Even without the watcher, reconcile once: whatever changed while the

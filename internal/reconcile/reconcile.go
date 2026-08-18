@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkronstrom/obsidian-archivist/internal/guard"
 	"github.com/pkronstrom/obsidian-archivist/internal/merge"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
@@ -58,6 +59,12 @@ type Reconciler struct {
 
 	// normalizeNFC canonicalises incoming paths. Set once at startup.
 	normalizeNFC bool
+
+	// g bounds how fast content may enter. Nil disables every guard, which is
+	// what the CLI and most tests want.
+	g *guard.Guard
+	// notifyTrip reports a refused write. Nil is a no-op.
+	notifyTrip func(code, path, reason string)
 }
 
 // echoTTL is how long a write stays suppressible. Comfortably longer than any
@@ -121,6 +128,14 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 	if rc.normalizeNFC {
 		for i := range changes {
 			changes[i].Path = vault.ToNFC(changes[i].Path)
+		}
+	}
+
+	// Guard every path before anything is applied, so a refused push leaves
+	// the tree untouched rather than half-written.
+	for _, ch := range changes {
+		if err := rc.admit(ch.Path, changeSize(rc.r, ch)); err != nil {
+			return "", nil, err
 		}
 	}
 
@@ -438,11 +453,75 @@ func sanitise(s string) string {
 // what paths writes land on, so it is opt-in and set once at startup.
 func (rc *Reconciler) SetNormalizeNFC(on bool) { rc.normalizeNFC = on }
 
+// SetGuard installs the write guard. Nil disables it.
+func (rc *Reconciler) SetGuard(g *guard.Guard) { rc.g = g }
+
+// SetTripHandler installs the callback fired when a guard refuses a write.
+func (rc *Reconciler) SetTripHandler(fn func(code, path, reason string)) {
+	rc.notifyTrip = fn
+}
+
+// admit consults the guard for one path. It returns a protocol error when the
+// write must be refused and nil when it may proceed.
+func (rc *Reconciler) admit(path string, n int64) error {
+	if rc.g == nil {
+		return nil
+	}
+	v := rc.g.Admit(path, n)
+	if v.OK() {
+		return nil
+	}
+	if rc.notifyTrip != nil {
+		rc.notifyTrip(v.Code, path, v.Reason)
+	}
+	return &protocol.Error{Code: v.Code, Message: v.Reason}
+}
+
+// changeSize reports how many bytes a change costs. A delete has no content
+// and costs nothing.
+//
+// Size is a client-supplied wire field, so it is a hint: used when present,
+// and the stored blob measured otherwise. A client understating its own
+// writes gains little -- it still had to upload the content before the push,
+// and the vault-wide counter and the disk floor both measure what landed.
+func changeSize(r *repo.Repo, ch Change) int64 {
+	if ch.Hash == "" {
+		return 0
+	}
+	if ch.Size > 0 {
+		return ch.Size
+	}
+	b, err := r.ReadBlob(ch.Hash)
+	if err != nil {
+		return 0
+	}
+	return int64(len(b))
+}
+
 func (rc *Reconciler) Scan(msg string) (string, error) {
 	rc.mu.Lock()
 	before, _ := rc.r.Head()
 	head, err := rc.r.Commit(msg)
 	rc.mu.Unlock()
+
+	// The local path records but never refuses: these bytes are already on
+	// disk, so refusing would not reclaim one of them and would silently
+	// diverge the vault from its history. The watcher reads Pressure and
+	// widens its commit debounce instead.
+	//
+	// This path matters as much as Push and is easy to miss -- the watcher
+	// commits through here without touching Push, and SilverBullet and
+	// memo-bridge both write vault files directly.
+	if err == nil && rc.g != nil && head != before {
+		if changed, cerr := rc.r.Changes(before, head); cerr == nil {
+			for _, ch := range changed {
+				if v := rc.g.Admit(ch.Path, ch.Size); !v.OK() && rc.notifyTrip != nil {
+					rc.notifyTrip(v.Code, ch.Path, v.Reason)
+				}
+			}
+		}
+	}
+
 	if err == nil {
 		rc.notify(before, head)
 	}

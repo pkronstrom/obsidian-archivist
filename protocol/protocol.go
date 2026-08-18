@@ -53,15 +53,18 @@ const (
 // Error codes. Stable identifiers; the accompanying message is not.
 const (
 	CodeUnauthorized   = "unauthorized"
-	CodeUnknownBase    = "unknown_base"    // re-bootstrap from /v1/snapshot
-	CodeInvalidPath    = "invalid_path"    // not local to the vault
-	CodeMissingContent = "missing_content" // referenced but never uploaded
-	CodeHashMismatch   = "hash_mismatch"   // body does not hash to the address
-	CodeTooLarge       = "too_large"       // beyond MaxUploadBytes
-	CodeMalformed      = "malformed"       // unparseable request
-	CodeNotFound       = "not_found"       // no such object, path or revision
-	CodeDuplicatePath  = "duplicate_path"  // one path named twice in a push
-	CodeInternal       = "internal"        // the server's fault
+	CodeUnknownBase    = "unknown_base"     // re-bootstrap from /v1/snapshot
+	CodeInvalidPath    = "invalid_path"     // not local to the vault
+	CodeMissingContent = "missing_content"  // referenced but never uploaded
+	CodeHashMismatch   = "hash_mismatch"    // body does not hash to the address
+	CodeTooLarge       = "too_large"        // beyond MaxUploadBytes
+	CodeMalformed      = "malformed"        // unparseable request
+	CodeNotFound       = "not_found"        // no such object, path or revision
+	CodeDuplicatePath  = "duplicate_path"   // one path named twice in a push
+	CodeInternal       = "internal"         // the server's fault
+	CodeQuarantined    = "path_quarantined" // repeated writes to one path
+	CodeThrottled      = "throttled"        // vault-wide write rate exceeded
+	CodeDiskLow        = "disk_low"         // free disk below the floor
 )
 
 // MaxUploadBytes bounds a single content upload. Beyond it the server answers
@@ -217,6 +220,16 @@ type Error struct {
 
 type ErrorResponse struct {
 	Error Error `json:"error"`
+}
+
+// Error lets a *Error travel as an ordinary Go error, so a layer that refuses
+// a request can name its own wire code instead of leaving the HTTP layer to
+// infer one by matching on prose. errors.As recovers the code intact.
+func (e *Error) Error() string {
+	if e.Message == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Message
 }
 
 // HashContent returns the git blob object id for content:
