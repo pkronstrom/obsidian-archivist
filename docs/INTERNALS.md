@@ -271,6 +271,29 @@ the server's version at the original path and write yours to
 everywhere and you resolve it by editing and deleting. Binary files are never
 merged; both versions are kept.
 
+## Vaults
+
+One process, one registry, N vaults. Each vault has its own `Vault`, `Repo`,
+`Reconciler`, guard and filesystem watcher — nothing is shared but the process
+and the socket, which is what makes a leaked token's blast radius exactly the
+vaults that token names.
+
+Both write paths are per vault, and that is the thing to check when touching
+this: `Reconciler.Push` is reached through the route, and `Reconciler.Scan`
+through that vault's own watcher. A registry that opened repositories but
+started fewer watchers would give a vault working remote sync and silently no
+local sync. An unexpected watcher exit is fatal, as it was with one vault.
+
+Discovery is the filesystem — `$ROOT/vaults/<name>`, re-scanned behind a
+five-second cache — so a vault rsynced in appears without a restart. The server
+refuses to start if `$ROOT` itself contains a `.git`, or if any vault does:
+both mean something was pointed at the wrong directory, and starting anyway
+would write a repository into content that syncs to every device. `os.Lstat`,
+not `IsDir`, because a linked worktree writes `.git` as a file.
+
+`/healthz` and `/v1/vaults` are server-root routes and are never qualified. The
+Go client has `atRoot()` for exactly those two.
+
 ## What is not synced
 
 Everything under a dot-directory, with one exception: an allowlist of
@@ -322,7 +345,7 @@ node test/integration.mjs http://localhost:8090 <token>
 
 ## Not built yet
 
-History squashing, object retention, and multi-vault addressing.
+History squashing and object retention.
 
 ## Licence
 

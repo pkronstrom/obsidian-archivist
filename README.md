@@ -220,8 +220,69 @@ The three choices, when it asks:
 
 Nothing is written until you choose, and dismissing the dialog changes nothing.
 
-Two vaults means two of everything: two containers, two tokens, two hostnames.
-They share nothing.
+### More than one vault
+
+One server, one relay and one hostname serve every vault. Vaults are
+directories:
+
+```
+$ROOT/vaults/personal/       the vault: plain Markdown and attachments
+$ROOT/vaults/work/
+$ROOT/.archivist/personal/   its history, never inside the vault
+$ROOT/.archivist/work/
+```
+
+Addressing is path-qualified, so a vault is visible in every log line and every
+curl:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://vault.example/v1/vaults
+curl -H "Authorization: Bearer $TOKEN" https://vault.example/personal/v1/head
+```
+
+`GET /v1/vaults` returns **only what your token opens**, which is both the
+picker and the authorisation check. A token used against a vault it does not
+open gets 403; one that does not exist gets 404.
+
+Names are one path segment, no leading dot, no `/` and no `..`. `MyVault` and
+`My Own Vault` are both legal — the second is `My%20Own%20Vault` in a URL, which
+the plugin handles and a human writing curl must remember, so URL-safe names are
+easier by hand. A name that matches an existing one after Unicode NFC
+normalisation is refused: `työ` from a Mac and `työ` from a phone would
+otherwise be two directories that look identical and serve different content.
+
+Vault creation is off by default and is a capability on the token, never given
+to a relay or agent token:
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -d '{"name":"archive"}' https://vault.example/v1/vaults
+```
+
+`ARCHIVIST_MAX_VAULTS` (default 5) refuses creation past a limit. Finding more
+than that already on disk warns and serves them all, so raising it is always a
+way out.
+
+A vault directory added while the server runs appears without a restart —
+discovery re-scans behind a short cache.
+
+Per-vault tokens live in a JSON file named by `ARCHIVIST_TOKENS`:
+
+```json
+{
+  "<token>": {"label": "mac",   "vaults": ["personal"]},
+  "<token>": {"label": "admin", "vaults": ["*"], "canCreateVaults": true}
+}
+```
+
+Without it, `ARCHIVIST_TOKEN` opens **every** vault. That is the one-vault
+convenience, not isolation — it is exactly what a leaked agent token would give
+away — and the server says so once at startup.
+
+In the plugin, **Server URL** and **Vault** are two separate fields. A device
+switches vault by editing one of them. There is deliberately no compatibility
+alias for the old unqualified paths: an un-updated device gets a 404, which is
+visible, rather than writing into the wrong vault, which is not.
 
 ### Reaching it from elsewhere
 
