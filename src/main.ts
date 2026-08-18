@@ -30,7 +30,7 @@ export default class ArchivistPlugin extends Plugin {
 
 		this.sync = new Sync(
 			this.app,
-			() => new Client(this.settings.serverUrl, loadToken(this.app)),
+			() => new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
 			() => loadConfigSync(this.app),
@@ -41,8 +41,8 @@ export default class ArchivistPlugin extends Plugin {
 		// long-polling and not the server's SSE stream.
 		this.watcher = new Watcher(
 			() =>
-				this.settings.serverUrl && loadToken(this.app)
-					? new Client(this.settings.serverUrl, loadToken(this.app))
+				this.configured()
+					? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
 					: null,
 			() => loadState(this.app).base,
 			() => this.runSync(),
@@ -132,7 +132,7 @@ export default class ArchivistPlugin extends Plugin {
 	 */
 	startWatching(): void {
 		if (!this.settings.watchRemote) return;
-		if (!this.settings.serverUrl || !loadToken(this.app)) return;
+		if (!this.configured()) return;
 		this.watcher?.start();
 	}
 
@@ -151,7 +151,7 @@ export default class ArchivistPlugin extends Plugin {
 	}
 
 	private async runSync(): Promise<void> {
-		if (!this.settings.serverUrl || !loadToken(this.app)) {
+		if (!this.configured()) {
 			this.setStatus("not configured");
 			return;
 		}
@@ -255,6 +255,11 @@ export default class ArchivistPlugin extends Plugin {
 			);
 			reportInstalls(result, plan.skipped);
 		}).open();
+	}
+
+	/** All three of URL, token and vault are needed before anything can sync. */
+	private configured(): boolean {
+		return Boolean(this.settings.serverUrl && loadToken(this.app) && this.settings.vault);
 	}
 
 	private setStatus(text: string): void {

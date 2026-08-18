@@ -52,10 +52,45 @@ export class Client {
 	constructor(
 		private baseUrl: string,
 		private token: string,
+		/**
+		 * Which vault on that server. A SEPARATE field from the URL, not baked
+		 * into it: a picker needs GET /v1/vaults at the server root, and it
+		 * cannot reach that if the vault is part of the base URL.
+		 */
+		private vault: string,
 	) {}
 
+	/**
+	 * The ONE place a request URL is built, called only by call(). That is what
+	 * makes switching to path-qualified addressing a one-line change here --
+	 * and what makes switching vault on a device one settings field.
+	 */
 	private url(p: string): string {
-		return this.baseUrl.replace(/\/+$/, "") + p;
+		const base = this.baseUrl.replace(/\/+$/, "");
+		if (!this.vault) return base + p;
+		// A vault called "My Own Vault" is legal and must be encoded.
+		return base + "/" + encodeURIComponent(this.vault) + p;
+	}
+
+	/** call() with no vault prefix, for the server-root routes. */
+	private async callRoot(method: string, path: string): Promise<RequestUrlResponse> {
+		const saved = this.vault;
+		this.vault = "";
+		try {
+			return await this.call(method, path);
+		} finally {
+			this.vault = saved;
+		}
+	}
+
+	/**
+	 * What this token opens. A server-root route, so it is reachable before a
+	 * vault has been chosen -- which is the whole reason the vault is a
+	 * separate settings field.
+	 */
+	async listVaults(): Promise<{ vaults: string[]; canCreate: boolean }> {
+		const res = await this.callRoot("GET", "/v1/vaults");
+		return res.json as { vaults: string[]; canCreate: boolean };
 	}
 
 	private async call(

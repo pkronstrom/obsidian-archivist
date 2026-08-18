@@ -14,6 +14,12 @@ import type ArchivistPlugin from "./main";
 export type Settings = {
 	serverUrl: string;
 	/**
+	 * Which vault on that server. Separate from serverUrl on purpose: the
+	 * picker asks the SERVER ROOT what this token opens, which it cannot do if
+	 * the vault is part of the base URL.
+	 */
+	vault: string;
+	/**
 	 * Kept for migration only. The live token is in device-local storage; see
 	 * credentials.ts. Anything reading the token must call loadToken.
 	 */
@@ -27,6 +33,7 @@ export type Settings = {
 
 export const DEFAULT_SETTINGS: Settings = {
 	serverUrl: "",
+	vault: "",
 	token: "",
 	device: "",
 	intervalSeconds: 300,
@@ -67,6 +74,45 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					saveToken(this.app, v.trim());
 				});
 			});
+
+		const vaultSetting = new Setting(containerEl)
+			.setName("Vault")
+			.setDesc(
+				"Which vault on that server. One server serves several; the URL and " +
+					"this field together say which one. Changing it points this Obsidian " +
+					"vault at different content, and the plugin refuses to sync if it does " +
+					"not match what this device already adopted.",
+			)
+			.addText((t) =>
+				t.setPlaceholder("personal")
+					.setValue(this.plugin.settings.vault)
+					.onChange(async (v) => {
+						this.plugin.settings.vault = v.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		vaultSetting.addButton((b) =>
+			b.setButtonText("List").onClick(async () => {
+				const { serverUrl } = this.plugin.settings;
+				const token = loadToken(this.app);
+				if (!serverUrl || !token) {
+					new Notice("archivist: set the server URL and token first");
+					return;
+				}
+				try {
+					const { vaults } = await new Client(serverUrl, token, "").listVaults();
+					new Notice(
+						vaults.length === 0
+							? "archivist: this token opens no vaults"
+							: `archivist: this token opens ${vaults.join(", ")}`,
+						10000,
+					);
+				} catch (err) {
+					new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
+				}
+			}),
+		);
 
 		new Setting(containerEl)
 			.setName("Device name")
@@ -138,7 +184,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						return;
 					}
 					try {
-						const client = new Client(serverUrl, token);
+						const client = new Client(serverUrl, token, this.plugin.settings.vault);
 						const idx = await client.index();
 						const files = Object.keys((await client.snapshot()).files).length;
 						const name = idx.vault || "unnamed (older server)";

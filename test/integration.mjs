@@ -10,11 +10,13 @@ import path from "node:path";
 import { FakeApp } from "./obsidian-shim.mjs";
 import { Sync, Client } from "../dist-test/entry.mjs";
 
-const [, , SERVER, TOKEN] = process.argv;
+const [, , SERVER, TOKEN, VAULT_ARG] = process.argv;
 if (!SERVER || !TOKEN) {
-	console.error("usage: node test/integration.mjs <serverUrl> <token>");
+	console.error("usage: node test/integration.mjs <serverUrl> <token> [vault]");
 	process.exit(2);
 }
+// Addressing is path-qualified now, so every client needs a vault name.
+const VAULT = VAULT_ARG ?? "personal";
 
 let failures = 0;
 function check(name, ok, detail = "") {
@@ -25,7 +27,7 @@ function check(name, ok, detail = "") {
 async function device(name) {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), `vs-${name}-`));
 	const app = new FakeApp(root);
-	const sync = new Sync(app, () => new Client(SERVER, TOKEN), () => name, () => {});
+	const sync = new Sync(app, () => new Client(SERVER, TOKEN, VAULT), () => name, () => {});
 	return { name, root, app, sync, read: (p) => fs.readFile(path.join(root, p), "utf8") };
 }
 
@@ -275,7 +277,7 @@ async function configDevice(name, level, acceptedPlugins = []) {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), `cfg-${name}-`));
 	const app = new FakeApp(root);
 	const config = { level, acceptedPlugins };
-	const sync = new Sync(app, () => new Client(SERVER, TOKEN), () => name, () => {}, () => config);
+	const sync = new Sync(app, () => new Client(SERVER, TOKEN, VAULT), () => name, () => {}, () => config);
 	return { name, root, app, sync, config, read: (p) => fs.readFile(path.join(root, p), "utf8") };
 }
 
@@ -327,6 +329,53 @@ await sneaky.sync.run();
 await deskA.sync.run();
 check("archivist's own data.json never travels",
 	!(await deskA.app.vault.adapter.exists(".obsidian/plugins/archivist/data.json")));
+
+// --- multi-vault -----------------------------------------------------------
+// Needs a server started with two vaults and a tokens file. Skipped otherwise.
+
+const SECOND_VAULT = process.env.ARCHIVIST_TEST_VAULT_2;
+const SECOND_TOKEN = process.env.ARCHIVIST_TEST_TOKEN_2;
+
+if (SECOND_VAULT && SECOND_TOKEN) {
+	const otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vs-other-"));
+	const otherApp = new FakeApp(otherRoot);
+	const other = {
+		root: otherRoot,
+		app: otherApp,
+		sync: new Sync(
+			otherApp,
+			() => new Client(SERVER, SECOND_TOKEN, SECOND_VAULT),
+			() => "other",
+			() => {},
+		),
+		read: (p) => fs.readFile(path.join(otherRoot, p), "utf8"),
+	};
+
+	await fs.writeFile(path.join(other.root, "only-here.md"), "second vault\n");
+	await other.sync.run();
+
+	await mac.sync.run();
+	check("a note in the second vault does not appear in the first",
+		!(await mac.app.vault.adapter.exists("only-here.md")));
+
+	// A token scoped to one vault must not reach another.
+	let forbidden = null;
+	try {
+		await new Client(SERVER, SECOND_TOKEN, VAULT).head();
+	} catch (err) {
+		forbidden = err;
+	}
+	check("a token scoped to one vault cannot open another",
+		forbidden !== null && forbidden.status === 403, String(forbidden));
+
+	// The picker reports only what the token opens.
+	const listed = await new Client(SERVER, SECOND_TOKEN, "").listVaults();
+	check("list_vaults returns only the scoped vault",
+		listed.vaults.length === 1 && listed.vaults[0] === SECOND_VAULT,
+		JSON.stringify(listed));
+} else {
+	console.log("  SKIP multi-vault (set ARCHIVIST_TEST_VAULT_2 and ARCHIVIST_TEST_TOKEN_2)");
+}
 
 console.log(`\n${failures === 0 ? "ALL PASS" : failures + " FAILURES"}`);
 process.exit(failures === 0 ? 0 : 1);
