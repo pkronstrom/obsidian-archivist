@@ -119,6 +119,20 @@ func (r *Repo) Prune(paths []string) (*PruneResult, error) {
 		return nil, err
 	}
 
+	// Update the prune-map BEFORE collecting, so a crash between the two
+	// leaves a map that is merely stale rather than one pointing at commits
+	// that have just been deleted.
+	//
+	// Existing entries are re-pointed through this rewrite, not merely
+	// appended to. A second prune destroys the commits the first prune's
+	// entries pointed AT, so an append-only map would send a device that
+	// missed both prunes to a commit that no longer exists -- which is worse
+	// than not translating at all, because it looks like it worked. Rewriting
+	// the targets keeps every entry one hop from something live.
+	if err := r.updatePruneMap(oldHead, newHead.String(), mapped); err != nil {
+		return nil, err
+	}
+
 	if err := r.collect(); err != nil {
 		return nil, err
 	}
@@ -325,6 +339,27 @@ func (r *Repo) collect() error {
 	if err := r.git.RepackObjects(&git.RepackConfig{}); err != nil {
 		return fmt.Errorf("repo: repack: %w", err)
 	}
+
+	// Reopen. RepackObjects DELETES the old packfiles, but this storer still
+	// holds the handles it opened them with, so every later read fails with
+	// "packfile not found".
+	//
+	// A first prune hides this completely: a repository go-git has only ever
+	// written to has no packs at all, so there is nothing to delete and
+	// nothing to invalidate. The failure appears on the SECOND prune, which
+	// deletes the pack the first one created -- and it appears as a
+	// repository that reports a valid head and then cannot read a single
+	// commit behind it.
+	return r.reopen()
+}
+
+// reopen rebuilds the underlying storer against the same directories.
+func (r *Repo) reopen() error {
+	fresh, err := Open(r.workTree, r.gitDir)
+	if err != nil {
+		return fmt.Errorf("repo: reopen after repack: %w", err)
+	}
+	r.git = fresh.git
 	return nil
 }
 
@@ -344,18 +379,54 @@ func (r *Repo) looseSize() (int64, error) {
 	return total, err
 }
 
+// updatePruneMap re-points every existing entry through this rewrite and adds
+// the new head pair.
+func (r *Repo) updatePruneMap(oldHead, newHead string, mapped map[plumbing.Hash]plumbing.Hash) error {
+	existing, err := ReadPruneMap(r.gitDir)
+	if err != nil {
+		return err
+	}
+	out := make(map[string]string, len(existing)+1)
+	for from, to := range existing {
+		if next, ok := mapped[plumbing.NewHash(to)]; ok {
+			out[from] = next.String()
+			continue
+		}
+		out[from] = to
+	}
+	out[oldHead] = newHead
+	return WritePruneMap(r.gitDir, out)
+}
+
 // PruneMapName is the file recording head translations, beside the git dir.
 const PruneMapName = "prune-map"
 
-// AppendPruneMap records one old-head -> new-head pair.
+// WritePruneMap replaces the map on disk.
 //
-// One line per prune, ever. It is what spares every device a full
-// re-bootstrap: pruned paths are already absent at HEAD, so the rewritten
-// HEAD's tree is byte-identical to the old one and only the commit hash
-// changed. A device arriving with the old head can be told the new one and
-// compute an empty diff.
-func AppendPruneMap(dir, oldHead, newHead string) error {
-	return appendLine(path.Join(dir, PruneMapName), oldHead+" "+newHead)
+// It is what spares every device a full re-bootstrap: pruned paths are already
+// absent at HEAD, so the rewritten HEAD's tree is byte-identical to the old
+// one and only the commit hash changed. A device arriving with a recorded old
+// head is told the new one and computes an empty diff.
+//
+// Written whole rather than appended because a prune re-points existing
+// entries as well as adding one.
+func WritePruneMap(dir string, m map[string]string) error {
+	froms := make([]string, 0, len(m))
+	for from := range m {
+		froms = append(froms, from)
+	}
+	sort.Strings(froms)
+
+	var b strings.Builder
+	for _, from := range froms {
+		b.WriteString(from + " " + m[from] + "\n")
+	}
+	tmp := path.Join(dir, PruneMapName+".tmp")
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	// Rename so a reader never sees a half-written map.
+	return os.Rename(tmp, path.Join(dir, PruneMapName))
 }
 
 // ReadPruneMap loads old-head -> new-head pairs. A missing file is not an
@@ -373,16 +444,6 @@ func ReadPruneMap(dir string) (map[string]string, error) {
 		}
 	}
 	return out, nil
-}
-
-func appendLine(file, line string) error {
-	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(line + "\n")
-	return err
 }
 
 func readFileIfExists(file string) ([]byte, error) {

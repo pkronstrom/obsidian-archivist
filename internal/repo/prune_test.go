@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -219,10 +220,7 @@ func TestPruneMapRoundTrip(t *testing.T) {
 		t.Fatalf("missing prune-map yielded %d entries", len(got))
 	}
 
-	if err := AppendPruneMap(dir, "aaa", "bbb"); err != nil {
-		t.Fatal(err)
-	}
-	if err := AppendPruneMap(dir, "bbb", "ccc"); err != nil {
+	if err := WritePruneMap(dir, map[string]string{"aaa": "bbb", "bbb": "ccc"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,5 +230,156 @@ func TestPruneMapRoundTrip(t *testing.T) {
 	}
 	if got["aaa"] != "bbb" || got["bbb"] != "ccc" {
 		t.Fatalf("prune-map = %+v", got)
+	}
+}
+
+// The payoff for keeping the map: a device that synced to the old head asks
+// for changes since it and gets an empty diff, not a re-bootstrap.
+func TestTranslatedBaseYieldsAnEmptyDiff(t *testing.T) {
+	r := reclaimRepo(t)
+	writeCommit(t, r, "keep.md", "kept", "add keep")
+	writeCommit(t, r, "big.bin", "bytes to reclaim", "add big")
+	removeCommit(t, r, "big.bin", "delete big")
+
+	oldHead, _ := r.Head()
+	res, err := r.Prune([]string{"big.bin"})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	// Without the map the old head is simply gone.
+	if _, err := r.Changes(oldHead, res.NewHead); err == nil {
+		t.Fatal("the old head resolved before the map was installed")
+	}
+
+	r.SetPruneMap(map[string]string{res.OldHead: res.NewHead})
+
+	changes, err := r.Changes(oldHead, res.NewHead)
+	if err != nil {
+		t.Fatalf("translated base still failed: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("translated base produced %d changes, want 0: %+v", len(changes), changes)
+	}
+}
+
+// A repository pruned twice has two hops. A device offline across both must
+// land on the current head, not the intermediate one, which no longer exists.
+func TestTranslationFollowsChainedPrunes(t *testing.T) {
+	r := reclaimRepo(t)
+	writeCommit(t, r, "keep.md", "kept", "add keep")
+	writeCommit(t, r, "a.bin", "first doomed file", "add a")
+	removeCommit(t, r, "a.bin", "delete a")
+
+	veryOld, _ := r.Head()
+	first, err := r.Prune([]string{"a.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeCommit(t, r, "b.bin", "second doomed file", "add b")
+	removeCommit(t, r, "b.bin", "delete b")
+	second, err := r.Prune([]string{"b.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The map on disk is the authority: the second prune re-pointed the first
+	// prune's entry, because the commit it named was destroyed by that second
+	// rewrite. An append-only map would have left veryOld translating to a
+	// commit that no longer exists -- worse than not translating, since it
+	// looks like it worked.
+	onDisk, err := ReadPruneMap(r.GitDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetPruneMap(onDisk)
+
+	// The only property that matters: the target still exists.
+	//
+	// It is NOT necessarily the current head, and it may legitimately be
+	// unchanged. A commit that predates the file the second prune removed has
+	// the same tree and the same parents afterwards, so it rewrites to its own
+	// hash. What the re-pointing prevents is the other case -- an entry naming
+	// a commit that the second rewrite replaced, which resolves to nothing.
+	target := onDisk[veryOld]
+	if target == "" {
+		t.Fatal("veryOld is not in the prune map at all")
+	}
+	if _, err := r.Snapshot(target); err != nil {
+		t.Fatalf("prune-map points at a commit that does not exist: %v", err)
+	}
+	if _, err := r.Snapshot(r.translate(veryOld)); err != nil {
+		t.Fatalf("translation landed on a missing commit: %v", err)
+	}
+	_ = first
+
+	// And the whole point: an empty diff rather than a re-bootstrap.
+	changes, err := r.Changes(veryOld, second.NewHead)
+	if err != nil {
+		t.Fatalf("translated base failed: %v", err)
+	}
+	for _, c := range changes {
+		if c.Path == "a.bin" || c.Path == "b.bin" {
+			t.Errorf("a pruned path appeared in the diff: %+v", c)
+		}
+	}
+}
+
+// A circular or malformed map must not hang the server.
+func TestTranslationTerminatesOnACycle(t *testing.T) {
+	r := reclaimRepo(t)
+	r.SetPruneMap(map[string]string{"a": "b", "b": "a"})
+
+	done := make(chan string, 1)
+	go func() { done <- r.translate("a") }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("translate did not terminate on a cyclic map")
+	}
+}
+
+// A base nobody pruned is returned unchanged, so the common path is untouched.
+func TestTranslationLeavesUnknownBasesAlone(t *testing.T) {
+	r := reclaimRepo(t)
+	if got := r.translate("deadbeef"); got != "deadbeef" {
+		t.Fatalf("translate rewrote an unrelated base to %q", got)
+	}
+}
+
+// A second prune deletes the packfile the first one created. The storer holds
+// handles to it, so without reopening, the repository reports a valid head and
+// then cannot read a single commit behind it. A single-prune test cannot catch
+// this: a repository go-git has only written to has no packs to invalidate.
+func TestSecondPruneLeavesTheRepositoryReadable(t *testing.T) {
+	r := reclaimRepo(t)
+	writeCommit(t, r, "keep.md", "kept", "add keep")
+	writeCommit(t, r, "a.bin", "first doomed", "add a")
+	removeCommit(t, r, "a.bin", "delete a")
+	if _, err := r.Prune([]string{"a.bin"}); err != nil {
+		t.Fatalf("first prune: %v", err)
+	}
+
+	writeCommit(t, r, "b.bin", "second doomed", "add b")
+	removeCommit(t, r, "b.bin", "delete b")
+	second, err := r.Prune([]string{"b.bin"})
+	if err != nil {
+		t.Fatalf("second prune: %v", err)
+	}
+
+	commits, err := r.commitsOldestFirst()
+	if err != nil {
+		t.Fatalf("history unreadable after a second prune: %v", err)
+	}
+	if len(commits) == 0 {
+		t.Fatal("no commits readable after a second prune")
+	}
+	snap, err := r.Snapshot(second.NewHead)
+	if err != nil {
+		t.Fatalf("snapshot unreadable after a second prune: %v", err)
+	}
+	if _, ok := snap["keep.md"]; !ok {
+		t.Error("keep.md lost across two prunes")
 	}
 }
