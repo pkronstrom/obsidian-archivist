@@ -73,11 +73,7 @@ func (l Layout) Discover() ([]string, error) {
 // comment on internal/repo), so a .git inside either is proof that something
 // else put it there.
 func (l Layout) CheckRoot() error {
-	// Any .git ENTRY, file or directory. A linked worktree represents it as a
-	// FILE holding a gitdir: pointer -- the compose file in this deployment
-	// describes exactly that form -- so an IsDir() check walks straight past
-	// the case the guard exists for.
-	if _, err := os.Lstat(filepath.Join(l.Root, ".git")); err == nil {
+	if badGitEntry(filepath.Join(l.Root, ".git"), "") {
 		return fmt.Errorf(
 			"vaults: %s contains a .git directory, so it looks like a vault rather than a "+
 				"root holding vaults/. Point ARCHIVIST_ROOT at the PARENT: vaults go in "+
@@ -90,7 +86,7 @@ func (l Layout) CheckRoot() error {
 		return err
 	}
 	for _, n := range names {
-		if _, err := os.Lstat(filepath.Join(l.VaultDir(n), ".git")); err == nil {
+		if badGitEntry(filepath.Join(l.VaultDir(n), ".git"), l.GitDir(n)) {
 			return fmt.Errorf(
 				"vaults: %s contains its own .git directory. Archivist keeps history OUTSIDE "+
 					"the working tree, at %s, so no client and no other tool ever sees a .git "+
@@ -119,4 +115,61 @@ func (l Layout) Describe(names []string) string {
 		return fmt.Sprintf("no vaults under %s", l.VaultsDir())
 	}
 	return fmt.Sprintf("%d vault(s) under %s: %s", len(names), l.VaultsDir(), strings.Join(names, ", "))
+}
+
+// badGitEntry reports whether a .git at path is an embedded repository rather
+// than the deliberate pointer this layout creates.
+//
+// A `.git` FILE holding `gitdir: <path>` is not a repository -- it is a
+// redirect, and this deployment writes one on purpose so `git -C <vault> log`
+// works from the host without knowing where history actually lives. Refusing
+// every .git entry took the whole server down on a vault that was correctly
+// laid out, which is a worse failure than the one the guard exists to catch.
+//
+// So: a DIRECTORY is always wrong, and a pointer is wrong only when it points
+// somewhere other than this vault's own git directory. wantGitDir empty means
+// no pointer is acceptable here, which is the case for $ROOT itself -- the root
+// holds vaults, it is not one.
+func badGitEntry(path, wantGitDir string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return false // absent, which is the ordinary case
+	}
+	if fi.IsDir() {
+		return true // an embedded repository: the mistake this guard is for
+	}
+	if wantGitDir == "" {
+		return true
+	}
+	target, err := gitdirTarget(path)
+	if err != nil {
+		return true // unreadable or not a pointer at all
+	}
+	want, err := filepath.Abs(wantGitDir)
+	if err != nil {
+		return true
+	}
+	got, err := filepath.Abs(target)
+	if err != nil {
+		return true
+	}
+	return filepath.Clean(got) != filepath.Clean(want)
+}
+
+// gitdirTarget reads a `gitdir: <path>` pointer, resolving a relative path
+// against the directory holding the pointer, exactly as git does.
+func gitdirTarget(pointer string) (string, error) {
+	b, err := os.ReadFile(pointer)
+	if err != nil {
+		return "", err
+	}
+	rest, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "gitdir:")
+	if !ok {
+		return "", fmt.Errorf("vaults: %s is not a gitdir pointer", pointer)
+	}
+	target := strings.TrimSpace(rest)
+	if filepath.IsAbs(target) {
+		return target, nil
+	}
+	return filepath.Join(filepath.Dir(pointer), target), nil
 }
