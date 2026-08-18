@@ -5,6 +5,14 @@ import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings
 import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { loadToken, migrateToken } from "./credentials";
+import { loadConfigSync } from "./config-sync";
+import {
+	installPlugins,
+	isMobile,
+	plannedInstalls,
+	PluginInstallModal,
+	reportInstalls,
+} from "./plugin-install";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
@@ -25,6 +33,7 @@ export default class ArchivistPlugin extends Plugin {
 			() => new Client(this.settings.serverUrl, loadToken(this.app)),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
+			() => loadConfigSync(this.app),
 		);
 
 		// Long-polls the server so remote changes land in about a second rather
@@ -72,7 +81,10 @@ export default class ArchivistPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			const touched = (f: TAbstractFile) => {
 				if (!this.settings.syncOnChange) return;
-				if (skip(f.path)) return;
+				// With the level, so a snippet or a theme edit schedules a sync
+				// the same way a note does. Without it this keeps the Files-only
+				// default and config only moves on the interval.
+				if (skip(f.path, loadConfigSync(this.app))) return;
 				this.scheduleSync();
 			};
 			this.registerEvent(this.app.vault.on("create", touched));
@@ -160,6 +172,7 @@ export default class ArchivistPlugin extends Plugin {
 					? "re-bootstrapped"
 					: `↓${report.pulled} ↑${report.pushed}`,
 			);
+			if (report.pulled > 0) await this.installArrivedPlugins();
 		} catch (err) {
 			if (err instanceof PairingHazardError) {
 				// Not an error to report and move past: it is a question, and
@@ -197,6 +210,51 @@ export default class ArchivistPlugin extends Plugin {
 			this.setStatus("error");
 			new Notice(`archivist: ${msg}`, 8000);
 		}
+	}
+
+	/**
+	 * Install plugins that arrived in the synced list but are not here yet.
+	 *
+	 * Behind a confirmation every time, and never automatic: this downloads code
+	 * from the internet at the direction of another device, and anyone with
+	 * write access to the vault could add an id to that list. Declining leaves
+	 * the list synced and the code absent, which is exactly what Obsidian Sync
+	 * does.
+	 */
+	private async installArrivedPlugins(): Promise<void> {
+		if (loadConfigSync(this.app).level !== "plugins") return;
+
+		const listPath = `${this.app.vault.configDir}/community-plugins.json`;
+		if (!(await this.app.vault.adapter.exists(listPath))) return;
+
+		let wanted: string[];
+		try {
+			wanted = JSON.parse(await this.app.vault.adapter.read(listPath));
+			if (!Array.isArray(wanted)) return;
+		} catch {
+			return;
+		}
+
+		const registry = (
+			this.app as unknown as {
+				plugins?: { manifests?: Record<string, { id: string; isDesktopOnly?: boolean }> };
+			}
+		).plugins;
+		const manifests = registry?.manifests ?? {};
+		const plan = plannedInstalls(wanted, Object.keys(manifests), manifests, isMobile());
+		if (plan.install.length === 0) {
+			if (plan.skipped.length > 0) {
+				reportInstalls({ installed: [], failed: [], skippedOnMobile: [] }, plan.skipped);
+			}
+			return;
+		}
+
+		new PluginInstallModal(this.app, plan, async () => {
+			const result = await installPlugins(this.app, plan.install, (msg, ...rest) =>
+				console.log("[archivist:plugins]", msg, ...rest),
+			);
+			reportInstalls(result, plan.skipped);
+		}).open();
 	}
 
 	private setStatus(text: string): void {
