@@ -4,6 +4,8 @@ import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
+import { PairingHazardError, type PairingChoice } from "./pairing";
+import { PairingModal } from "./pairing-modal";
 
 export default class ArchivistPlugin extends Plugin {
 	settings: Settings = { ...DEFAULT_SETTINGS };
@@ -158,8 +160,39 @@ export default class ArchivistPlugin extends Plugin {
 					: `↓${report.pulled} ↑${report.pushed}`,
 			);
 		} catch (err) {
+			if (err instanceof PairingHazardError) {
+				// Not an error to report and move past: it is a question, and
+				// until it is answered this device does not sync at all.
+				this.setStatus("needs a decision");
+				new PairingModal(this.app, err, (choice) => void this.resolvePairing(choice)).open();
+				return;
+			}
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error("[archivist] sync failed", err);
+			this.setStatus("error");
+			new Notice(`archivist: ${msg}`, 8000);
+		}
+	}
+
+	private async resolvePairing(choice: PairingChoice): Promise<void> {
+		this.setStatus("syncing…");
+		try {
+			await this.sync.resolvePairing(choice);
+			new Notice(
+				choice === "adopt"
+					? "archivist: local files moved to _archivist-rescued-…, server adopted"
+					: choice === "publish"
+						? "archivist: this vault published to the server"
+						: "archivist: merged; check for conflict files",
+				10000,
+			);
+			// No second runSync here. Sync.resolvePairing ends by calling run()
+			// itself, so calling it again would push a fresh cycle straight
+			// after the one that just finished.
+			this.setStatus("idle");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error("[archivist] pairing failed", err);
 			this.setStatus("error");
 			new Notice(`archivist: ${msg}`, 8000);
 		}
