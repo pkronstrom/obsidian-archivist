@@ -144,6 +144,20 @@ func (s *Server) have(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, protocol.HaveResponse{Missing: missing})
 }
 
+// statusFor maps a guard's protocol code to an HTTP status. 429 tells a
+// client to back off and retry, which is what a quarantine or a throttle
+// wants; 507 says the server is out of room, which no retry will fix.
+func statusFor(code string) int {
+	switch code {
+	case protocol.CodeQuarantined, protocol.CodeThrottled:
+		return http.StatusTooManyRequests
+	case protocol.CodeDiskLow:
+		return http.StatusInsufficientStorage
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 func (s *Server) putContent(w http.ResponseWriter, r *http.Request) {
 	claimed := r.PathValue("hash")
 	// protocol.MaxUploadBytes+1 so an oversized body is DETECTED rather than silently
@@ -198,7 +212,12 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 	}
 	head, results, err := s.rc.Push(req.Base, req.Device, req.Changes)
 	if err != nil {
+		var pe *protocol.Error
 		switch {
+		// A guard refusal already names its own code; use it rather than
+		// re-deriving one.
+		case errors.As(err, &pe):
+			fail(w, statusFor(pe.Code), pe.Code, pe.Message)
 		case repo.IsUnknownBase(err):
 			fail(w, http.StatusConflict, protocol.CodeUnknownBase, "unknown base; re-bootstrap from /v1/snapshot")
 		// Client faults get a specific code so a client can act on them
