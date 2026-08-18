@@ -10,7 +10,7 @@ import {
 	type FileState,
 	type SyncState,
 } from "./state";
-import { PairingHazardError, type PairingChoice } from "./pairing";
+import { PairingHazardError, isRescuePath, rescueFolder, type PairingChoice } from "./pairing";
 
 export type SyncReport = {
 	pulled: number;
@@ -494,9 +494,69 @@ export class Sync {
 		return this.run();
 	}
 
-	/** Move every synced local file into a dated rescue folder. Task 6. */
+	/**
+	 * Move every synced local file into a dated rescue folder, and return its
+	 * name.
+	 *
+	 * Inside the vault, deliberately: the folder therefore syncs, so the rescued
+	 * files reach the other devices rather than existing only on the machine
+	 * that happened to adopt. Reversible, visible, and it needs no trust in a
+	 * backup.
+	 *
+	 * `listAll` is snapshotted before the first move, so files written into the
+	 * rescue folder are never re-read as sources. It also skips dotfiles, which
+	 * is why .obsidian is left where it is -- config is not part of this and
+	 * moving it would reset the editor.
+	 */
 	private async rescueLocalFiles(): Promise<string> {
-		throw new Error("not implemented");
+		// Probe for a folder that does not exist yet. A retry after an
+		// interrupted adoption, or a second adoption on the same day, would
+		// otherwise rename straight over the first rescue and destroy the files
+		// this whole mechanism exists to preserve.
+		let folder = rescueFolder(new Date());
+		for (let n = 1; await this.adapter.exists(folder); n++) {
+			if (n > 100) throw new Error(`archivist: cannot find a free rescue folder beside ${folder}`);
+			folder = rescueFolder(new Date(), n);
+		}
+
+		// Everything except an EARLIER rescue. Those are already rescued, and
+		// sweeping them up again would nest them one level deeper on every
+		// adoption, burying the thing the folder exists to make findable.
+		const paths = (await this.listAll("")).filter((p) => !isRescuePath(p));
+		for (const p of paths) {
+			const dest = `${folder}/${p}`;
+			await this.mkdirs(dest);
+			// rename, not read-then-write: it moves the bytes without holding a
+			// whole attachment in memory, which matters on a phone.
+			await this.adapter.rename(p, dest);
+			this.log(`rescued ${p} -> ${dest}`);
+		}
+
+		// Remove the directories the move emptied, deepest first.
+		//
+		// Not cosmetic. The server may hold a FILE at a path that is a
+		// DIRECTORY here -- local `notes/a.md` rescued away leaves an empty
+		// `notes/`, and if the server has a file called `notes` the pull then
+		// calls writeBinary("notes", ...) against a directory and fails. That
+		// would break adoption for a perfectly ordinary pairing.
+		const dirs = new Set<string>();
+		for (const p of paths) {
+			const parts = p.split("/");
+			for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+		}
+		for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+			try {
+				const listing = await this.adapter.list(dir);
+				if (listing.files.length === 0 && listing.folders.length === 0) {
+					await this.adapter.rmdir(dir, false);
+				}
+			} catch {
+				// An adapter without rmdir, or a directory already gone. Leaving
+				// one behind is untidy, never destructive.
+			}
+		}
+
+		return folder;
 	}
 
 	/** Discard local state and start over from the server. */

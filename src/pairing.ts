@@ -56,10 +56,23 @@ export class PairingHazardError extends Error {
  * straight over the first rescue -- losing exactly the files the folder exists
  * to preserve. The caller probes for the first free suffix.
  */
+const RESCUE_PREFIX = "_archivist-rescued-";
+
+/**
+ * Whether a path already lives inside a rescue folder.
+ *
+ * A second adoption must leave the first rescue where it is. Without this it
+ * sweeps up the earlier rescue as ordinary local content and nests it one level
+ * deeper -- `_archivist-rescued-A/_archivist-rescued-B/note.md` -- and it does
+ * that again on every adoption after. Nothing is destroyed, but the folder
+ * whose entire job is being findable stops being findable.
+ */
+export function isRescuePath(path: string): boolean {
+	return path.split("/")[0].startsWith(RESCUE_PREFIX);
+}
+
 export function rescueFolder(now: Date, suffix = 0): string {
 	const p = (n: number) => String(n).padStart(2, "0");
 	const date = `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}`;
-	return suffix === 0
-		? `_archivist-rescued-${date}`
-		: `_archivist-rescued-${date}-${suffix}`;
+	return suffix === 0 ? `${RESCUE_PREFIX}${date}` : `${RESCUE_PREFIX}${date}-${suffix}`;
 }

@@ -9,3 +9,5 @@ export { Sync, skip, conflictName } from "../src/sync";
 export { Client, UnknownBaseError } from "../src/client";
 
 export { PairingHazardError, rescueFolder } from "../src/pairing";
+
+export { isRescuePath } from "../src/pairing";

@@ -106,6 +106,13 @@ export class FsAdapter {
 	async remove(p) {
 		await fs.rm(this.abs(p), { force: true });
 	}
+	async rmdir(p, recursive) {
+		// fs.rm with recursive:false throws EISDIR on a directory, so the
+		// non-recursive case has to be fs.rmdir -- which is also what Obsidian's
+		// own rmdir does: remove this directory, and only if it is empty.
+		if (recursive) await fs.rm(this.abs(p), { recursive: true, force: true });
+		else await fs.rmdir(this.abs(p));
+	}
 	async rename(from, to) {
 		await fs.mkdir(path.dirname(this.abs(to)), { recursive: true });
 		await fs.rename(this.abs(from), this.abs(to));

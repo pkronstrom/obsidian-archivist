@@ -128,3 +128,98 @@ test("resolving is one-shot: a second cycle does not refuse again", async () => 
 	await sync.resolvePairing("merge");
 	await sync.run(); // must not throw
 });
+
+test("adopt server moves local files into a dated folder inside the vault", async () => {
+	const { root, app } = await device();
+	await fs.mkdir(path.join(root, "notes"), { recursive: true });
+	await fs.writeFile(path.join(root, "notes/a.md"), "mine\n");
+	await fs.writeFile(path.join(root, "top.md"), "also mine\n");
+
+	const client = fakeClient();
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+
+	await sync.resolvePairing("adopt");
+
+	const entries = await fs.readdir(root);
+	const rescue = entries.find((e) => e.startsWith("_archivist-rescued-"));
+	assert.ok(rescue, `no rescue folder in ${JSON.stringify(entries)}`);
+
+	assert.equal(await fs.readFile(path.join(root, rescue, "notes/a.md"), "utf8"), "mine\n");
+	assert.equal(await fs.readFile(path.join(root, rescue, "top.md"), "utf8"), "also mine\n");
+
+	// The originals are gone from their old paths, so the server's versions can
+	// land there without colliding.
+	await assert.rejects(() => fs.readFile(path.join(root, "notes/a.md")));
+	await assert.rejects(() => fs.readFile(path.join(root, "top.md")));
+});
+
+test("adopt server leaves dotfiles alone", async () => {
+	const { root, app } = await device();
+	await fs.mkdir(path.join(root, ".obsidian"), { recursive: true });
+	await fs.writeFile(path.join(root, ".obsidian/app.json"), "{}\n");
+	await fs.writeFile(path.join(root, "note.md"), "mine\n");
+
+	const client = fakeClient();
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+
+	await sync.resolvePairing("adopt");
+
+	assert.equal(await fs.readFile(path.join(root, ".obsidian/app.json"), "utf8"), "{}\n");
+});
+
+test("adopt server clears the directories it emptied", async () => {
+	const { root, app } = await device();
+	await fs.mkdir(path.join(root, "notes"), { recursive: true });
+	await fs.writeFile(path.join(root, "notes/a.md"), "mine\n");
+
+	const client = fakeClient();
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+	await sync.resolvePairing("adopt");
+
+	// An empty `notes/` left behind would make the server's own FILE called
+	// `notes` unwritable on the following pull.
+	await assert.rejects(() => fs.stat(path.join(root, "notes")),
+		"the emptied source directory was left behind");
+});
+
+test("adopt server does not overwrite an earlier rescue on the same day", async () => {
+	const { root, app } = await device();
+	await fs.writeFile(path.join(root, "note.md"), "second adoption\n");
+	// A rescue folder from an earlier adoption today, already holding a file.
+	const stamp = new Date();
+	const p = (n) => String(n).padStart(2, "0");
+	const first = `_archivist-rescued-${stamp.getUTCFullYear()}${p(stamp.getUTCMonth() + 1)}${p(stamp.getUTCDate())}`;
+	await fs.mkdir(path.join(root, first), { recursive: true });
+	await fs.writeFile(path.join(root, first, "note.md"), "first adoption\n");
+
+	const client = fakeClient();
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+	await sync.resolvePairing("adopt");
+
+	assert.equal(
+		await fs.readFile(path.join(root, first, "note.md"), "utf8"),
+		"first adoption\n",
+		"the second adoption renamed over the first rescue",
+	);
+	const entries = await fs.readdir(root);
+	assert.ok(
+		entries.some((e) => e.startsWith(first + "-")),
+		`expected a suffixed second rescue folder in ${JSON.stringify(entries)}`,
+	);
+});
+
+test("adopt server pushes the rescued files, so other devices get them too", async () => {
+	const { root, app } = await device();
+	await fs.writeFile(path.join(root, "note.md"), "mine\n");
+
+	const client = fakeClient();
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+
+	await sync.resolvePairing("adopt");
+
+	const pushed = client.pushes.flatMap((p) => p.changes.map((c) => c.path));
+	assert.ok(
+		pushed.some((p) => p.startsWith("_archivist-rescued-")),
+		`rescued files were never pushed: ${JSON.stringify(pushed)}`,
+	);
+});
