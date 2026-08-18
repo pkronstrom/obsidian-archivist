@@ -25,9 +25,15 @@ wanted.
 change buys nothing. Adding Work is when the multiplication is paid for real.
 
 **Discovery is the filesystem: `$ROOT/vaults/<name>`, flat.** Git state stays
-at `$ROOT/.archivist/<name>`. This is already the deployed layout. It is
-better than the earlier proposal of scanning `$ROOT` directly, because
-`vaults/` is a dedicated container — there is no way `2. Areas` is mistaken
+at `$ROOT/.archivist/<name>`. This is the layout **as deployed on the server**,
+where compose sets `ARCHIVIST_GIT=/data/.archivist/${VAULT_NAME}` — it is not
+the binary's default, which is `/var/lib/archivist/git`
+(`internal/config/config.go`). Multi-vault makes the per-vault layout the
+server's own convention rather than a deployment convention, so that default
+changes with it.
+
+The layout is better than the earlier proposal of scanning `$ROOT` directly,
+because `vaults/` is a dedicated container — there is no way `2. Areas` is mistaken
 for a vault. Keep the "refuse to start if `$ROOT` itself contains `.git`"
 guard anyway, for someone who points `ROOT` at a vault.
 
@@ -37,8 +43,11 @@ header is invisible in logs and curl and is the thing people forget. Only a
 path makes a vault picker possible.
 
 **No compatibility alias.** Cut over. This is cheaper than it sounds: every
-plugin request goes through one join point (`client.ts:71`, `this.url(path)`),
-so a device switches vault by editing one settings field. The plugin will
+plugin request goes through a single join point in the plugin
+(`src/client.ts`, `url()` called only by `call()`), so a device switches vault
+by editing one settings field. The server and the Go client each have one such
+point too — three layers, one place each, which is the same fact stated per
+layer rather than a different count. The plugin will
 store **Server URL and Vault as two fields**, not one, because a picker needs
 `GET /v1/vaults` at the server root and cannot reach it if the vault is baked
 into the base URL.
@@ -158,16 +167,27 @@ Requested explicitly: a vault whose snippets, themes and plugins differ per
 device is a daily papercut. Sequenced **after part B**, because enabling it on
 top of the pairing hole is exactly the failure LiveSync warns about.
 
-### A prerequisite bug
+### What the server already does — corrected
 
-`syncable` is only consulted when *staging* (`repo.go:199`). A pushed
-`.obsidian/` path is written to the server's disk by `applyOne` and then
-silently not committed — so it never reaches another device and the pushing
-device records it as sent. Nobody hits this today only because the plugin
-skips dotfiles client-side too.
+An earlier draft of this spec claimed a latent bug here: that a pushed
+`.obsidian/` path is written to disk and then silently not committed. **That is
+false, and the correction matters because it changes the work.**
 
-**The server must reject a non-syncable path explicitly.** Fix this first,
-independently of config sync; it is a latent bug either way.
+Dotfiles are already refused, twice:
+
+- `Reconciler.applyOne` (`internal/reconcile/reconcile.go:219`) calls
+  `vault.Skip(ch.Path)` **before any write**, for every op, and returns
+  `StatusRefused` with reason `"excluded from sync"`. Nothing is written and
+  the client is told.
+- `Repo.Commit` (`internal/repo/repo.go:199`) filters non-syncable paths at
+  staging, as a backstop. `syncable` is *also* consulted at
+  `internal/repo/history.go:96`, to keep excluded paths out of drift
+  reporting — so "only consulted when staging" was wrong too.
+
+So config sync is not "fix a bug, then relax the rule". It is **widening an
+existing, correct refusal**: `syncable` gains a narrow allowlist for specific
+`.obsidian/` paths, and `applyOne` consults the same predicate so the refusal
+and the allowance can never disagree. There is no prerequisite fix.
 
 ### Decisions
 
@@ -263,20 +283,45 @@ cannot be kept.
 Keep it minimal and modular — its own module, one entry point, removable in a
 single commit if it proves not to earn its place.
 
+**Archivist's own `data.json` is excluded unconditionally and cannot be opted
+in.** This is not a default; it is a hard exclusion with no override.
+
+The plugin persists its settings with `saveData`, so
+`.obsidian/plugins/archivist/data.json` holds `serverUrl` and the **bearer
+token** (verified: keys are `device, intervalSeconds, serverUrl, syncOnChange,
+token, watchRemote`). Under a generic per-plugin opt-in, ticking Archivist
+would commit the server's own credential into the vault it protects, sync it to
+every device, and place it in git history permanently — recoverable only by
+noticing and then pruning.
+
+A scanner would very likely catch a key called `token`. Relying on that is the
+mistake: this one is knowable in advance, so it is excluded by name rather than
+left to a heuristic. The general lesson holds beyond this plugin — a sync tool
+must never be able to sync its own credentials.
+
+Better still, and worth doing in the same change: split the plugin's
+credentials out of `saveData` into device-local storage, so the file being
+opted into does not contain them at all.
+
 ---
 
 ## Sequencing
 
-1. **Reject non-syncable paths explicitly** — a latent bug, small, unblocks C.
-2. **Part B, pairing safety** — data-loss bug, and a prerequisite for C.
-3. **Part C, config sync** — the largest piece.
-4. **Part A, multi-vault** — when a second vault is actually wanted.
+1. **Part B, pairing safety** — a data-loss bug, and a prerequisite for C.
+2. **Part C, config sync** — the largest piece.
+3. **Part A, multi-vault** — when a second vault is actually wanted.
 
-Part A is last not because it is hard — it is smaller than the masterplan's
-"17 handlers, 21 call sites" suggests, since URL construction is already
-centralised in three places — but because nothing needs it until Work exists,
-and collapsing later is cheap: the plugin records which *vault* it adopted,
-not which host.
+An earlier draft had a fourth item first, fixing a non-syncable-path bug that
+turned out not to exist. It is gone; see Part C.
+
+Part A is last not because it is hard. URL construction is already centralised
+at every layer that needs changing — one method in the plugin
+(`src/client.ts`, `url()` used only by `call()`), one join in the Go client
+(`internal/client/client.go:81`), and one route table on the server
+(`internal/api/api.go`) — so it is far smaller than the masterplan's "17
+handlers, 21 call sites" suggests. It is last because nothing needs it until
+Work exists, and collapsing later is cheap: the plugin records which *vault* it
+adopted, not which host.
 
 ## Non-goals
 
@@ -286,3 +331,4 @@ not which host.
 - **A secret-stripping filter.** See above.
 - **Subdomain or header-based vault addressing.**
 - **Server-side vault creation by agent or relay tokens.**
+- **Syncing Archivist's own plugin data.** Hard-excluded; see Part C.
