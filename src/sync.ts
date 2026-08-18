@@ -11,6 +11,12 @@ import {
 	type SyncState,
 } from "./state";
 import { PairingHazardError, isRescuePath, rescueFolder, type PairingChoice } from "./pairing";
+import {
+	CONFIG_DIR,
+	configSyncable,
+	DEFAULT_CONFIG_SYNC,
+	type ConfigSyncSettings,
+} from "./config-sync";
 
 export type SyncReport = {
 	pulled: number;
@@ -52,8 +58,12 @@ export function conflictName(path: string, device: string): string {
 	return dot > slash ? path.slice(0, dot) + suffix + path.slice(dot) : path + suffix;
 }
 
-export function skip(path: string): boolean {
-	return path.split("/").some((seg) => seg.startsWith("."));
+export function skip(
+	path: string,
+	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
+): boolean {
+	if (!path.split("/").some((seg) => seg.startsWith("."))) return false;
+	return !configSyncable(path, config);
 }
 
 /**
@@ -83,6 +93,12 @@ export class Sync {
 		private client: () => Client,
 		private device: () => string,
 		private log: Logger = () => {},
+		/**
+		 * Read fresh on every call, not captured: the user can change the level
+		 * mid-session, and a captured value would keep syncing at the old one
+		 * until Obsidian restarted.
+		 */
+		private config: () => ConfigSyncSettings = () => DEFAULT_CONFIG_SYNC,
 	) {}
 
 	private get adapter(): DataAdapter {
@@ -151,7 +167,7 @@ export class Sync {
 			const { head, entries } = await client.changes(state.base);
 			let deferred = 0;
 			for (const e of entries) {
-				if (skip(e.path)) continue;
+				if (skip(e.path, this.config())) continue;
 				const outcome = await this.applyRemote(e, state);
 				if (outcome === "applied") report.pulled++;
 				if (outcome === "deferred") deferred++;
@@ -313,7 +329,7 @@ export class Sync {
 		const { head, files } = await this.client().snapshot();
 		const state: SyncState = { base: head, files: {} };
 		for (const [path, entry] of Object.entries(files)) {
-			if (skip(path)) continue;
+			if (skip(path, this.config())) continue;
 			const cur = await this.readState(path);
 			if (cur && cur.hash === entry.hash) {
 				state.files[path] = cur;
@@ -380,9 +396,24 @@ export class Sync {
 		// A path in the snapshot and absent from disk is a deletion -- and this
 		// is the only way we can know that, which is precisely why a client
 		// with no snapshot must never delete.
+		//
+		// EXCEPT for config paths this device no longer syncs. Turning the level
+		// down from "plugins" to "files", or switching one plugin's opt-in off,
+		// removes those paths from listAll -- and without this guard they would
+		// look exactly like local deletions and be pushed as such, wiping the
+		// shared config off the server and out of every other device. A device
+		// choosing to stop RECEIVING config must never thereby delete it.
 		if (!isFirstRun(state)) {
 			for (const path of Object.keys(state.files)) {
-				if (!seen.has(path)) out.push({ path, op: "del" });
+				if (seen.has(path)) continue;
+				if (skip(path, this.config())) {
+					// No longer ours to track. Forget it without telling the
+					// server anything; if the level is turned back up, the next
+					// pull re-materialises it from the server's copy.
+					delete state.files[path];
+					continue;
+				}
+				out.push({ path, op: "del" });
 			}
 		}
 		return out;
@@ -430,16 +461,26 @@ export class Sync {
 		}
 	}
 
+	/** Whether a directory is the config directory or lives inside it. */
+	private mayHoldConfig(dir: string): boolean {
+		if (this.config().level === "files") return false;
+		return dir === CONFIG_DIR || dir.startsWith(CONFIG_DIR + "/");
+	}
+
 	/** listAll walks the vault via the adapter, which sees everything -- unlike
 	 *  vault.getFiles(), which excludes the config directory. */
 	private async listAll(dir: string): Promise<string[]> {
 		const out: string[] = [];
 		const listing = await this.adapter.list(dir);
 		for (const f of listing.files) {
-			if (!skip(f)) out.push(f);
+			if (!skip(f, this.config())) out.push(f);
 		}
 		for (const d of listing.folders) {
-			if (skip(d)) continue;
+			// A directory is worth descending into if anything under it could
+			// sync. skip() answers that for a FILE path; for a directory the
+			// config directory is the one case where the directory itself is
+			// excluded and its contents are not.
+			if (skip(d, this.config()) && !this.mayHoldConfig(d)) continue;
 			out.push(...(await this.listAll(d)));
 		}
 		return out;

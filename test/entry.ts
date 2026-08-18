@@ -13,3 +13,5 @@ export { PairingHazardError, rescueFolder } from "../src/pairing";
 export { isRescuePath } from "../src/pairing";
 
 export { loadToken, saveToken, migrateToken } from "../src/credentials";
+
+export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR } from "../src/config-sync";
