@@ -28,6 +28,11 @@ func start(t *testing.T) (*vault.Vault, *repo.Repo, *reconcile.Reconciler, conte
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The same exclusion policy the server installs. Without it these tests run
+	// against repo.Open's permissive default, where EVERY path is committable
+	// -- so a test that a path is not committed would pass purely because the
+	// watcher dropped the event, and prove nothing about staging.
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
 	rc := reconcile.New(v, r)
 	w := New(v, rc, debounce, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -224,12 +229,17 @@ func TestDotfilesAreIgnored(t *testing.T) {
 	settle()
 	before := headOf(t, r)
 
+	// workspace.json, not app.json: app.json is allowlisted for config sync
+	// now, so a commit for it is correct. workspace.json is per-device by
+	// nature and refused at every level, so it still proves the exclusion.
 	os.MkdirAll(filepath.Join(v.Dir(), ".obsidian"), 0o755)
-	os.WriteFile(filepath.Join(v.Dir(), ".obsidian/app.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(v.Dir(), ".obsidian/workspace.json"), []byte("{}"), 0o644)
+	os.MkdirAll(filepath.Join(v.Dir(), ".trash"), 0o755)
+	os.WriteFile(filepath.Join(v.Dir(), ".trash/gone.md"), []byte("x\n"), 0o644)
 	settle()
 
 	if got := headOf(t, r); got != before {
-		t.Error("a dotfile change produced a commit")
+		t.Error("a non-syncable dotfile change produced a commit")
 	}
 }
 

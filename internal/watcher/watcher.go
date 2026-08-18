@@ -172,6 +172,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 }
 
 // addTree watches dir and every syncable directory beneath it.
+//
+// Dot-directories are skipped, with one exception: the Obsidian configuration
+// directory, which holds allowlisted files that DO sync. Without descending
+// into it, a snippet edited on the server host produces no event, so no Scan,
+// so no commit -- the local write path would carry notes and silently not carry
+// config. vault.Skip is the filter for individual events; this is the separate
+// decision about which directories are worth an inotify watch at all, and it
+// has to be kept in step with it by hand.
 func (w *Watcher) addTree(dir string) error {
 	return filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -180,11 +188,31 @@ func (w *Watcher) addTree(dir string) error {
 		if !d.IsDir() {
 			return nil
 		}
-		if p != dir && strings.HasPrefix(d.Name(), ".") {
+		if p != dir && strings.HasPrefix(d.Name(), ".") && !w.watchableConfigDir(p) {
 			return filepath.SkipDir
 		}
 		return w.fsw.Add(p)
 	})
+}
+
+// watchableConfigRel reports whether a vault-relative path is the config
+// directory or lives inside it.
+//
+// Watching the whole subtree costs a handful of inotify descriptors, and the
+// ordinary Skip filter still decides file by file what may be committed -- so
+// this buys the guarantee that no allowlisted file is invisible, at no risk of
+// committing one that is not.
+func (w *Watcher) watchableConfigRel(rel string) bool {
+	return rel == vault.ConfigDir || strings.HasPrefix(rel, vault.ConfigDir+"/")
+}
+
+// watchableConfigDir is watchableConfigRel for an absolute path.
+func (w *Watcher) watchableConfigDir(abs string) bool {
+	rel, err := filepath.Rel(w.v.Dir(), abs)
+	if err != nil {
+		return false
+	}
+	return w.watchableConfigRel(filepath.ToSlash(rel))
 }
 
 func (w *Watcher) handle(ev fsnotify.Event) {
@@ -193,7 +221,19 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 		return
 	}
 	rel = filepath.ToSlash(rel)
-	if rel == "." || vault.Skip(rel) {
+	if rel == "." {
+		return
+	}
+	// vault.Skip is a FILE policy: it says .obsidian is excluded, because the
+	// allowlist names files inside it rather than the directory itself. A
+	// directory event has to be judged separately, or a .obsidian/ created
+	// after startup is dropped here and never reaches addTree -- which is what
+	// happens the first time a remote push creates it, leaving every later
+	// host-local config edit invisible.
+	//
+	// Letting a refused config path through costs at most one no-op commit
+	// attempt: Repo.Commit consults syncable and will not stage it.
+	if vault.Skip(rel) && !w.watchableConfigRel(rel) {
 		return
 	}
 
