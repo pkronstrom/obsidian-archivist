@@ -315,6 +315,53 @@ tools write them composed, and those are different bytes — so `Kronström.md`
 seeded from a Linux box and `Kronström.md` from a Mac would be two notes. Seed
 from the machine that owns the vault and it stays consistent.
 
+## Syncing Obsidian's own config
+
+Off by default. Each device chooses its own level in the plugin's settings, and
+that choice is never itself synced — a phone can stay on **Files only** while a
+laptop syncs everything.
+
+| Level | What travels |
+|---|---|
+| **Files only** | notes and attachments; no config at all |
+| **Files + appearance** | `app.json`, `appearance.json`, `hotkeys.json`, `snippets/*.css`, `themes/*/` |
+| **Files + appearance + plugins** | the above, plus `community-plugins.json`, `core-plugins.json`, and any plugin's `data.json` you turn on individually |
+
+Never, at any level:
+
+| Never syncs | Why |
+|---|---|
+| `workspace.json`, `workspace-mobile.json` | per-device by nature; a synced layout fights across screens |
+| `graph.json`, caches, anything unlisted | per-device, and an allowlist fails safe |
+| plugin **code** (`main.js`, `manifest.json`, `styles.css`) | ~50 MB a year of binary churn, unrecoverable except by prune |
+| `plugins/*/data.json` unless you turn it on | the most likely place in a vault to find a live credential |
+| **Archivist's own `data.json`** | it holds the bearer token for this server. Hard-excluded, no override, enforced on the server as well as in the plugin — and since this release the token is not in that file at all |
+
+The allowlist is enforced in the plugin **and** on the server, independently, so
+an older or buggy plugin cannot push something into history that this version
+would not send.
+
+**Plugin code is not shipped through the vault.** The list travels; the
+receiving device offers to install what is missing from the community store,
+naming every plugin first. Decline and you get the list with the code absent,
+which is what Obsidian Sync gives you. Desktop-only plugins are skipped on
+mobile automatically.
+
+**Plugin settings are opt-in, per plugin.** Each `data.json` is scanned first,
+and a plugin whose settings look like they hold a credential is **refused with a
+reason** — nothing is stripped or rewritten, because a filtered settings file is
+a broken file that looks fine. You can override per plugin, and the override
+states what is being accepted. Finding nothing is not a guarantee: the scanner
+reports what it recognises, and it cannot recognise everything.
+
+Settings files are merged by key rather than by line, with arrays replaced
+wholesale. When both devices change the same key to different values, the last
+writer wins and the other version is kept beside it as a conflict copy —
+ordinary JSON you can copy straight back over the winner.
+
+Config sync needs the default `.obsidian` directory. If you renamed it, the
+plugin says so and syncs notes only.
+
 ## Looking at history
 
 From the command line on the server, without git installed:

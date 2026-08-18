@@ -273,8 +273,20 @@ merged; both versions are kept.
 
 ## What is not synced
 
-Anything under a dot-directory, including `.obsidian/`. Workspace layout is
-device-specific and config sync needs different rules; it is not implemented.
+Everything under a dot-directory, with one exception: an allowlist of
+`.obsidian/` paths, when the device has opted in. `internal/vault/config.go`
+holds the allowlist and `vault.Skip` is the single predicate that consults it —
+which is what keeps the four places that ask (the reconciler's `applyOne`,
+`Repo.Commit`, `Repo.Check` and the watcher's event filter) from ever
+disagreeing.
+
+The watcher's `addTree` is a fifth consumer that does **not** go through
+`vault.Skip`: it decides which directories are worth an inotify watch by name,
+and `handle` judges directory events separately for the same reason. Both have
+their own exception for the config directory, and all three have to be kept in
+step by hand. Without them, local config edits produce no event, so no `Scan`,
+so no commit — the local write path would carry notes and silently not carry
+config.
 
 ## Three invariants worth knowing
 
@@ -310,7 +322,7 @@ node test/integration.mjs http://localhost:8090 <token>
 
 ## Not built yet
 
-`.obsidian/` config sync, history squashing and object retention.
+History squashing, object retention, and multi-vault addressing.
 
 ## Licence
 
