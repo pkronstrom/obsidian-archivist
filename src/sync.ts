@@ -10,6 +10,7 @@ import {
 	type FileState,
 	type SyncState,
 } from "./state";
+import { PairingHazardError } from "./pairing";
 
 export type SyncReport = {
 	pulled: number;
@@ -70,6 +71,13 @@ export class Sync {
 	private running = false;
 	private queued = false;
 
+	/**
+	 * Set once the user has answered the pairing question. It is never reset:
+	 * within a session, having chosen is permanent, and after one successful
+	 * cycle `state.base` is non-empty so the check cannot fire again anyway.
+	 */
+	private pairingResolved = false;
+
 	constructor(
 		private app: App,
 		private client: () => Client,
@@ -115,6 +123,21 @@ export class Sync {
 		// untouched.
 		const idx = await client.index();
 		checkVault(state, idx.vault);
+
+		// Then the first-connect hazard, which the identity check cannot see:
+		// it compares an ADOPTED vault name, and there is not one yet.
+		//
+		// Deliberately before the vault name is adopted and saved, so a refusal
+		// leaves NOTHING persisted -- not one byte on disk and not one field in
+		// local storage. See src/pairing.ts for what goes wrong without it.
+		if (!this.pairingResolved && isFirstRun(state)) {
+			const serverHead = await client.head();
+			if (serverHead !== "") {
+				const localFiles = (await this.listAll("")).length;
+				if (localFiles > 0) throw new PairingHazardError(localFiles, serverHead);
+			}
+		}
+
 		if (!state.vault && idx.vault) {
 			// First run, or state from a version that did not record it. Adopt.
 			state.vault = idx.vault;
