@@ -31,6 +31,13 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: name, Version: version}, nil)
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name: "list_vaults",
+		Description: "List the vaults this relay's token can address. Every " +
+			"other tool takes an optional 'vault' parameter naming one of " +
+			"these; omit it to use the relay's default vault.",
+	}, listVaults(c))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_notes",
 		Description: "List notes and attachments. Returns at most 100 entries " +
 			"by default; check has_more and pass next_cursor to continue. " +
@@ -93,6 +100,19 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	return s
 }
 
+// forVault picks the client for a tool call.
+//
+// ONE relay serving every vault, not one per vault. Two relays would mean
+// registering two MCP servers in every client, and every tool schema is in the
+// agent's context on every request -- bounding list_notes cut that cost, and
+// running two relays would hand it straight back.
+func forVault(c *client.Client, name string) *client.Client {
+	if name == "" {
+		return c
+	}
+	return c.WithVault(name)
+}
+
 // ---- tool inputs and outputs ----------------------------------------------
 //
 // Schemas are inferred from these types, and the jsonschema tags become the
@@ -117,6 +137,7 @@ const (
 )
 
 type listInput struct {
+	Vault     string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Prefix    string `json:"prefix,omitempty" jsonschema:"only list paths under this, e.g. '2. Areas/'"`
 	Recursive *bool  `json:"recursive,omitempty" jsonschema:"descend into subfolders. Default true. Set false to list one folder like ls, which is far cheaper on a large vault"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"how many entries to return, default 100, maximum 500"`
@@ -149,6 +170,7 @@ type listOutput struct {
 
 func listNotes(c *client.Client) mcp.ToolHandlerFor[listInput, listOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, listOutput, error) {
+		c := forVault(c, in.Vault)
 		limit := in.Limit
 		if limit <= 0 {
 			limit = defaultListLimit
@@ -265,7 +287,8 @@ func decodeCursor(cursor string) (string, error) {
 }
 
 type folderInput struct {
-	Depth int `json:"depth,omitempty" jsonschema:"how many folder levels to report, default 2. Use 1 for the broadest map"`
+	Vault string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Depth int    `json:"depth,omitempty" jsonschema:"how many folder levels to report, default 2. Use 1 for the broadest map"`
 }
 
 type folderSummary struct {
@@ -289,6 +312,7 @@ type folderOutput struct {
 // which does not.
 func listFolders(c *client.Client) mcp.ToolHandlerFor[folderInput, folderOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in folderInput) (*mcp.CallToolResult, folderOutput, error) {
+		c := forVault(c, in.Vault)
 		depth := in.Depth
 		if depth <= 0 {
 			depth = 2
@@ -337,7 +361,8 @@ func listFolders(c *client.Client) mcp.ToolHandlerFor[folderInput, folderOutput]
 }
 
 type pathInput struct {
-	Path string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
+	Vault string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path  string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 }
 
 type readOutput struct {
@@ -350,6 +375,7 @@ type readOutput struct {
 
 func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in pathInput) (*mcp.CallToolResult, readOutput, error) {
+		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, readOutput{}, fmt.Errorf("path is required")
 		}
@@ -368,6 +394,7 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 }
 
 type writeInput struct {
+	Vault   string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path    string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 	Content string `json:"content" jsonschema:"the full new content of the note"`
 	// Optimistic concurrency. Without this the write is a blind overwrite and a
@@ -403,6 +430,7 @@ type writeOutput struct {
 
 func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in writeInput) (*mcp.CallToolResult, writeOutput, error) {
+		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, writeOutput{}, fmt.Errorf("path is required")
 		}
@@ -455,12 +483,14 @@ type deleteOutput struct {
 }
 
 type deleteInput struct {
+	Vault    string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path     string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 	Revision string `json:"revision,omitempty" jsonschema:"the revision from read_note, if you read the note before deciding to delete it"`
 }
 
 func deleteNote(c *client.Client) mcp.ToolHandlerFor[deleteInput, deleteOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteInput) (*mcp.CallToolResult, deleteOutput, error) {
+		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, deleteOutput{}, fmt.Errorf("path is required")
 		}
@@ -477,6 +507,7 @@ func deleteNote(c *client.Client) mcp.ToolHandlerFor[deleteInput, deleteOutput] 
 }
 
 type historyInput struct {
+	Vault string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path  string `json:"path" jsonschema:"vault-relative path"`
 	Limit int    `json:"limit,omitempty" jsonschema:"how many revisions to return, default 20"`
 }
@@ -496,6 +527,7 @@ type historyOutput struct {
 
 func noteHistory(c *client.Client) mcp.ToolHandlerFor[historyInput, historyOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in historyInput) (*mcp.CallToolResult, historyOutput, error) {
+		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, historyOutput{}, fmt.Errorf("path is required")
 		}
@@ -522,12 +554,14 @@ func noteHistory(c *client.Client) mcp.ToolHandlerFor[historyInput, historyOutpu
 }
 
 type readAtInput struct {
+	Vault    string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path     string `json:"path" jsonschema:"vault-relative path"`
 	Revision string `json:"revision" jsonschema:"a revision from note_history, e.g. '4f3538ca'"`
 }
 
 func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in readAtInput) (*mcp.CallToolResult, readOutput, error) {
+		c := forVault(c, in.Vault)
 		if in.Path == "" || in.Revision == "" {
 			return nil, readOutput{}, fmt.Errorf("path and revision are both required")
 		}
@@ -540,6 +574,7 @@ func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
 }
 
 type searchInput struct {
+	Vault string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Query string `json:"query" jsonschema:"text to look for, case-insensitive"`
 	Limit int    `json:"limit,omitempty" jsonschema:"how many matches to return, default 20"`
 }
@@ -566,6 +601,7 @@ type searchOutput struct {
 // change.
 func searchNotes(c *client.Client) mcp.ToolHandlerFor[searchInput, searchOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, searchOutput, error) {
+		c := forVault(c, in.Vault)
 		if strings.TrimSpace(in.Query) == "" {
 			return nil, searchOutput{}, fmt.Errorf("query is required")
 		}
@@ -647,4 +683,21 @@ func isBinary(b []byte) bool {
 		}
 	}
 	return false
+}
+
+type listVaultsInput struct{}
+
+type listVaultsOutput struct {
+	Vaults  []string `json:"vaults"`
+	Default string   `json:"default"`
+}
+
+func listVaults(c *client.Client) mcp.ToolHandlerFor[listVaultsInput, listVaultsOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ listVaultsInput) (*mcp.CallToolResult, listVaultsOutput, error) {
+		names, err := c.ListVaults(ctx)
+		if err != nil {
+			return nil, listVaultsOutput{}, err
+		}
+		return nil, listVaultsOutput{Vaults: names, Default: c.Vault()}, nil
+	}
 }

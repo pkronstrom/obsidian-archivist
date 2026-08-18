@@ -35,6 +35,16 @@ type Handler struct {
 	hooks  *Webhooks
 }
 
+// vaultFor lets a script address a second vault without a second relay:
+//
+//	curl -T note.md ".../file/notes/idea.md?vault=work"
+func (h *Handler) vaultFor(r *http.Request) *client.Client {
+	if name := r.URL.Query().Get("vault"); name != "" {
+		return h.client.WithVault(name)
+	}
+	return h.client
+}
+
 func NewHandler(c *client.Client, token string, log *slog.Logger, mcpHandler http.Handler, hooks *Webhooks) http.Handler {
 	h := &Handler{client: c, token: token, log: log, mcp: mcpHandler, hooks: hooks}
 
@@ -84,12 +94,13 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 }
 
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
+	c := h.vaultFor(r)
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
 		return
 	}
-	body, base, err := h.client.ReadForEdit(r.Context(), p)
+	body, base, err := c.ReadForEdit(r.Context(), p)
 	if err != nil {
 		h.relayError(w, err)
 		return
@@ -102,6 +113,7 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
+	c := h.vaultFor(r)
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
@@ -123,7 +135,7 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 		return
 	}
-	res, err := h.client.WriteAt(r.Context(), p, body, base)
+	res, err := c.WriteAt(r.Context(), p, body, base)
 	if err != nil {
 		h.relayError(w, err)
 		return
@@ -134,6 +146,7 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
+	c := h.vaultFor(r)
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
@@ -144,7 +157,7 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 		return
 	}
-	res, err := h.client.DeleteAt(r.Context(), p, base)
+	res, err := c.DeleteAt(r.Context(), p, base)
 	if err != nil {
 		h.relayError(w, err)
 		return
@@ -193,7 +206,8 @@ func httpStatus(res protocol.Result) int {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	files, err := h.client.List(r.Context(), r.URL.Query().Get("prefix"))
+	c := h.vaultFor(r)
+	files, err := c.List(r.Context(), r.URL.Query().Get("prefix"))
 	if err != nil {
 		h.relayError(w, err)
 		return

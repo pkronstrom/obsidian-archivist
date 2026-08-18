@@ -46,6 +46,7 @@ type config struct {
 	listen    string
 	relayTok  string
 	device    string
+	vault     string
 	webhooks  []string
 	enableMCP bool
 	logLevel  string
@@ -71,6 +72,8 @@ func load(args []string) (*config, error) {
 		"HTTP listen address for the relay's own API and MCP")
 	fs.StringVar(&c.relayTok, "relay-token", env("ARCHIVIST_RELAY_TOKEN", ""),
 		"bearer token callers must present to the relay (defaults to -token)")
+	fs.StringVar(&c.vault, "vault", env("ARCHIVIST_VAULT", ""),
+		"vault this relay addresses by default; tools may override it per call")
 	fs.StringVar(&c.device, "device", env("ARCHIVIST_DEVICE", "relay"),
 		"names this relay in commit messages and conflict filenames")
 	fs.StringVar(&hooks, "webhook", env("ARCHIVIST_WEBHOOKS", ""),
@@ -128,7 +131,7 @@ func main() {
 }
 
 func run(cfg *config, log *slog.Logger) error {
-	c := client.New(cfg.url, cfg.token, cfg.device)
+	c := client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
