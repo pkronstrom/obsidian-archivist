@@ -191,16 +191,32 @@ func isTemp(rel string) bool {
 // Skip reports whether a path is excluded from sync entirely.
 //
 // Dotfiles at any level are skipped: .git never appears here (the git dir lives
-// outside the vault) but .obsidian, .trash and editor droppings do, and none of
-// them belong in the synced set. Obsidian config gets its own mechanism later,
-// driven by the plugin, precisely because it needs different rules.
+// outside the vault) but .trash and editor droppings do, and none of them
+// belong in the synced set.
+//
+// The one exception is an allowlisted path inside the Obsidian configuration
+// directory -- see config.go. That is a WIDENING of this refusal, not a
+// loosening of it: everything not named there is still refused, and the
+// allowlist is consulted from exactly this one predicate so the four places
+// that use it cannot disagree about what may sync:
+//
+//	internal/reconcile/reconcile.go  applyOne, before any remote write
+//	internal/repo/repo.go            Commit, at staging, for BOTH write paths
+//	internal/repo/history.go         Check, so exclusions are not reported as drift
+//	internal/watcher/watcher.go      handle, so excluded events are dropped
+//
+// The watcher's addTree is the fifth and does NOT go through here; it tests
+// directory names directly and is handled alongside this change.
 func Skip(rel string) bool {
+	if isTemp(rel) {
+		return true
+	}
 	for _, seg := range strings.Split(rel, "/") {
 		if strings.HasPrefix(seg, ".") {
-			return true
+			return !ConfigSyncable(rel)
 		}
 	}
-	return isTemp(rel)
+	return false
 }
 
 // Hash is the content address used on the wire.

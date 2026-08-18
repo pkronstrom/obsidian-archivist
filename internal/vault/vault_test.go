@@ -136,7 +136,10 @@ func TestStat(t *testing.T) {
 // matters than walking a directory was.
 func TestSkipExcludesDotfilesAtEveryLevel(t *testing.T) {
 	for _, p := range []string{
-		".obsidian/appearance.json",
+		// workspace.json rather than appearance.json: the latter is now
+		// allowlisted for config sync, so asserting it is skipped would assert
+		// the opposite of the policy. See TestSkipAllowsAllowlistedConfig.
+		".obsidian/workspace.json",
 		"notes/.hidden.md",
 		".trash/old.md",
 		".git",
@@ -166,5 +169,38 @@ func TestHashIsStableAndPrefixed(t *testing.T) {
 	}
 	if !strings.HasPrefix(a, "sha256:") {
 		t.Errorf("Hash = %q, want a sha256: prefix", a)
+	}
+}
+
+func TestSkipAllowsAllowlistedConfig(t *testing.T) {
+	if Skip(".obsidian/appearance.json") {
+		t.Error("an allowlisted config file is still being skipped")
+	}
+	if Skip(".obsidian/snippets/dark.css") {
+		t.Error("a snippet is still being skipped")
+	}
+}
+
+func TestSkipStillRefusesEverythingElseDotted(t *testing.T) {
+	for _, p := range []string{
+		".obsidian/workspace.json",
+		".obsidian/plugins/archivist/data.json",
+		".obsidian/plugins/dataview/main.js",
+		".trash/gone.md",
+		".smart-env/cache.json",
+		"notes/.hidden.md",
+	} {
+		if !Skip(p) {
+			t.Errorf("Skip(%q) = false; it must stay excluded", p)
+		}
+	}
+}
+
+func TestSkipStillRefusesOurTempFiles(t *testing.T) {
+	if !Skip(".archivist-tmp-1234-abcdef01") {
+		t.Error("temp files must never be committed")
+	}
+	if !Skip("notes/.archivist-tmp-1234-abcdef01") {
+		t.Error("temp files must never be committed, at any depth")
 	}
 }

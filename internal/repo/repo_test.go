@@ -275,7 +275,12 @@ func TestCommitStagesOnlySyncablePaths(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(v.Dir(), ".obsidian"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(v.Dir(), ".obsidian/appearance.json"), []byte("{}"), 0o644)
+	// workspace.json, NOT appearance.json: since config sync shipped, an
+	// allowlisted config file entering git is correct and this test would be
+	// asserting the opposite of the policy. workspace.json is per-device by
+	// nature and stays refused at every level, so it still proves what this
+	// test is for -- that syncable() is consulted at staging.
+	os.WriteFile(filepath.Join(v.Dir(), ".obsidian/workspace.json"), []byte("{}"), 0o644)
 	v.Write("note.md", []byte("real content\n"))
 
 	head, err := r.Commit("mixed")
@@ -286,8 +291,8 @@ func TestCommitStagesOnlySyncablePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, leaked := snap[".obsidian/appearance.json"]; leaked {
-		t.Errorf("dotfile entered git: %+v", snap)
+	if _, leaked := snap[".obsidian/workspace.json"]; leaked {
+		t.Errorf("a non-syncable dotfile entered git: %+v", snap)
 	}
 	if _, ok := snap["note.md"]; !ok {
 		t.Errorf("real note missing: %+v", snap)
