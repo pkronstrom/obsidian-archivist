@@ -104,3 +104,17 @@ func isCleanConfigPath(rest string) bool {
 	}
 	return true
 }
+
+// MergeExempt reports whether a path must never be text-merged.
+//
+// Archivist merges text with diff3, and a text-merged settings file can come
+// out syntactically valid and semantically wrong -- the worst failure shape,
+// because nothing reports it and Obsidian simply behaves oddly later. So
+// allowlisted JSON goes through a key-level merge instead, and on a genuine
+// key-level divergence the last writer wins with a conflict copy kept beside it.
+//
+// CSS snippets and theme stylesheets are ordinary text and keep the ordinary
+// merge: conflict markers in CSS are visible, localised and harmless.
+func MergeExempt(rel string) bool {
+	return ConfigSyncable(rel) && strings.HasSuffix(rel, ".json")
+}

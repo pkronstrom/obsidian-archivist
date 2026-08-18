@@ -74,3 +74,31 @@ func TestDegenerateConfigPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeExempt(t *testing.T) {
+	exempt := []string{
+		".obsidian/app.json",
+		".obsidian/appearance.json",
+		".obsidian/hotkeys.json",
+		".obsidian/core-plugins.json",
+		".obsidian/community-plugins.json",
+		".obsidian/themes/Minimal/manifest.json",
+		".obsidian/plugins/dataview/data.json",
+	}
+	for _, p := range exempt {
+		if !MergeExempt(p) {
+			t.Errorf("MergeExempt(%q) = false; JSON must not be text-merged", p)
+		}
+	}
+	notExempt := []string{
+		".obsidian/snippets/dark.css",
+		".obsidian/themes/Minimal/theme.css",
+		"notes/idea.md",
+		"notes/data.json",
+	}
+	for _, p := range notExempt {
+		if MergeExempt(p) {
+			t.Errorf("MergeExempt(%q) = true, want false", p)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
@@ -86,5 +87,165 @@ func TestScanCommitsAllowlistedConfigOnly(t *testing.T) {
 	}
 	if _, ok := snap[".obsidian/workspace.json"]; ok {
 		t.Error("workspace.json reached history through the local path")
+	}
+}
+
+// Two devices editing different keys of the same settings file must both keep
+// their edit, and must not produce a conflict file.
+func TestConfigJSONMergesByKey(t *testing.T) {
+	rc, v, r := newRecWithPolicy(t)
+
+	base := []byte("{\n  \"theme\": \"obsidian\",\n  \"fontSize\": 16\n}\n")
+	if err := v.Write(".obsidian/appearance.json", base); err != nil {
+		t.Fatal(err)
+	}
+	baseHead, err := rc.Scan("seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The server moves on: fontSize changes here.
+	if err := v.Write(".obsidian/appearance.json",
+		[]byte("{\n  \"theme\": \"obsidian\",\n  \"fontSize\": 18\n}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Scan("server edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The client pushes a theme change computed from the older base.
+	theirs := []byte("{\n  \"theme\": \"minimal\",\n  \"fontSize\": 16\n}\n")
+	h, err := r.WriteBlob(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push(baseHead, "mac", []Change{
+		{Path: ".obsidian/appearance.json", Op: protocol.OpPut, Hash: h},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusMerged {
+		t.Fatalf("status = %q, want %q", results[0].Status, StatusMerged)
+	}
+
+	got, err := v.Read(".obsidian/appearance.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("merged config is not valid JSON: %v\n%s", err, got)
+	}
+	if m["theme"] != "minimal" {
+		t.Errorf("theme = %v, want minimal (the client's edit was lost)", m["theme"])
+	}
+	if m["fontSize"] != float64(18) {
+		t.Errorf("fontSize = %v, want 18 (the server's edit was lost)", m["fontSize"])
+	}
+}
+
+// Same key, different values: the last writer wins AND a conflict copy is kept.
+// A settings file has no way to carry conflict markers, so the copy is the only
+// record that a choice was made.
+func TestConfigJSONConflictKeepsACopy(t *testing.T) {
+	rc, v, r := newRecWithPolicy(t)
+
+	if err := v.Write(".obsidian/appearance.json",
+		[]byte("{\n  \"theme\": \"obsidian\"\n}\n")); err != nil {
+		t.Fatal(err)
+	}
+	baseHead, err := rc.Scan("seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Write(".obsidian/appearance.json",
+		[]byte("{\n  \"theme\": \"things\"\n}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Scan("server edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	theirs := []byte("{\n  \"theme\": \"minimal\"\n}\n")
+	h, err := r.WriteBlob(theirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push(baseHead, "mac", []Change{
+		{Path: ".obsidian/appearance.json", Op: protocol.OpPut, Hash: h},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusConflict {
+		t.Fatalf("status = %q, want %q", results[0].Status, StatusConflict)
+	}
+	if results[0].ConflictPath == "" {
+		t.Fatal("no conflict copy was recorded")
+	}
+
+	got, err := v.Read(".obsidian/appearance.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("the winning file must be valid JSON Obsidian can read: %v", err)
+	}
+	if m["theme"] != "minimal" {
+		t.Errorf("theme = %v, want minimal (the last writer)", m["theme"])
+	}
+
+	kept, err := v.Read(results[0].ConflictPath)
+	if err != nil {
+		t.Fatalf("reading the conflict copy: %v", err)
+	}
+	var km map[string]any
+	if err := json.Unmarshal(kept, &km); err != nil {
+		t.Fatalf("the conflict copy must be valid JSON, not a fenced merge: %v\n%s", err, kept)
+	}
+	if km["theme"] != "things" {
+		t.Errorf("conflict copy theme = %v, want things (the server's version)", km["theme"])
+	}
+}
+
+// A CSS snippet is ordinary text and keeps the ordinary text merge.
+func TestConfigCSSStillTextMerges(t *testing.T) {
+	rc, v, r := newRecWithPolicy(t)
+
+	if err := v.Write(".obsidian/snippets/dark.css", []byte("a\nb\nc\n")); err != nil {
+		t.Fatal(err)
+	}
+	baseHead, err := rc.Scan("seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Write(".obsidian/snippets/dark.css", []byte("A\nb\nc\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rc.Scan("server edit"); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := r.WriteBlob([]byte("a\nb\nC\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push(baseHead, "mac", []Change{
+		{Path: ".obsidian/snippets/dark.css", Op: protocol.OpPut, Hash: h},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusMerged {
+		t.Fatalf("status = %q, want %q", results[0].Status, StatusMerged)
+	}
+	got, err := v.Read(".obsidian/snippets/dark.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "A\nb\nC\n" {
+		t.Errorf("merged css = %q, want %q", got, "A\nb\nC\n")
 	}
 }
