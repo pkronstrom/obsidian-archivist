@@ -222,6 +222,16 @@ type ErrorResponse struct {
 	Error Error `json:"error"`
 }
 
+// Error lets a *Error travel as an ordinary Go error, so a layer that refuses
+// a request can name its own wire code instead of leaving the HTTP layer to
+// infer one by matching on prose. errors.As recovers the code intact.
+func (e *Error) Error() string {
+	if e.Message == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Message
+}
+
 // HashContent returns the git blob object id for content:
 //
 //	sha1("blob " + <byte length> + "\0" + content)

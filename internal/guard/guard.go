@@ -99,9 +99,12 @@ func New(l Limits, now func() time.Time, free FreeFunc) *Guard {
 }
 
 // Admit records a write of n bytes to path and reports whether it may
-// proceed. It records first and judges after, so the write that crosses a
-// threshold lands and the next one is refused. That keeps the boundary
-// unambiguous: the threshold is the last allowed value, not the first refused.
+// proceed.
+//
+// The threshold is the last ALLOWED value: with Writes=2 the first two writes
+// pass and the third is refused. The crossing write is counted before it is
+// judged, so a caller that ignores the verdict and writes anyway cannot walk
+// the counter back.
 func (g *Guard) Admit(path string, n int64) Verdict {
 	g.mu.Lock()
 	defer g.mu.Unlock()
