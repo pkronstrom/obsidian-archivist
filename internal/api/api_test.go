@@ -743,3 +743,28 @@ func TestDeleteScopeAllowsADeletingPush(t *testing.T) {
 		t.Error("a delete-scoped token was refused by the scope check")
 	}
 }
+
+func TestVaultListReportsScopesAndLabel(t *testing.T) {
+	h, tok := newServerWith(t, auth.Principal{
+		Label: "agent-n8n", Vaults: []string{"*"}, Scopes: []string{auth.ScopeRead},
+	})
+	w := doAs(t, h, "GET", "/v1/vaults", nil, tok)
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var got struct {
+		Vaults    []string `json:"vaults"`
+		CanCreate bool     `json:"canCreate"`
+		Scopes    []string `json:"scopes"`
+		Label     string   `json:"label"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Scopes) != 1 || got.Scopes[0] != auth.ScopeRead {
+		t.Errorf("scopes = %v, want [read]", got.Scopes)
+	}
+	if got.Label != "agent-n8n" {
+		t.Errorf("label = %q, want agent-n8n", got.Label)
+	}
+}

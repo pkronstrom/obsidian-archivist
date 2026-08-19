@@ -694,9 +694,19 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
+	// Scopes and label are here so a CLIENT can refuse a wrong token at setup
+	// rather than at first use. The Obsidian plugin needs write; handed a
+	// read-only agent token it currently syncs down happily and fails on the
+	// first save, which is the worst moment to find out.
+	scopes := p.Scopes
+	if scopes == nil {
+		scopes = []string{}
+	}
 	writeJSON(w, map[string]any{
 		"vaults":    p.Visible(all),
 		"canCreate": p.CanCreateVaults,
+		"scopes":    scopes,
+		"label":     p.Label,
 	})
 }
 
