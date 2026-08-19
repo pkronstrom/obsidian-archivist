@@ -44,7 +44,10 @@ func live(t *testing.T) (*client.Client, *vault.Vault) {
 	v := inst.Vault
 
 	set := auth.NewSetForTest(map[string]auth.Principal{
-		"live-token": {Label: "test", Vaults: []string{"*"}},
+		"live-token": {
+			Label: "test", Vaults: []string{"*"},
+			Scopes: []string{auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete},
+		},
 	})
 	srv := httptest.NewServer(api.New(reg, set))
 	t.Cleanup(srv.Close)

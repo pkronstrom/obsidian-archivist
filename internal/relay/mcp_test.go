@@ -38,7 +38,10 @@ func session(t *testing.T) (*mcp.ClientSession, *client.Client) {
 	}
 	t.Cleanup(func() { reg.Close() })
 	set := auth.NewSetForTest(map[string]auth.Principal{
-		"tok": {Label: "test", Vaults: []string{"*"}},
+		"tok": {
+			Label: "test", Vaults: []string{"*"},
+			Scopes: []string{auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete},
+		},
 	})
 	srv := httptest.NewServer(api.New(reg, set))
 	t.Cleanup(srv.Close)
