@@ -60,7 +60,7 @@ func New(reg *vaults.Registry, tokens *auth.Set) http.Handler {
 	// Per-vault routes. {vault} is a single path segment, so a name containing
 	// a space is addressable percent-encoded -- My%20Own%20Vault -- which the
 	// plugin does automatically and a human writing curl must remember.
-	mux.HandleFunc("GET /{vault}/v1", s.withVault(auth.ScopeRead, s.index))
+	mux.HandleFunc("GET /{vault}/v1", s.withVault(s.scopeFor("GET", "/v1"), s.index))
 	for _, rt := range s.routes() {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
@@ -350,8 +350,18 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 
 	// Idle connections get dropped by proxies; a comment line is a valid SSE
 	// keep-alive that consumers ignore.
-	ticker := time.NewTicker(25 * time.Second)
+	ticker := time.NewTicker(streamKeepalive)
 	defer ticker.Stop()
+
+	// The principal was resolved once, when the request was authenticated. A
+	// stream outlives that moment by days, so without re-checking, revoking or
+	// expiring a token would never stop an ALREADY OPEN stream -- and this one
+	// carries the path of every change in the vault.
+	//
+	// The keepalive tick is where it belongs: the timer already exists, and
+	// bounding the exposure to one interval is the whole requirement.
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	name := r.PathValue("vault")
 
 	for {
 		select {
@@ -364,6 +374,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 			writeEvent(w, ev)
 			flusher.Flush()
 		case <-ticker.C:
+			p, ok := s.tokens.Lookup(bearer)
+			if !ok || !p.Opens(name) || !p.Can(auth.ScopeRead) {
+				return // revoked, expired, or narrowed since this stream opened
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
@@ -524,6 +538,23 @@ type route struct {
 	// what it needs.
 	Scope  string `json:"-"`
 	handle func(http.ResponseWriter, *http.Request, *vaults.Instance)
+}
+
+// streamKeepalive is the SSE comment interval, and also how often an open
+// stream re-checks that its token is still valid. A var so tests can shorten it.
+var streamKeepalive = 25 * time.Second
+
+// scopeFor returns the scope a route declares, or "" if there is no such route.
+//
+// Empty means no match, and every caller must treat that as "refuse" rather
+// than "allow": a typo in a path would otherwise silently open a route.
+func (s *Server) scopeFor(method, path string) string {
+	for _, rt := range s.routes() {
+		if rt.Method == method && rt.Path == path {
+			return rt.Scope
+		}
+	}
+	return ""
 }
 
 // maxWait caps how long a long-poll may hold a request open. Proxies and
@@ -689,6 +720,14 @@ func fail(w http.ResponseWriter, status int, code, msg string) {
 // restart -- avoiding the failure where nothing shows up and nothing says why.
 func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	// A server-root route, so withVault never ran and the routes() table never
+	// covered it. The scope check has to be here or it does not happen: without
+	// it a write-only token could enumerate vault names.
+	if !p.Can(auth.ScopeRead) {
+		fail(w, http.StatusForbidden, protocol.CodeForbidden,
+			"this token does not hold the read scope")
+		return
+	}
 	all, err := s.reg.Names()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
@@ -722,6 +761,14 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 // ARCHIVIST_MAX_VAULTS.
 func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	// Two gates, and both are meant. CanCreateVaults is the capability; write is
+	// the verb, because creating a vault puts directories on disk and a
+	// read-only token has no business doing that whatever its capability says.
+	if !p.Can(auth.ScopeWrite) {
+		fail(w, http.StatusForbidden, protocol.CodeForbidden,
+			"this token does not hold the write scope")
+		return
+	}
 	if !p.CanCreateVaults {
 		fail(w, http.StatusForbidden, protocol.CodeForbidden, "this token may not create vaults")
 		return

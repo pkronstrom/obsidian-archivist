@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -766,5 +767,93 @@ func TestVaultListReportsScopesAndLabel(t *testing.T) {
 	}
 	if got.Label != "agent-n8n" {
 		t.Errorf("label = %q, want agent-n8n", got.Label)
+	}
+}
+
+// A stream outlives the request that opened it, so authenticating once at
+// connect means a revoked token keeps receiving vault activity forever. The
+// keepalive tick is the natural place to re-check: it already exists.
+func TestEventStreamStopsWhenTheTokenIsRevoked(t *testing.T) {
+	prev := streamKeepalive
+	streamKeepalive = 20 * time.Millisecond
+	t.Cleanup(func() { streamKeepalive = prev })
+
+	const tok = "stream-token"
+	reg, _, _ := singleVaultRegistry(t, tok)
+	set := auth.NewSetForTest(map[string]auth.Principal{
+		tok: {Label: "streamer", Vaults: []string{"*"}, Scopes: []string{auth.ScopeRead}},
+	})
+	srv := httptest.NewServer(New(reg, set))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest("GET", srv.URL+"/personal/v1/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	set.Revoke(auth.HashToken(tok))
+
+	// The stream must end on its own. Reading to EOF is the assertion: without
+	// re-validation this blocks until the test's deadline.
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, resp.Body)
+		done <- err
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream stayed open after the token was revoked")
+	}
+}
+
+// GET and POST /v1/vaults are server-root routes, registered outside the
+// routes() table, so TestEveryRouteDeclaresAScope cannot see them. They still
+// need scope checks.
+func TestServerRootVaultRoutesEnforceScopes(t *testing.T) {
+	writeOnly, tokW := newServerWith(t, auth.Principal{
+		Label: "writer", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeWrite}, CanCreateVaults: true,
+	})
+	if w := doAs(t, writeOnly, "GET", "/v1/vaults", nil, tokW); w.Code != 403 {
+		t.Errorf("listing vaults with a write-only token = %d, want 403", w.Code)
+	}
+
+	readOnly, tokR := newServerWith(t, auth.Principal{
+		Label: "reader", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeRead}, CanCreateVaults: true,
+	})
+	body := map[string]string{"name": "archive"}
+	if w := doAs(t, readOnly, "POST", "/v1/vaults", body, tokR); w.Code != 403 {
+		t.Errorf("creating a vault with a read-only token = %d, want 403", w.Code)
+	}
+
+	full, tokF := newServerWith(t, auth.Principal{
+		Label: "admin", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeRead, auth.ScopeWrite}, CanCreateVaults: true,
+	})
+	if w := doAs(t, full, "GET", "/v1/vaults", nil, tokF); w.Code != 200 {
+		t.Errorf("listing vaults with a read token = %d, want 200", w.Code)
+	}
+}
+
+// index took its scope from a literal rather than the table, so the two could
+// drift apart silently.
+func TestIndexTakesItsScopeFromTheRouteTable(t *testing.T) {
+	s := &Server{}
+	if got := s.scopeFor("GET", "/v1"); got != auth.ScopeRead {
+		t.Errorf("scopeFor(GET /v1) = %q, want %q", got, auth.ScopeRead)
+	}
+	if got := s.scopeFor("GET", "/v1/nonexistent"); got != "" {
+		t.Errorf("an unknown route resolved to %q; it must not silently grant access", got)
 	}
 }
