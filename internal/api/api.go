@@ -263,6 +263,25 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
+	// Delete is not a route, so the routes table cannot gate it: it is an op
+	// inside the change set. Checked here, in the HTTP layer where the principal
+	// already lives, so reconcile keeps knowing nothing about callers -- and
+	// checked over the WHOLE set first, so a push that deletes anything is
+	// refused before a single change is staged.
+	//
+	// A rename arrives as a del plus a put, so a token without delete cannot
+	// rename either. The `move` op that fixes that is a separate change.
+	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	if !p.Can(auth.ScopeDelete) {
+		for _, c := range req.Changes {
+			if c.Op == protocol.OpDel {
+				fail(w, http.StatusForbidden, protocol.CodeForbidden,
+					"this token does not hold the delete scope; refusing to delete "+c.Path)
+				return
+			}
+		}
+	}
+
 	head, results, err := inst.Reconciler.Push(req.Base, req.Device, req.Changes)
 	if err != nil {
 		var pe *protocol.Error

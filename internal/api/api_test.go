@@ -710,3 +710,36 @@ func TestEveryRouteDeclaresAScope(t *testing.T) {
 		}
 	}
 }
+
+// Delete has no route of its own: it is an op inside the change set. A token
+// with write but not delete must be refused the whole push, before anything is
+// staged.
+func TestWriteWithoutDeleteIsRefusedADeletingPush(t *testing.T) {
+	h, tok := newServerWith(t, auth.Principal{
+		Label: "agent", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeRead, auth.ScopeWrite},
+	})
+	body := protocol.PushRequest{
+		Device:  "agent",
+		Changes: []protocol.Change{{Path: "a.md", Op: protocol.OpDel}},
+	}
+	if w := doAs(t, h, "POST", "/v1/push", body, tok); w.Code != 403 {
+		t.Errorf("a deleting push from a write-only token = %d, want 403", w.Code)
+	}
+}
+
+func TestDeleteScopeAllowsADeletingPush(t *testing.T) {
+	h, tok := newServerWith(t, auth.Principal{
+		Label: "admin", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete},
+	})
+	body := protocol.PushRequest{
+		Device:  "admin",
+		Changes: []protocol.Change{{Path: "a.md", Op: protocol.OpDel}},
+	}
+	// Not asserting 200: an empty vault refuses a base-less delete for its own
+	// reasons. Asserting only that the SCOPE check did not fire.
+	if w := doAs(t, h, "POST", "/v1/push", body, tok); w.Code == 403 {
+		t.Error("a delete-scoped token was refused by the scope check")
+	}
+}
