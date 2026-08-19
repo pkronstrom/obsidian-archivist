@@ -88,9 +88,21 @@ export class Client {
 	 * vault has been chosen -- which is the whole reason the vault is a
 	 * separate settings field.
 	 */
-	async listVaults(): Promise<{ vaults: string[]; canCreate: boolean }> {
+	async listVaults(): Promise<{
+		vaults: string[];
+		canCreate: boolean;
+		/** Verbs this token holds. Absent on servers older than scoped tokens. */
+		scopes?: string[];
+		/** What the token is called on the server. Never a secret. */
+		label?: string;
+	}> {
 		const res = await this.callRoot("GET", "/v1/vaults");
-		return res.json as { vaults: string[]; canCreate: boolean };
+		return res.json as {
+			vaults: string[];
+			canCreate: boolean;
+			scopes?: string[];
+			label?: string;
+		};
 	}
 
 	private async call(

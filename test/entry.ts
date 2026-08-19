@@ -19,3 +19,4 @@ export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR } from "../src/config-s
 export { scanForSecrets } from "../src/secrets";
 
 export { plannedInstalls } from "../src/plugin-install";
+export { missingPluginScopes, scopeWarning } from "../src/scopes";

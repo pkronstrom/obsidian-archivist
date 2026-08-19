@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 import { Client } from "./client";
+import { scopeWarning } from "./scopes";
 import { loadToken, saveToken } from "./credentials";
 import {
 	CONFIG_DIR,
@@ -119,7 +120,20 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					return;
 				}
 				try {
-					const { vaults } = await new Client(serverUrl, token, "").listVaults();
+					const { vaults, scopes, label } = await new Client(
+						serverUrl,
+						token,
+						"",
+					).listVaults();
+					// Refuse here rather than at the first save. A token without
+					// both verbs syncs down happily and then fails on a write,
+					// with the note already edited -- the worst moment to learn
+					// the credential was the wrong one.
+					const warning = scopeWarning(scopes, label);
+					if (warning) {
+						new Notice(`archivist: ${warning}`, 12000);
+						return;
+					}
 					if (vaults.length === 0) {
 						new Notice("archivist: this token opens no vaults", 8000);
 						return;
