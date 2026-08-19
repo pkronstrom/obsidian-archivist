@@ -136,18 +136,42 @@ type Origin struct {
 // bare subject, which is honest -- claiming a token we did not resolve would be
 // worse than omitting it.
 func (o Origin) message(prefix string) string {
-	msg := prefix + " " + o.Device
+	// Device is caller-controlled, exactly like Via. Left raw, a value carrying
+	// "\n\nToken: admin" forges a trailer beside the server-resolved one and
+	// defeats the only part of this that was supposed to be unforgeable.
+	msg := prefix + " " + sanitiseTrailerValue(o.Device)
 	var trailers []string
 	if o.Token != "" {
-		trailers = append(trailers, "Token: "+o.Token)
+		// The label comes from the tokens file, which only the operator writes,
+		// but it costs nothing to hold every trailer to one rule.
+		trailers = append(trailers, "Token: "+sanitiseTrailerValue(o.Token))
 	}
 	if o.Via != "" {
-		trailers = append(trailers, "Via: "+o.Via)
+		trailers = append(trailers, "Via: "+sanitiseTrailerValue(o.Via))
 	}
 	if len(trailers) == 0 {
 		return msg
 	}
 	return msg + "\n\n" + strings.Join(trailers, "\n") + "\n"
+}
+
+// sanitiseTrailerValue strips what would forge a trailer and bounds the rest.
+// Applied to every value that reaches a commit message, because a value that is
+// safe today acquires a new source tomorrow.
+func sanitiseTrailerValue(s string) string {
+	// Newlines would start a new trailer; a colon would make the remainder look
+	// like a trailer key on whatever line it lands on. Dropping both leaves a
+	// value that cannot be mistaken for structure no matter where it is placed.
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == ':' {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return strings.TrimSpace(s)
 }
 
 // Push applies a change set with no verified origin. Kept for the many callers
@@ -329,6 +353,14 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		if err := vault.ValidPath(ch.From); err != nil {
 			return res, err
 		}
+		// The SOURCE needs the exclusion check too, not just the destination.
+		// Without it a write-scoped caller could move .obsidian/secrets.json
+		// into a synced path -- publishing a file the vault deliberately does
+		// not sync, and deleting the original on the way.
+		if vault.Skip(ch.From) {
+			res.Status, res.Reason = StatusRefused, "excluded from sync: "+ch.From
+			return res, nil
+		}
 		if moved[ch.From] || moved[ch.Path] {
 			res.Status, res.Reason = StatusRefused, "changed on the server since base"
 			return res, nil
@@ -338,6 +370,16 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 			// Refusing beats inventing. A move whose source is gone would
 			// otherwise be a way to name any path and have it disappear.
 			res.Status, res.Reason = StatusRefused, "no such path: "+ch.From
+			return res, nil
+		}
+		// Hash on a move is what the client believes the source holds. It is
+		// If-Match for a rename, and without it a retried move silently
+		// diverges: a move refused because the source changed remotely is
+		// re-sent on the next cycle with a fresh base, so the staleness check
+		// above no longer fires, and the SERVER's newer bytes get carried to
+		// the new path while the client records its own older snapshot there.
+		if ch.Hash != "" && vault.Hash(content) != ch.Hash {
+			res.Status, res.Reason = StatusRefused, "the source changed since it was read: "+ch.From
 			return res, nil
 		}
 		if _, err := rc.v.Read(ch.Path); err == nil {
@@ -577,7 +619,11 @@ func conflictPath(path, device string, content []byte) string {
 	// `history` reports it. The content fragment alone gives what the NAME
 	// needs, which is uniqueness: identical content collapses onto one file
 	// (correct) and different content diverges (the point).
-	frag := vault.Hash(content)[7:13]
+	// Twelve hex characters, not six. Six is 24 bits, and the promise this
+	// filename makes is that two different versions both survive -- a collision
+	// breaks exactly that, by overwriting the earlier file. Still far shorter
+	// than the timestamp this replaced.
+	frag := vault.Hash(content)[7:19]
 	dot := strings.LastIndex(path, ".")
 	slash := strings.LastIndex(path, "/")
 	suffix := fmt.Sprintf(".conflict-%s-%s", sanitise(device), frag)

@@ -2,6 +2,9 @@
  * Scope names the server understands. Kept here rather than imported so this
  * file stays free of Obsidian and can be unit-tested in the Node harness.
  */
+/** The protocol version that introduced the move op. */
+export const MOVE_PROTOCOL = 2;
+
 export const SCOPE_READ = "read";
 export const SCOPE_WRITE = "write";
 
@@ -60,7 +63,12 @@ export type Pending = {
  * The content is dropped from a paired put, because the server already has it —
  * that is what makes a move preserving rather than destructive.
  */
-export function pairRenames(changes: Pending[]): Pending[] {
+export function pairRenames(changes: Pending[], serverProtocol = 0): Pending[] {
+	// A server that predates move rejects the unknown op and fails the WHOLE
+	// push, so a rename would take the vault down rather than just failing to
+	// be a rename. Emitting del+put there is the correct fallback: it is what
+	// this client did before move existed, and it still works.
+	if (serverProtocol < MOVE_PROTOCOL) return changes;
 	const deletes = changes.filter((c) => c.op === "del");
 	const puts = changes.filter((c) => c.op === "put" && c.hash);
 	if (deletes.length === 0 || puts.length === 0) return changes;
@@ -92,7 +100,12 @@ export function pairRenames(changes: Pending[]): Pending[] {
 		if (pairedDel.has(c)) continue;
 		const from = moves.get(c);
 		if (from) {
-			out.push({ path: c.path, op: "move", from: from.path });
+			// hash is what the server must find at the source: If-Match for a
+			// rename. Without it a move refused because the source changed
+			// remotely is retried against a fresh base, the staleness check no
+			// longer fires, and the server's newer bytes land at the new path
+			// while this client records its own older snapshot there.
+			out.push({ path: c.path, op: "move", from: from.path, hash: from.hash });
 			continue;
 		}
 		out.push(c);

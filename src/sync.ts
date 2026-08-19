@@ -99,6 +99,8 @@ export class Sync {
 	 * cycle `state.base` is non-empty so the check cannot fire again anyway.
 	 */
 	private pairingResolved = false;
+	/** Protocol the server reported at the last cycle. 0 until one runs. */
+	private serverProtocol = 0;
 
 	constructor(
 		private app: App,
@@ -151,6 +153,10 @@ export class Sync {
 		// untouched.
 		const idx = await client.index();
 		checkVault(state, idx.vault);
+		// Remembered for pairRenames: a server that predates move rejects the
+		// unknown op and fails the whole push, so a rename must degrade to
+		// del+put there rather than take the sync cycle down with it.
+		this.serverProtocol = idx.protocol ?? 0;
 
 		// Then the first-connect hazard, which the identity check cannot see:
 		// it compares an ADOPTED vault name, and there is not one yet.
@@ -453,7 +459,7 @@ export class Sync {
 		// A deletion plus an addition of identical content is a rename. Folding
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
-		return pairRenames(out as Pending[]) as PendingChange[];
+		return pairRenames(out as Pending[], this.serverProtocol) as PendingChange[];
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {
@@ -671,6 +677,6 @@ type PendingChange = {
 
 function toChange(c: PendingChange): Change {
 	if (c.op === "del") return { path: c.path, op: "del" };
-	if (c.op === "move") return { path: c.path, op: "move", from: c.from };
+	if (c.op === "move") return { path: c.path, op: "move", from: c.from, hash: c.hash };
 	return { path: c.path, op: "put", hash: c.hash, size: c.size };
 }

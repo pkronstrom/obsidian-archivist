@@ -679,3 +679,87 @@ func TestAMoveReachesOtherDevicesAsDeleteAndAdd(t *testing.T) {
 		}
 	}
 }
+
+// The source of a move must obey the same exclusion as every other path.
+// Without it a write-scoped caller could publish .obsidian/secrets.json into
+// the synced vault and delete the original on the way.
+func TestMoveRefusesAnExcludedSource(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Put a file where the vault does not sync from.
+	if err := v.Write(".obsidian/secrets.json", []byte("{\"token\":\"hunter2\"}\n")); err != nil {
+		t.Skipf("cannot stage an excluded file: %v", err)
+	}
+	_, results, err := rc.Push(base, "mac",
+		[]Change{{Path: "leaked.md", Op: protocol.OpMove, From: ".obsidian/secrets.json"}})
+	if err != nil {
+		return // refused before applying is also correct
+	}
+	if results[0].Status != StatusRefused {
+		t.Errorf("moving an excluded path = %s, want refused", results[0].Status)
+	}
+	if exists(v, "leaked.md") {
+		t.Error("an excluded file was published into the vault")
+	}
+}
+
+// Hash on a move is If-Match for a rename. Without it, a move refused because
+// the source changed remotely is retried against a fresh base -- the staleness
+// check no longer fires, and the server's newer bytes are carried to the new
+// path while the client records its own older snapshot there.
+func TestMoveRefusesWhenTheSourceChangedSinceItWasRead(t *testing.T) {
+	rc, _, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "original\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := put(t, r, "a.md", "original\n").Hash
+
+	// Someone else changes a.md.
+	base2, _, err := rc.Push(base, "phone", []Change{put(t, r, "a.md", "newer\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, results, err := rc.Push(base2, "mac",
+		[]Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md", Hash: stale}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusRefused {
+		t.Errorf("move of a changed source = %s, want refused", results[0].Status)
+	}
+}
+
+// Device reaches the commit message from the client, so it needs the same
+// guard Via has -- otherwise it forges a trailer beside the unforgeable one.
+func TestDeviceCannotForgeATrailer(t *testing.T) {
+	rc, _, r := newRec(t)
+	_, _, err := rc.PushWithOrigin("",
+		Origin{Device: "mac\n\nToken: admin", Token: "real", Via: "api"},
+		[]Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := headMessage(t, r)
+	if strings.Count(msg, "Token:") != 1 {
+		t.Errorf("a forged Token trailer survived:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Token: real") {
+		t.Errorf("the real token label is missing:\n%s", msg)
+	}
+}
+
+// The filename promises both versions survive. A collision breaks exactly that.
+func TestConflictFragmentIsWideEnoughToKeepBoth(t *testing.T) {
+	name := conflictPath("notes/idea.md", "mac", []byte("theirs\n"))
+	// .conflict-mac-<frag>.md
+	i := strings.LastIndex(name, "-")
+	frag := name[i+1 : strings.LastIndex(name, ".")]
+	if len(frag) < 12 {
+		t.Errorf("fragment %q is %d chars; too few to promise keep-both", frag, len(frag))
+	}
+}

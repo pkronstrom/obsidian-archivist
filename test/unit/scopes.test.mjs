@@ -33,11 +33,14 @@ test("a token with neither verb names both", () => {
 import { pairRenames } from "../../dist-test/entry.mjs";
 
 test("a delete and an add of identical content become one move", () => {
-	const out = pairRenames([
-		{ path: "old.md", op: "del", hash: "h1" },
-		{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(1) },
-	]);
-	assert.deepEqual(out, [{ path: "new.md", op: "move", from: "old.md" }]);
+	const out = pairRenames(
+		[
+			{ path: "old.md", op: "del", hash: "h1" },
+			{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(1) },
+		],
+		2,
+	);
+	assert.deepEqual(out, [{ path: "new.md", op: "move", from: "old.md", hash: "h1" }]);
 });
 
 test("unrelated changes pass through untouched", () => {
@@ -45,7 +48,7 @@ test("unrelated changes pass through untouched", () => {
 		{ path: "a.md", op: "put", hash: "h1" },
 		{ path: "b.md", op: "del", hash: "h2" },
 	];
-	assert.deepEqual(pairRenames(input), input);
+	assert.deepEqual(pairRenames(input, 2), input);
 });
 
 // Guessing which of two identical deletions became the addition would move the
@@ -56,19 +59,35 @@ test("two deletions of the same content are left alone", () => {
 		{ path: "y.md", op: "del", hash: "h1" },
 		{ path: "z.md", op: "put", hash: "h1" },
 	];
-	assert.deepEqual(pairRenames(input), input);
+	assert.deepEqual(pairRenames(input, 2), input);
 });
 
 test("a delete with no matching add stays a delete", () => {
 	const input = [{ path: "gone.md", op: "del", hash: "h1" }];
-	assert.deepEqual(pairRenames(input), input);
+	assert.deepEqual(pairRenames(input, 2), input);
 });
 
 test("a move carries no content, because the server already has it", () => {
-	const [m] = pairRenames([
-		{ path: "old.md", op: "del", hash: "h1" },
-		{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(8) },
-	]);
+	const [m] = pairRenames(
+		[
+			{ path: "old.md", op: "del", hash: "h1" },
+			{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(8) },
+		],
+		2,
+	);
 	assert.equal(m.content, undefined);
-	assert.equal(m.hash, undefined);
+	// hash IS carried: it is If-Match for the rename.
+	assert.equal(m.hash, "h1");
+});
+
+// A server that predates move rejects the unknown op and fails the WHOLE push,
+// so a rename there must stay del+put rather than take the cycle down.
+test("an older server gets del+put, not move", () => {
+	const input = [
+		{ path: "old.md", op: "del", hash: "h1" },
+		{ path: "new.md", op: "put", hash: "h1" },
+	];
+	assert.deepEqual(pairRenames(input, 1), input);
+	assert.deepEqual(pairRenames(input, 0), input);
+	assert.equal(pairRenames(input, 2).length, 1);
 });

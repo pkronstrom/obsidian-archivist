@@ -307,6 +307,8 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	if via == "" {
 		via = "api"
 	}
+	// reconcile sanitises every trailer value on the way into the message, so
+	// this only trims the header to something sensible to log.
 	head, results, err := inst.Reconciler.PushWithOrigin(req.Base,
 		reconcile.Origin{Device: req.Device, Token: p.Label, Via: sanitiseVia(via)},
 		req.Changes)
