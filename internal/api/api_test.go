@@ -646,3 +646,67 @@ func TestIndexNamesTheVaultItServes(t *testing.T) {
 		t.Error("a server that will not say which vault it serves cannot be told from another")
 	}
 }
+
+// newServerWith builds a server over the same single-vault temp root the other
+// tests use, but with ONE token holding exactly p. Returns the handler and the
+// token to present.
+func newServerWith(t *testing.T, p auth.Principal) (http.Handler, string) {
+	t.Helper()
+	const tok = "scoped-test-token"
+	reg, _, _ := singleVaultRegistry(t, tok)
+	set := auth.NewSetForTest(map[string]auth.Principal{tok: p})
+	return New(reg, set), tok
+}
+
+// doAs is `do` with an explicit bearer token, for the scope tests. The
+// package-level `token` const cannot serve here: each of these tests needs a
+// DIFFERENT principal.
+func doAs(t *testing.T, h http.Handler, method, path string, body any, tok string) *httptest.ResponseRecorder {
+	t.Helper()
+	rdr := bytes.NewReader(nil)
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	}
+	if strings.HasPrefix(path, "/v1") && !strings.HasPrefix(path, "/v1/vaults") {
+		path = "/personal" + path
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// A read-only token must reach every GET and be refused at the write routes.
+func TestReadOnlyTokenIsRefusedAtWriteRoutes(t *testing.T) {
+	h, tok := newServerWith(t, auth.Principal{
+		Label: "reader", Vaults: []string{"*"}, Scopes: []string{auth.ScopeRead},
+	})
+	if w := doAs(t, h, "GET", "/v1/head", nil, tok); w.Code != 200 {
+		t.Errorf("GET /v1/head with a read token = %d, want 200", w.Code)
+	}
+	if w := doAs(t, h, "POST", "/v1/push", protocol.PushRequest{Device: "t"}, tok); w.Code != 403 {
+		t.Errorf("POST /v1/push with a read token = %d, want 403", w.Code)
+	}
+	if w := doAs(t, h, "PUT", "/v1/content/deadbeef", nil, tok); w.Code != 403 {
+		t.Errorf("PUT /v1/content with a read token = %d, want 403", w.Code)
+	}
+}
+
+// Every route in the table must name a scope. A route added without one would
+// otherwise default to open.
+func TestEveryRouteDeclaresAScope(t *testing.T) {
+	s := &Server{}
+	for _, rt := range s.routes() {
+		if rt.Path == "/healthz" {
+			continue // outside the auth middleware by design
+		}
+		if rt.Scope == "" {
+			t.Errorf("route %s %s declares no scope", rt.Method, rt.Path)
+		}
+		if !auth.ValidScope(rt.Scope) {
+			t.Errorf("route %s %s declares unknown scope %q", rt.Method, rt.Path, rt.Scope)
+		}
+	}
+}

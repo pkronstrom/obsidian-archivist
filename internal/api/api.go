@@ -60,12 +60,12 @@ func New(reg *vaults.Registry, tokens *auth.Set) http.Handler {
 	// Per-vault routes. {vault} is a single path segment, so a name containing
 	// a space is addressable percent-encoded -- My%20Own%20Vault -- which the
 	// plugin does automatically and a human writing curl must remember.
-	mux.HandleFunc("GET /{vault}/v1", s.withVault(s.index))
+	mux.HandleFunc("GET /{vault}/v1", s.withVault(auth.ScopeRead, s.index))
 	for _, rt := range s.routes() {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
 		}
-		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.handle))
+		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.handle))
 	}
 
 	// healthz sits OUTSIDE the auth middleware, deliberately and alone. It is
@@ -102,7 +102,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 // secret worth protecting here -- both vaults are the same person's -- and
 // collapsing them into one status makes a misconfigured token
 // indistinguishable from a typo, which is the failure people actually hit.
-func (s *Server) withVault(h func(http.ResponseWriter, *http.Request, *vaults.Instance)) http.HandlerFunc {
+func (s *Server) withVault(scope string, h func(http.ResponseWriter, *http.Request, *vaults.Instance)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("vault")
 		p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
@@ -119,6 +119,11 @@ func (s *Server) withVault(h func(http.ResponseWriter, *http.Request, *vaults.In
 		if !p.Opens(name) {
 			fail(w, http.StatusForbidden, protocol.CodeForbidden,
 				"this token does not open the vault "+name)
+			return
+		}
+		if scope != "" && !p.Can(scope) {
+			fail(w, http.StatusForbidden, protocol.CodeForbidden,
+				"this token does not hold the "+scope+" scope")
 			return
 		}
 		h(w, r, inst)
@@ -494,6 +499,11 @@ type route struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
 	Does   string `json:"does"`
+	// Scope is what a token must hold to call this route. It lives here rather
+	// than in a middleware table because this list already IS the mux: a route
+	// cannot exist without appearing here, so it cannot exist without declaring
+	// what it needs.
+	Scope  string `json:"-"`
 	handle func(http.ResponseWriter, *http.Request, *vaults.Instance)
 }
 
@@ -504,21 +514,26 @@ const maxWait = 120 * time.Second
 
 func (s *Server) routes() []route {
 	return []route{
-		{"GET", "/v1", "this list", nil},
-		{"GET", "/v1/head", "current commit hash", s.head},
-		{"GET", "/v1/snapshot", "every file at head: path, hash, size", s.snapshot},
-		{"GET", "/v1/changes", "what changed since ?since=<commit>; 409 if unknown", s.changes},
-		{"POST", "/v1/have", "{hashes:[...]} -> {missing:[...]}", s.have},
-		{"PUT", "/v1/content/{hash}", "upload content; 400 if it does not hash to {hash}", s.putContent},
-		{"GET", "/v1/content/{hash}", "download content by hash", s.getContent},
-		{"POST", "/v1/push", "{base,device,changes:[...]} apply a change set", s.push},
-		{"GET", "/v1/events", "SSE:one per commit with changed paths, kind, size", s.events},
-		{"GET", "/v1/wait", "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", s.wait},
-		{"GET", "/v1/history", "?path=&limit= revisions that touched a path", s.history},
-		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", s.at},
-		{"GET", "/v1/check", "working tree versus head", s.check},
-		{"GET", "/v1/export", "consistent archive of history; ?gzip=1 to compress", s.export},
-		{"GET", "/healthz", "liveness, no auth", nil},
+		{"GET", "/v1", "this list", auth.ScopeRead, nil},
+		{"GET", "/v1/head", "current commit hash", auth.ScopeRead, s.head},
+		{"GET", "/v1/snapshot", "every file at head: path, hash, size", auth.ScopeRead, s.snapshot},
+		{"GET", "/v1/changes", "what changed since ?since=<commit>; 409 if unknown", auth.ScopeRead, s.changes},
+		{"POST", "/v1/have", "{hashes:[...]} -> {missing:[...]}", auth.ScopeRead, s.have},
+		// Staging a blob is a WRITE. Nothing references it until a push, but an
+		// unreferenced blob still consumes disk, and the write guards count
+		// writes per path at push time -- they never see an orphan.
+		{"PUT", "/v1/content/{hash}", "upload content; 400 if it does not hash to {hash}", auth.ScopeWrite, s.putContent},
+		{"GET", "/v1/content/{hash}", "download content by hash", auth.ScopeRead, s.getContent},
+		// Delete is an op INSIDE the change set, so this route needs write and
+		// the handler additionally checks delete. See push.
+		{"POST", "/v1/push", "{base,device,changes:[...]} apply a change set", auth.ScopeWrite, s.push},
+		{"GET", "/v1/events", "SSE:one per commit with changed paths, kind, size", auth.ScopeRead, s.events},
+		{"GET", "/v1/wait", "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", auth.ScopeRead, s.wait},
+		{"GET", "/v1/history", "?path=&limit= revisions that touched a path", auth.ScopeRead, s.history},
+		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", auth.ScopeRead, s.at},
+		{"GET", "/v1/check", "working tree versus head", auth.ScopeRead, s.check},
+		{"GET", "/v1/export", "consistent archive of history; ?gzip=1 to compress", auth.ScopeRead, s.export},
+		{"GET", "/healthz", "liveness, no auth", "", nil},
 	}
 }
 
