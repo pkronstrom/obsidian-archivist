@@ -138,7 +138,7 @@ a private network. There is one bearer token and no rate limiting, lockout, or
 audit log.
 
 **Conflicts are resolved, not prevented.** Edit the same lines on two devices and
-you get both versions — the server's, plus yours in a `.conflict-<device>-<time>`
+you get both versions — the server's, plus yours in a `.conflict-<device>-<fragment>`
 file next to it. Nothing is lost, but you resolve it by hand.
 
 **Editing on the server is last-writer-wins.** A push from Obsidian carries a

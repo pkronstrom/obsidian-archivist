@@ -296,7 +296,7 @@ version of every file.
 **Pushes carry a base, so they can be merged.** If the same path changed on the
 server since that base, the server three-way merges against the content at the
 base. Clean merges are committed. Otherwise the server's version stays put and
-the client's copy lands beside it as `notes/idea.conflict-mac-20260816T093012.md`
+the client's copy lands beside it as `notes/idea.conflict-mac-a1b2c3.md`
 — an ordinary note, so it syncs everywhere and can be resolved on a phone by
 editing and deleting it.
 
@@ -408,7 +408,7 @@ The server resolves them, against a real merge base.
 
 Edits to different parts of a note merge silently. Edits to the same lines keep
 the server's version at the original path and write yours to
-`notes/idea.conflict-phone-20260816T093012.md` — an ordinary note, so it syncs
+`notes/idea.conflict-phone-a1b2c3.md` — an ordinary note, so it syncs
 everywhere and you resolve it by editing and deleting. Binary files are never
 merged; both versions are kept.
 
