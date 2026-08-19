@@ -262,11 +262,17 @@ func Load(path, fallback string) (*Set, error) {
 		return nil, fmt.Errorf("auth: parsing %s: %w", path, err)
 	}
 	if f.V != FormatVersion {
+		// A v1 file carries no "v" key at all, so it arrives here as 0. Saying
+		// "v0" would send the operator looking for a version that never existed.
+		found := fmt.Sprintf("v%d", f.V)
+		if f.V == 0 {
+			found = "the original unversioned format"
+		}
 		return nil, fmt.Errorf(
-			"auth: %s is format v%d, this server needs v%d. v1 stored tokens in "+
+			"auth: %s is %s, this server needs v%d. The old format stored tokens in "+
 				"plaintext and cannot be converted -- re-mint each one with "+
 				"`archivist-server token add` and update the devices that hold them",
-			path, f.V, FormatVersion)
+			path, found, FormatVersion)
 	}
 	if len(f.Tokens) == 0 {
 		return nil, fmt.Errorf("auth: %s defines no tokens", path)

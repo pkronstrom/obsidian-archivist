@@ -38,10 +38,22 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/guard"
 	"github.com/pkronstrom/obsidian-archivist/internal/logging"
 	"github.com/pkronstrom/obsidian-archivist/internal/notify"
+	"github.com/pkronstrom/obsidian-archivist/internal/tokencli"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 )
 
 func main() {
+	// Token administration is offline by design: it needs shell access to this
+	// host, never a network route. Dispatched before config.Load because it
+	// takes its own flags and needs no vault root.
+	if len(os.Args) > 1 && tokencli.Handles(os.Args[1]) {
+		if err := tokencli.Run(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "archivist:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Subcommands are dispatched before anything else, so they work against a
 	// stopped server -- which is exactly when `check` and `export` matter.
 	if len(os.Args) > 1 && cli.Handles(os.Args[1]) {
@@ -135,6 +147,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if tokens.IsBootstrap() {
+		log.Warn("running on ARCHIVIST_TOKEN: one token opens every vault, with read and write. " +
+			"Mint per-device tokens with `archivist-server token add` and set ARCHIVIST_TOKENS")
+	}
 
 	n := notify.New(cfg.NtfyURL, time.Now, log)
 
@@ -197,6 +213,15 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Re-read the tokens file when it changes, so `token add` is not an outage.
+	// Watching the directory rather than the file is deliberate; see the method.
+	//
+	// After defer stop(), not before: an error here returns from run(), and the
+	// signal handler registered a line earlier would otherwise never be undone.
+	if err := tokens.Watch(ctx, cfg.TokensFile, log); err != nil {
+		return fmt.Errorf("watching the tokens file: %w", err)
+	}
 
 	if cfg.Watch {
 		// One watcher per vault. A registry that opened repositories but

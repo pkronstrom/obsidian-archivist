@@ -163,6 +163,11 @@ func TestAVersionOneFileIsARefusalToStart(t *testing.T) {
 	if !strings.Contains(err.Error(), "token add") {
 		t.Errorf("the error must tell the operator how to recover, got: %v", err)
 	}
+	// A v1 file has no "v" key, so it decodes as 0. Reporting "v0" would send
+	// the reader looking for a version that never shipped.
+	if strings.Contains(err.Error(), "v0") {
+		t.Errorf("the error names a version that never existed: %v", err)
+	}
 }
 
 func TestRevokeRemovesATokenFromTheSet(t *testing.T) {
