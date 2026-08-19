@@ -43,7 +43,10 @@ func singleVaultRegistry(t *testing.T, tok string) (*vaults.Registry, *auth.Set,
 	}
 	t.Cleanup(func() { reg.Close() })
 	set := auth.NewSetForTest(map[string]auth.Principal{
-		tok: {Label: "test", Vaults: []string{"*"}, CanCreateVaults: true},
+		tok: {
+			Label: "test", Vaults: []string{"*"}, CanCreateVaults: true,
+			Scopes: []string{auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete},
+		},
 	})
 	return reg, set, work
 }
