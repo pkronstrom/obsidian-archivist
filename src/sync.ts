@@ -50,6 +50,17 @@ type RemoteOutcome = "applied" | "skipped" | "deferred";
  * the same as a server-created one. Content is not hashed here: the server
  * disambiguates by content, and this path only ever produces one copy.
  */
+/**
+ * conflictName names the local copy set aside during a re-bootstrap.
+ *
+ * It keeps a timestamp where the SERVER's equivalent dropped one, and the
+ * asymmetry is deliberate rather than an oversight. The server names a conflict
+ * from the content it is holding, so a hash fragment gives uniqueness and
+ * identical content collapses onto one file. Here there is no content in hand —
+ * this runs before anything is read — so the timestamp is the only thing
+ * keeping two rescues of the same path apart. Removing it would let the second
+ * overwrite the first, which is the one thing a rescue must not do.
+ */
 export function conflictName(path: string, device: string): string {
 	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
 	const safe = (device || "device").replace(/[^A-Za-z0-9-]/g, "-");
