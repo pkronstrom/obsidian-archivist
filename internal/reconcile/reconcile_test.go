@@ -480,3 +480,70 @@ func TestFenceWidensPastCodeBlocksInTheNote(t *testing.T) {
 		t.Errorf("closing fence did not widen to match:\n%s", got)
 	}
 }
+
+// The commit message must record who pushed, verified, and how it arrived.
+// device is client-supplied and forgeable; the token label is not, because the
+// server resolved it from the credential that was actually presented.
+func TestPushRecordsVerifiedProvenance(t *testing.T) {
+	rc, _, r := newRec(t)
+	_, _, err := rc.PushWithOrigin("", Origin{Device: "work-mac", Token: "mac", Via: "api"},
+		[]Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := headMessage(t, r)
+	for _, want := range []string{"sync from work-mac", "Token: mac", "Via: api"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("commit message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// Push keeps its old shape so the existing call sites do not move; it records
+// no verified origin, which is honest rather than wrong.
+func TestPushWithoutAnOriginOmitsTheTrailers(t *testing.T) {
+	rc, _, r := newRec(t)
+	if _, _, err := rc.Push("", "work-mac", []Change{put(t, r, "a.md", "hello\n")}); err != nil {
+		t.Fatal(err)
+	}
+	if msg := headMessage(t, r); strings.Contains(msg, "Token:") {
+		t.Errorf("a push with no known principal claimed one:\n%s", msg)
+	}
+}
+
+func headMessage(t *testing.T, r *repo.Repo) string {
+	t.Helper()
+	head, err := r.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := r.Message(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return msg
+}
+
+// The name carries what a name must: which device, and enough of the content to
+// keep two different conflicts apart. The timestamp git already holds is not
+// part of that.
+func TestConflictNameIsShortAndStillUnique(t *testing.T) {
+	name := conflictPath("notes/idea.md", "work-mac", []byte("theirs\n"))
+	if strings.Contains(name, "T") && strings.Contains(name, "2026") {
+		t.Errorf("the timestamp is back in the filename: %q", name)
+	}
+	if !strings.HasPrefix(name, "notes/idea.conflict-work-mac-") {
+		t.Errorf("unexpected shape: %q", name)
+	}
+	if !strings.HasSuffix(name, ".md") {
+		t.Errorf("lost the extension, so editors stop recognising it: %q", name)
+	}
+	// Different content must not collide; identical content must collapse.
+	other := conflictPath("notes/idea.md", "work-mac", []byte("different\n"))
+	if other == name {
+		t.Error("two different conflicts got one filename; the keep-both promise breaks")
+	}
+	if again := conflictPath("notes/idea.md", "work-mac", []byte("theirs\n")); again != name {
+		t.Error("identical content produced two files instead of collapsing")
+	}
+}

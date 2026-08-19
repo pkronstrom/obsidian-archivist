@@ -50,7 +50,11 @@ type Client struct {
 	vault  string
 	token  string
 	device string
-	http   *http.Client
+	// via, when set, is sent as X-Archivist-Via so the server can record HOW a
+	// push arrived. The relay sets it; a device pushing directly leaves it
+	// empty and the server records "api".
+	via  string
+	http *http.Client
 
 	// compat caches the last compatibility verdict. A startup-only check is not
 	// enough: the relay is explicitly allowed to start while the server is down,
@@ -88,6 +92,16 @@ func New(baseURL, token, device string) *Client {
 }
 
 func (c *Client) Device() string { return c.device }
+
+// WithVia returns a copy that declares how its calls reached the relay.
+//
+// A copy for the same reason WithVault is: one relay serves REST and MCP over
+// one connection pool, and they must not race on a shared field.
+func (c *Client) WithVia(via string) *Client {
+	cp := *c
+	cp.via = via
+	return &cp
+}
 
 // WithVault returns a copy of the client addressing a different vault.
 //
@@ -156,6 +170,9 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.via != "" {
+		req.Header.Set(protocol.HeaderVia, c.via)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

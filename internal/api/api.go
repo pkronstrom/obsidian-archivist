@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
@@ -197,6 +198,22 @@ func (s *Server) have(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	writeJSON(w, protocol.HaveResponse{Missing: missing})
 }
 
+// sanitiseVia bounds a header a caller controls before it lands in git history
+// forever. Newlines would forge extra trailers; length keeps one request from
+// bloating every commit.
+func sanitiseVia(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 32 {
+		s = s[:32]
+	}
+	return strings.TrimSpace(s)
+}
+
 // statusFor maps a guard's protocol code to an HTTP status. 429 tells a
 // client to back off and retry, which is what a quarantine or a throttle
 // wants; 507 says the server is out of room, which no retry will fix.
@@ -282,7 +299,17 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 		}
 	}
 
-	head, results, err := inst.Reconciler.Push(req.Base, req.Device, req.Changes)
+	// The label comes from the principal the middleware resolved, so it names
+	// the credential that was actually presented rather than whatever the
+	// client claimed to be. That is the whole point: device is forgeable, this
+	// is not.
+	via := r.Header.Get(protocol.HeaderVia)
+	if via == "" {
+		via = "api"
+	}
+	head, results, err := inst.Reconciler.PushWithOrigin(req.Base,
+		reconcile.Origin{Device: req.Device, Token: p.Label, Via: sanitiseVia(via)},
+		req.Changes)
 	if err != nil {
 		var pe *protocol.Error
 		switch {

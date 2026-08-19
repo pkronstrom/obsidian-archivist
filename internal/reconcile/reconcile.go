@@ -114,7 +114,52 @@ func (rc *Reconciler) WasOurWrite(path string, content []byte) bool {
 }
 
 // Push applies a client's change set, which was computed against base.
+// Origin is who pushed, and how it reached us.
+//
+// Device is client-supplied and therefore forgeable -- it is a label the sender
+// chose. Token is not: the server resolved it from the credential that was
+// actually presented, so it is the only part of a commit's provenance that
+// cannot be lied about. Via records the road taken, which the relay sets on the
+// caller's behalf because only it knows whether a request came in over REST or
+// MCP.
+type Origin struct {
+	Device string
+	Token  string
+	Via    string
+}
+
+// message renders the commit subject and its provenance trailers.
+//
+// Trailers rather than a longer subject: the subject is what `git log --oneline`
+// and every listing shows, and conflict filenames are already long enough
+// without provenance in them too. An origin with nothing verified produces the
+// bare subject, which is honest -- claiming a token we did not resolve would be
+// worse than omitting it.
+func (o Origin) message(prefix string) string {
+	msg := prefix + " " + o.Device
+	var trailers []string
+	if o.Token != "" {
+		trailers = append(trailers, "Token: "+o.Token)
+	}
+	if o.Via != "" {
+		trailers = append(trailers, "Via: "+o.Via)
+	}
+	if len(trailers) == 0 {
+		return msg
+	}
+	return msg + "\n\n" + strings.Join(trailers, "\n") + "\n"
+}
+
+// Push applies a change set with no verified origin. Kept for the many callers
+// -- tests, mostly -- that have no principal to name.
 func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Result, error) {
+	return rc.PushWithOrigin(base, Origin{Device: device}, changes)
+}
+
+// PushWithOrigin applies a change set and records who sent it.
+func (rc *Reconciler) PushWithOrigin(base string, origin Origin, changes []Change) (string, []Result, error) {
+	device := origin.Device
+
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
@@ -193,7 +238,7 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 			// failure mid-batch. Commit what landed rather than leaving the
 			// tree dirty and unrecorded: the watcher would commit it anyway,
 			// and an unrecorded change is worse than a recorded partial one.
-			if _, cerr := rc.r.Commit("partial push from " + device); cerr != nil {
+			if _, cerr := rc.r.Commit(origin.message("partial push from")); cerr != nil {
 				return "", nil, fmt.Errorf("%w (and the partial state could not be committed: %v)", err, cerr)
 			}
 			return "", nil, err
@@ -201,7 +246,7 @@ func (rc *Reconciler) Push(base, device string, changes []Change) (string, []Res
 		results = append(results, res)
 	}
 
-	newHead, err := rc.r.Commit(fmt.Sprintf("sync from %s", device))
+	newHead, err := rc.r.Commit(origin.message("sync from"))
 	if err != nil {
 		return "", nil, err
 	}
@@ -463,18 +508,23 @@ func (rc *Reconciler) resultFor(res Result, content []byte) Result {
 }
 
 // conflictPath keeps the original extension so editors still recognise the
-// file: notes/idea.md -> notes/idea.conflict-mac-20260816T093012.md
+// file: notes/idea.md -> notes/idea.conflict-mac-a1b2c3.md
 func conflictPath(path, device string, content []byte) string {
 	// Device and second alone are not unique: two conflicts on the same path
 	// from the same relay inside one second would collide, and the second copy
 	// would overwrite the first -- breaking the keep-both promise. A short
 	// content fragment makes identical content collapse (which is correct) and
 	// different content diverge (which is the point).
-	stamp := time.Now().UTC().Format("20060102T150405")
+	// No timestamp. It used to carry one -- .conflict-mac-20260816T093012-a1b2c3
+	// -- which made an already-awkward filename twice as long for information
+	// git already holds: the commit that created the file is timestamped, and
+	// `history` reports it. The content fragment alone gives what the NAME
+	// needs, which is uniqueness: identical content collapses onto one file
+	// (correct) and different content diverges (the point).
 	frag := vault.Hash(content)[7:13]
 	dot := strings.LastIndex(path, ".")
 	slash := strings.LastIndex(path, "/")
-	suffix := fmt.Sprintf(".conflict-%s-%s-%s", sanitise(device), stamp, frag)
+	suffix := fmt.Sprintf(".conflict-%s-%s", sanitise(device), frag)
 	if dot > slash {
 		return path[:dot] + suffix + path[dot:]
 	}

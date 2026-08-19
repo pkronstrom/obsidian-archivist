@@ -94,7 +94,7 @@ func (p *Pool) MCPServer(token, name, version string) *mcp.Server {
 	if s, ok := p.servers[token]; ok {
 		return s
 	}
-	s := NewMCPServer(p.forLocked(token), name, version)
+	s := NewMCPServer(p.forLocked(token).WithVia("relay-mcp"), name, version)
 	p.servers[token] = s
 	return s
 }

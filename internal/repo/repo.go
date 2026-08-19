@@ -220,6 +220,23 @@ func (r *Repo) Commit(msg string) (string, error) {
 	return h.String(), nil
 }
 
+// Message is the FULL commit message at rev, trailers included.
+//
+// History deliberately reports only the first line, because a listing wants a
+// subject. Provenance lives in the trailers beneath it, so anything reading
+// those needs this instead.
+func (r *Repo) Message(rev string) (string, error) {
+	h := plumbing.NewHash(r.translate(rev))
+	if h.IsZero() {
+		return "", fmt.Errorf("%w: %q", ErrUnknownBase, rev)
+	}
+	c, err := r.git.CommitObject(h)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q", ErrUnknownBase, rev)
+	}
+	return c.Message, nil
+}
+
 func (r *Repo) tree(rev string) (*object.Tree, error) {
 	if rev == "" {
 		return nil, nil

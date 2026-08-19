@@ -857,3 +857,14 @@ func TestIndexTakesItsScopeFromTheRouteTable(t *testing.T) {
 		t.Errorf("an unknown route resolved to %q; it must not silently grant access", got)
 	}
 }
+
+// A caller cannot forge extra trailers by stuffing newlines into the header.
+func TestViaHeaderCannotForgeTrailers(t *testing.T) {
+	got := sanitiseVia("relay-rest\nToken: admin")
+	if strings.Contains(got, "\n") {
+		t.Errorf("newlines survived sanitising: %q", got)
+	}
+	if len(sanitiseVia(strings.Repeat("x", 200))) > 32 {
+		t.Error("an over-long Via was not bounded")
+	}
+}

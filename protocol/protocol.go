@@ -37,6 +37,15 @@ const (
 	KindBinary = "binary"
 )
 
+// HeaderVia names how a push reached the server. Set by the relay on a caller's
+// behalf, because only it knows whether the request arrived over REST or MCP;
+// anything pushing directly leaves it unset and is recorded as "api".
+//
+// It is a HINT, not a credential. A caller can set it to anything, exactly like
+// Device -- which is why the token label sits beside it in the trailers and is
+// the part that cannot be forged.
+const HeaderVia = "X-Archivist-Via"
+
 // Per-path outcomes of a push.
 //
 // Only StatusApplied means the server now holds exactly the bytes that were

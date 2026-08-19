@@ -93,7 +93,9 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ctxClient, h.pool.For(token))
+		// relay-rest, so a commit made through this surface is distinguishable
+		// from one an agent made over MCP or a device made directly.
+		ctx := context.WithValue(r.Context(), ctxClient, h.pool.For(token).WithVia("relay-rest"))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
