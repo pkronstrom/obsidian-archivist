@@ -266,18 +266,33 @@ way out.
 A vault directory added while the server runs appears without a restart —
 discovery re-scans behind a short cache.
 
-Per-vault tokens live in a JSON file named by `ARCHIVIST_TOKENS`:
+### Minting tokens
 
-```json
-{
-  "<token>": {"label": "mac",   "vaults": ["personal"]},
-  "<token>": {"label": "admin", "vaults": ["*"], "canCreateVaults": true}
-}
+Tokens live in the file named by `ARCHIVIST_TOKENS`, and are minted rather than
+hand-written — they are stored hashed, so there is nothing to type in by hand:
+
+```bash
+docker compose exec archivist archivist-server token add \
+  -label mac -vaults personal -scopes read,write
+
+docker compose exec archivist archivist-server token list
+docker compose exec archivist archivist-server token revoke <id-prefix>
 ```
 
-Without it, `ARCHIVIST_TOKEN` opens **every** vault. That is the one-vault
-convenience, not isolation — it is exactly what a leaked agent token would give
-away — and the server says so once at startup.
+A token carries the vaults it opens and the verbs it holds: `read`, `write`,
+`delete`. `-expires-in 720h` gives it a deadline; `-can-create-vaults` lets it
+create one.
+
+`token add` prints the secret **once**. It is stored as a sha256 hash and cannot
+be read back — losing it means minting another. The running server picks up the
+change without a restart.
+
+A token without `write` must not go into the Obsidian plugin: it will sync down
+and then fail on the first save. `token add` warns when it mints one.
+
+Without `ARCHIVIST_TOKENS`, `ARCHIVIST_TOKEN` opens **every** vault with read and
+write. That is the one-vault convenience, not isolation — it is exactly what a
+leaked agent token would give away — and the server says so once at startup.
 
 In the plugin, **Server URL** and **Vault** are two separate fields. A device
 switches vault by editing one of them. There is deliberately no compatibility

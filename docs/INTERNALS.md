@@ -107,6 +107,44 @@ curl -H "$AUTH" -d "{\"base\":\"$BASE\",\"device\":\"mac\",\"changes\":[
 the client is from another repository or predates a history rewrite, and its
 recovery is to re-bootstrap from `/snapshot`, not to retry.
 
+## Tokens and scopes
+
+A token carries the vaults it opens and the verbs it holds. Verbs are `read`,
+`write` and `delete`; there is no wildcard for verbs, deliberately.
+
+| verb | covers |
+|---|---|
+| `read` | every GET, plus `POST /v1/have`. Includes `/v1/export`, which hands over the entire history in one call. |
+| `write` | `POST /v1/push` and `PUT /v1/content/{hash}`. Staging a blob counts: an unreferenced blob still consumes disk, and the write guards count writes per path at push time — they never see an orphan. |
+| `delete` | a `del` op inside a push. Not a route — checked in the push handler over the whole change set, before anything is staged. |
+
+The scope a route needs is a field on the `routes()` table, which is also what
+builds the mux. A route therefore cannot exist without declaring what it needs.
+
+A rename is a `del` plus a `put`, so a token with `write` but not `delete`
+cannot rename. That is a known limitation, resolved by a `move` op in a later
+change.
+
+Tokens are stored as sha256 hashes in the tokens file, so nothing in it can be
+replayed. Lookup hashes the presented token and does a map lookup, where the old
+format compared every entry in constant time — not a regression, because
+recovering a token from lookup timing would now mean inverting the hash rather
+than guessing a string one byte at a time.
+
+The file is format v2. The original unversioned format held tokens in plaintext
+and is a startup error: converting would require reading the secrets the format
+exists to stop storing, so each token is re-minted once instead.
+
+The file is re-read when it changes — fsnotify on its **directory**, not the
+file, because minting renames a new file over the old one and replaces the
+inode. A file that fails to parse is logged and ignored and the running table is
+kept, so a typo cannot lock every device out at once.
+
+Minting is offline only, via `archivist-server token add`. There is no HTTP
+route that mints. The server is internet-facing behind Caddy, and a mint
+endpoint would let a leaked admin token issue itself a successor that survives
+revoking the original.
+
 ## Backups
 
 **Do not snapshot the git directory with a file-level backup tool.** Git writes
