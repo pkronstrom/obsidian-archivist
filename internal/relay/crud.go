@@ -121,10 +121,27 @@ func (h *Handler) vaultFor(r *http.Request) (*client.Client, error) {
 	return c.WithVault(name), nil
 }
 
+// vaultForError reports a failure to pick the caller's vault.
+//
+// Resolving the default asks the SERVER what this token opens, so the failure
+// is often the server's verdict on the token itself. Flattening that to 400
+// told a caller with a dead credential their request was malformed, which sent
+// them looking in the wrong place -- observed on the first deploy of
+// pass-through. An upstream answer is forwarded with its own status; only a
+// genuine ambiguity ("your token opens three vaults") is a 400.
+func (h *Handler) vaultForError(w http.ResponseWriter, err error) {
+	var e *client.Error
+	if errors.As(err, &e) {
+		h.relayError(w, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+}
+
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 	c, err := h.vaultFor(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		h.vaultForError(w, err)
 		return
 	}
 	p := r.PathValue("path")
@@ -147,7 +164,7 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 	c, err := h.vaultFor(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		h.vaultForError(w, err)
 		return
 	}
 	p := r.PathValue("path")
@@ -184,7 +201,7 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	c, err := h.vaultFor(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		h.vaultForError(w, err)
 		return
 	}
 	p := r.PathValue("path")
@@ -248,7 +265,7 @@ func httpStatus(res protocol.Result) int {
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	c, err := h.vaultFor(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		h.vaultForError(w, err)
 		return
 	}
 	files, err := c.List(r.Context(), r.URL.Query().Get("prefix"))
