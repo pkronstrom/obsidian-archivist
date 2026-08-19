@@ -13,20 +13,50 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
+
+// Scope catalog. Three verbs, deliberately no wildcard: a token that opens
+// every vault is a convenience worth having, a token that can do everything is
+// exactly the default this package exists to replace.
+//
+// There is no separate export or history scope. Both are folded into read for
+// now; export is the first thing to split if an agent token ever leaks, because
+// it hands over the entire vault history in one call.
+const (
+	ScopeRead   = "read"
+	ScopeWrite  = "write"
+	ScopeDelete = "delete"
+)
+
+// ValidScope reports whether s is in the catalog. Minting rejects anything
+// else, so a typo in a scope name fails at mint time rather than silently
+// granting nothing at request time.
+func ValidScope(s string) bool {
+	switch s {
+	case ScopeRead, ScopeWrite, ScopeDelete:
+		return true
+	}
+	return false
+}
 
 // Principal is what one token may do.
 type Principal struct {
-	// Label names the holder in logs. Never a secret.
+	// Label names the holder in logs and in `token list`. Never a secret.
 	Label string `json:"label,omitempty"`
 	// Vaults this token opens. "*" means every vault.
 	Vaults []string `json:"vaults"`
+	// Scopes this token holds, from the catalog above. No wildcard.
+	Scopes []string `json:"scopes"`
 	// CanCreateVaults is off unless asked for, and is never granted to a relay
-	// or agent token. An API that can create state outside what it was
-	// configured with is a much larger surface than one that reads and writes
-	// notes -- bounded here to a directory INSIDE $ROOT/vaults, which is the
-	// property that made server-side creation acceptable at all.
+	// or agent token. It is a capability over the SERVER rather than over a
+	// vault, which is why it is a boolean here and not a scope.
 	CanCreateVaults bool `json:"canCreateVaults,omitempty"`
+	// CreatedAt is unix seconds, for `token list`.
+	CreatedAt int64 `json:"createdAt,omitempty"`
+	// ExpiresAt is unix seconds; 0 means never. Checked on every lookup, so an
+	// expired token stops working without anyone editing the file.
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
 }
 
 func (p Principal) Opens(vault string) bool {
@@ -36,6 +66,22 @@ func (p Principal) Opens(vault string) bool {
 		}
 	}
 	return false
+}
+
+// Can reports whether this token holds a scope. Exact match only.
+func (p Principal) Can(scope string) bool {
+	for _, s := range p.Scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// Expired reports whether this token is past its deadline. A zero ExpiresAt
+// never expires.
+func (p Principal) Expired(now time.Time) bool {
+	return p.ExpiresAt != 0 && now.Unix() > p.ExpiresAt
 }
 
 // Visible filters a list of vault names to those this token opens, preserving
