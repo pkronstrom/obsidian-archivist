@@ -1,7 +1,18 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
 
 export type Entry = { hash: string; size: number };
-export type Change = { path: string; op: "put" | "del"; hash?: string; size?: number };
+export type Change = {
+	path: string;
+	/**
+	 * move renames a path and carries `from` instead of a hash: the content is
+	 * already on the server. It needs only the write scope, where the del+put a
+	 * rename used to take needed delete as well.
+	 */
+	op: "put" | "del" | "move";
+	hash?: string;
+	size?: number;
+	from?: string;
+};
 export type Result = {
 	path: string;
 	status: "applied" | "merged" | "conflict" | "refused";

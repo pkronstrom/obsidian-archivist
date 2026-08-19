@@ -33,3 +33,69 @@ export function scopeWarning(scopes: string[] | undefined, label?: string): stri
 		`${missing.join(" and ")}. Mint one with read and write.`
 	);
 }
+
+/** One pending local change, before it becomes a wire Change. */
+export type Pending = {
+	path: string;
+	op: "put" | "del" | "move";
+	hash?: string;
+	from?: string;
+	content?: ArrayBuffer;
+};
+
+/**
+ * pairRenames folds a deletion and an addition of identical content into one
+ * move.
+ *
+ * A rename otherwise arrives as del+put, which needs the delete scope — so an
+ * agent token holding only read and write could not rename a note at all. The
+ * move op exists to make renaming a write, and this is where the plugin
+ * notices one happened.
+ *
+ * Pairing is by exact hash, and only ever one-to-one: two deletions of the same
+ * content are ambiguous, and guessing which one became the addition would move
+ * the wrong file. Ambiguous groups are left as del+put, which still works for
+ * any token that can delete.
+ *
+ * The content is dropped from a paired put, because the server already has it —
+ * that is what makes a move preserving rather than destructive.
+ */
+export function pairRenames(changes: Pending[]): Pending[] {
+	const deletes = changes.filter((c) => c.op === "del");
+	const puts = changes.filter((c) => c.op === "put" && c.hash);
+	if (deletes.length === 0 || puts.length === 0) return changes;
+
+	// A hash is only usable as a pairing key when exactly one deletion and one
+	// addition carry it. Anything else is ambiguous.
+	const byHash = new Map<string, { dels: Pending[]; puts: Pending[] }>();
+	for (const d of deletes) {
+		if (!d.hash) continue;
+		const e = byHash.get(d.hash) ?? { dels: [], puts: [] };
+		e.dels.push(d);
+		byHash.set(d.hash, e);
+	}
+	for (const p of puts) {
+		const e = byHash.get(p.hash as string);
+		if (e) e.puts.push(p);
+	}
+
+	const pairedDel = new Set<Pending>();
+	const moves = new Map<Pending, Pending>();
+	for (const { dels, puts: ps } of byHash.values()) {
+		if (dels.length !== 1 || ps.length !== 1) continue;
+		pairedDel.add(dels[0]);
+		moves.set(ps[0], dels[0]);
+	}
+
+	const out: Pending[] = [];
+	for (const c of changes) {
+		if (pairedDel.has(c)) continue;
+		const from = moves.get(c);
+		if (from) {
+			out.push({ path: c.path, op: "move", from: from.path });
+			continue;
+		}
+		out.push(c);
+	}
+	return out;
+}

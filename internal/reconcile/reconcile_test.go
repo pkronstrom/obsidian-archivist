@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -545,5 +546,136 @@ func TestConflictNameIsShortAndStillUnique(t *testing.T) {
 	}
 	if again := conflictPath("notes/idea.md", "work-mac", []byte("theirs\n")); again != name {
 		t.Error("identical content produced two files instead of collapsing")
+	}
+}
+
+// A rename is del+put, so a token with write but not delete could not rename.
+// move exists to make renaming a WRITE: content survives at the new path, which
+// is the property that separates it from a deletion.
+func TestMoveRenamesAPathAndPreservesContent(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, results, err := rc.Push(base, "mac",
+		[]Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusApplied {
+		t.Fatalf("move = %s (%s)", results[0].Status, results[0].Reason)
+	}
+	if exists(v, "a.md") {
+		t.Error("the old path survived the move")
+	}
+	got, err := v.Read("b.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello\n" {
+		t.Errorf("content at the new path = %q, want the original", got)
+	}
+}
+
+// The bypass this op must not become: moving something that is not there would
+// let a caller name any path and have it vanish.
+func TestMoveRefusesWhenTheSourceIsMissing(t *testing.T) {
+	rc, _, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push(base, "mac",
+		[]Change{{Path: "c.md", Op: protocol.OpMove, From: "nope.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusRefused {
+		t.Errorf("moving a missing path = %s, want refused", results[0].Status)
+	}
+}
+
+// Overwriting via move would destroy the target's content, which is exactly the
+// destructive act move is supposed not to be.
+func TestMoveRefusesToOverwriteAnExistingPath(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{
+		put(t, r, "a.md", "one\n"),
+		put(t, r, "b.md", "two\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push(base, "mac",
+		[]Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusRefused {
+		t.Errorf("move onto an existing path = %s, want refused", results[0].Status)
+	}
+	got, _ := v.Read("b.md")
+	if string(got) != "two\n" {
+		t.Errorf("the target was overwritten: %q", got)
+	}
+	if !exists(v, "a.md") {
+		t.Error("the source was removed even though the move was refused")
+	}
+}
+
+// Same rule as delete: a client with no base cannot know what exists, so it
+// cannot be trusted to say what should move.
+func TestMoveRefusesWithoutABase(t *testing.T) {
+	rc, _, r := newRec(t)
+	if _, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "hello\n")}); err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := rc.Push("", "mac",
+		[]Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusRefused {
+		t.Errorf("baseless move = %s, want refused", results[0].Status)
+	}
+}
+
+// A move must be legible to a client that has never heard of the op.
+//
+// /v1/changes diffs trees, so a rename surfaces as a deletion and an addition.
+// That is what lets an older plugin keep working against a server that speaks
+// move: it never sees the op, only its effect.
+func TestAMoveReachesOtherDevicesAsDeleteAndAdd(t *testing.T) {
+	rc, _, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "hello\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _, err := rc.Push(base, "mac",
+		[]Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := r.Changes(base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := map[string]string{}
+	for _, c := range changes {
+		ops[c.Path] = c.Op
+	}
+	if ops["a.md"] != protocol.OpDel {
+		t.Errorf("old path reported as %q, want del", ops["a.md"])
+	}
+	if ops["b.md"] != protocol.OpPut {
+		t.Errorf("new path reported as %q, want put", ops["b.md"])
+	}
+	for _, c := range changes {
+		if c.Op == protocol.OpMove {
+			t.Error("the move op leaked into /v1/changes; older clients cannot read it")
+		}
 	}
 }

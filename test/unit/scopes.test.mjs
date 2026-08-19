@@ -29,3 +29,46 @@ test("a server that reports no scopes is not treated as holding none", () => {
 test("a token with neither verb names both", () => {
 	assert.deepEqual(missingPluginScopes([]), ["read", "write"]);
 });
+
+import { pairRenames } from "../../dist-test/entry.mjs";
+
+test("a delete and an add of identical content become one move", () => {
+	const out = pairRenames([
+		{ path: "old.md", op: "del", hash: "h1" },
+		{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(1) },
+	]);
+	assert.deepEqual(out, [{ path: "new.md", op: "move", from: "old.md" }]);
+});
+
+test("unrelated changes pass through untouched", () => {
+	const input = [
+		{ path: "a.md", op: "put", hash: "h1" },
+		{ path: "b.md", op: "del", hash: "h2" },
+	];
+	assert.deepEqual(pairRenames(input), input);
+});
+
+// Guessing which of two identical deletions became the addition would move the
+// wrong file, so an ambiguous group stays as del+put.
+test("two deletions of the same content are left alone", () => {
+	const input = [
+		{ path: "x.md", op: "del", hash: "h1" },
+		{ path: "y.md", op: "del", hash: "h1" },
+		{ path: "z.md", op: "put", hash: "h1" },
+	];
+	assert.deepEqual(pairRenames(input), input);
+});
+
+test("a delete with no matching add stays a delete", () => {
+	const input = [{ path: "gone.md", op: "del", hash: "h1" }];
+	assert.deepEqual(pairRenames(input), input);
+});
+
+test("a move carries no content, because the server already has it", () => {
+	const [m] = pairRenames([
+		{ path: "old.md", op: "del", hash: "h1" },
+		{ path: "new.md", op: "put", hash: "h1", content: new ArrayBuffer(8) },
+	]);
+	assert.equal(m.content, undefined);
+	assert.equal(m.hash, undefined);
+});

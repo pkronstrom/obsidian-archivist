@@ -868,3 +868,21 @@ func TestViaHeaderCannotForgeTrailers(t *testing.T) {
 		t.Error("an over-long Via was not bounded")
 	}
 }
+
+// The reason move exists: a write-scoped token can rename, where the del+put it
+// used to take would have needed delete.
+func TestMoveNeedsOnlyWrite(t *testing.T) {
+	h, tok := newServerWith(t, auth.Principal{
+		Label: "agent", Vaults: []string{"*"},
+		Scopes: []string{auth.ScopeRead, auth.ScopeWrite},
+	})
+	body := protocol.PushRequest{
+		Device:  "agent",
+		Changes: []protocol.Change{{Path: "b.md", Op: protocol.OpMove, From: "a.md"}},
+	}
+	// Not asserting success -- an empty vault refuses a baseless move for its
+	// own reasons. Asserting only that the DELETE scope check did not fire.
+	if w := doAs(t, h, "POST", "/v1/push", body, tok); w.Code == 403 {
+		t.Error("a move was refused for lack of the delete scope; that is what move exists to avoid")
+	}
+}

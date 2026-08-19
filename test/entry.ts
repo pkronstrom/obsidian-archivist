@@ -20,3 +20,4 @@ export { scanForSecrets } from "../src/secrets";
 
 export { plannedInstalls } from "../src/plugin-install";
 export { missingPluginScopes, scopeWarning } from "../src/scopes";
+export { pairRenames } from "../src/scopes";

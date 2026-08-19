@@ -1,5 +1,6 @@
 import type { App, DataAdapter } from "obsidian";
 import { Client, UnknownBaseError, type Change, type Result } from "./client";
+import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
 import {
 	checkVault,
@@ -236,7 +237,15 @@ export class Sync {
 				const r = byPath.get(c.path);
 				if (r?.status === "applied") {
 					if (c.op === "del") delete state.files[c.path];
-					else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
+					else if (c.op === "move") {
+						// The bytes did not change, only where they live. Carry
+						// the old entry across rather than re-hashing, and drop
+						// the source so the next diff does not read it as a
+						// fresh deletion and delete it on the server.
+						const prev = state.files[c.from!];
+						delete state.files[c.from!];
+						if (prev) state.files[c.path] = prev;
+					} else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
 					continue;
 				}
 				// Anything else means the server holds bytes we do not have. It
@@ -425,10 +434,15 @@ export class Sync {
 					delete state.files[path];
 					continue;
 				}
-				out.push({ path, op: "del" });
+				// The hash comes along so pairRenames can recognise this as
+				// half of a rename. It is never sent -- toChange drops it.
+				out.push({ path, op: "del", hash: state.files[path]?.hash });
 			}
 		}
-		return out;
+		// A deletion plus an addition of identical content is a rename. Folding
+		// them into one move is what lets a token with write but not delete
+		// rename a note; anything ambiguous is left as del+put.
+		return pairRenames(out as Pending[]) as PendingChange[];
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {
@@ -635,15 +649,17 @@ export class Sync {
 
 type PendingChange = {
 	path: string;
-	op: "put" | "del";
+	op: "put" | "del" | "move";
 	hash?: string;
 	mtime?: number;
 	size?: number;
 	content?: ArrayBuffer;
+	/** move only: the path being renamed. */
+	from?: string;
 };
 
 function toChange(c: PendingChange): Change {
-	return c.op === "del"
-		? { path: c.path, op: "del" }
-		: { path: c.path, op: "put", hash: c.hash, size: c.size };
+	if (c.op === "del") return { path: c.path, op: "del" };
+	if (c.op === "move") return { path: c.path, op: "move", from: c.from };
+	return { path: c.path, op: "put", hash: c.hash, size: c.size };
 }

@@ -220,6 +220,18 @@ func (rc *Reconciler) PushWithOrigin(base string, origin Origin, changes []Chang
 		seen[ch.Path] = struct{}{}
 		switch ch.Op {
 		case "del":
+		case "move":
+			// From is validated here so a malformed one fails the whole push
+			// before anything is written, like every other path check.
+			if ch.From == "" {
+				return "", nil, fmt.Errorf("reconcile: move of %s names no source", ch.Path)
+			}
+			if err := vault.ValidPath(ch.From); err != nil {
+				return "", nil, err
+			}
+			if ch.From == ch.Path {
+				return "", nil, fmt.Errorf("reconcile: move of %s onto itself", ch.Path)
+			}
 		case "put":
 			if !rc.r.HasBlob(ch.Hash) {
 				return "", nil, fmt.Errorf(
@@ -298,6 +310,50 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 			return res, rc.write(ch.Path, content)
 		}
 		return rc.resolve(base, device, ch.Path, content)
+
+	case "move":
+		// A move is a WRITE, not a delete, and the difference is that content
+		// survives: it exists at the new path when this returns. That is what
+		// lets a token with write but not delete rename a note.
+		//
+		// It is also why the op is explicit rather than inferred from a del+put
+		// pair with a matching hash. A caller who can read a note knows its
+		// hash, so the inference would let them pair a delete of anything with
+		// a put of that content elsewhere -- a delete bypass wearing a rename.
+		if base == "" {
+			// Same reasoning as delete: a client with no base does not know
+			// what exists, so it cannot be trusted to say what should move.
+			res.Status, res.Reason = StatusRefused, "a client with no base may not move"
+			return res, nil
+		}
+		if err := vault.ValidPath(ch.From); err != nil {
+			return res, err
+		}
+		if moved[ch.From] || moved[ch.Path] {
+			res.Status, res.Reason = StatusRefused, "changed on the server since base"
+			return res, nil
+		}
+		content, err := rc.v.Read(ch.From)
+		if err != nil {
+			// Refusing beats inventing. A move whose source is gone would
+			// otherwise be a way to name any path and have it disappear.
+			res.Status, res.Reason = StatusRefused, "no such path: "+ch.From
+			return res, nil
+		}
+		if _, err := rc.v.Read(ch.Path); err == nil {
+			// Overwriting would destroy the target's content, which is the one
+			// thing a move must not do.
+			res.Status, res.Reason = StatusRefused, "target already exists: "+ch.Path
+			return res, nil
+		}
+		if err := rc.write(ch.Path, content); err != nil {
+			return res, err
+		}
+		if err := rc.v.Remove(ch.From); err != nil {
+			return res, err
+		}
+		res = rc.resultFor(res, content)
+		return res, nil
 
 	default:
 		res.Status, res.Reason = StatusRefused, "unknown op "+ch.Op

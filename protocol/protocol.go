@@ -22,12 +22,22 @@ import (
 //
 //	1  head, snapshot, changes, have, content, push, events, history, at,
 //	   check, export. changes and events share one Change shape.
-const Version = 1
+const Version = 2
 
 // Operations.
 const (
 	OpPut = "put"
 	OpDel = "del"
+	// OpMove renames a path. It carries From and no Hash: the content is
+	// already on the server, which is the whole point -- a move preserves it
+	// where a delete destroys it, so a move needs only the write scope.
+	//
+	// Without this op a rename arrived as del+put and a token with write but
+	// not delete could not rename at all. Inferring it from a del+put pair with
+	// a matching hash was the alternative, and it is a delete bypass: a caller
+	// who can read a note knows its hash and could pair a delete of anything
+	// with a put of that content elsewhere.
+	OpMove = "move"
 )
 
 // File kinds. Kind is sniffed from content, never guessed from the extension,
@@ -98,7 +108,8 @@ type Entry struct {
 type Change struct {
 	Path string `json:"path"`
 	Op   string `json:"op"`
-	Hash string `json:"hash,omitempty"` // absent for OpDel
+	Hash string `json:"hash,omitempty"` // absent for OpDel and OpMove
+	From string `json:"from,omitempty"` // OpMove only: the path being renamed
 	Size int64  `json:"size"`
 	Ext  string `json:"ext"`  // lowercase, no leading dot
 	Kind string `json:"kind"` // KindText or KindBinary
