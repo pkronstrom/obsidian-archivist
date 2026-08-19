@@ -156,6 +156,42 @@ revocation: `add` reads the table, `revoke` writes one without the doomed hash,
 then `add` saves its copy — which still has it — and the watcher reloads the
 credential you just revoked.
 
+### The relay holds no caller credential
+
+`archivist-relay` forwards each caller's own bearer token to the server. It
+keeps a `Pool` of one client per token, and — because the MCP SDK's handler
+factory receives the `*http.Request` — one MCP server per token as well, so the
+credential is a property of the server rather than something each tool has to
+remember to read. A future ninth tool cannot silently act as the wrong caller.
+
+The relay validates nothing. Only the server knows whether a token is real, and
+asking would mean the relay holding a table of credentials, which is precisely
+what this removes. It forwards, and passes the server's 401 or 403 back
+unchanged. The single case it answers alone is a missing bearer, because
+forwarding that would present `Bearer ` upstream.
+
+Two consequences worth stating:
+
+- `?vault=work` stops being a bypass. It was always caller-controlled, but the
+  relay's own token decided what it reached; now the server refuses a vault the
+  caller's principal does not open.
+- The relay is no longer worth compromising for its credentials. It keeps one
+  minted read-only token for the three jobs with no caller — the startup
+  compatibility check, the 60-second re-check, and the webhook stream — plus the
+  `/healthz` upstream probe, and nothing else.
+
+The pool is bounded at 256 entries. Its key is a bearer token, a value the
+caller chooses, so an unbounded map would be a memory leak anyone who can reach
+the relay could trigger by presenting new random tokens in a loop. A full cache
+means something abnormal is happening, so it clears wholesale rather than
+evicting one entry — a client is cheap to rebuild.
+
+A caller who names no vault gets the one their own token opens, asked of the
+server rather than read from configuration: under pass-through a static default
+the caller cannot open would produce a 403 on a request they never scoped, which
+reads as a bug rather than as policy. Two or more vaults is a genuine question
+and returns an error naming them.
+
 Minting is offline only, via `archivist-server token add`. There is no HTTP
 route that mints. The server is internet-facing behind Caddy, and a mint
 endpoint would let a leaked admin token issue itself a successor that survives

@@ -305,19 +305,36 @@ visible, rather than writing into the wrong vault, which is not.
 Everything on the server uses the files directly. For anything that is not on
 the server — an agent on your laptop, an n8n flow in another container —
 `archivist-relay` offers MCP over HTTP, webhook fan-out and a friendlier write
-API, holding no vault and no sync state of its own.
+API, holding no vault, no sync state and **no caller credential** of its own.
+
+Callers present their own archivist token and the relay forwards it, so the
+scopes on that token are what decide the call. Mint one per caller:
+
+```bash
+docker compose exec archivist archivist-server token add \
+  -label agent-n8n -vaults personal -scopes read,write
+```
 
 ```
-archivist-relay -url http://archivist:8090 -token "$ARCHIVIST_TOKEN" \
-                -relay-token "$RELAY_TOKEN" -listen :8091
+archivist-relay -url http://archivist:8090 -token "$RELAY_BG_TOKEN" -listen :8091
 ```
+
+`-token` is the relay's **own** credential and is used only where there is no
+caller: the compatibility check, the webhook stream and the `/healthz` probe.
+Mint it read-only. It is never used on a caller's behalf.
+
+`ARCHIVIST_RELAY_TOKEN` no longer exists. The relay refuses to start while it is
+still set, rather than starting and 401ing every caller.
 
 Writing a note is `curl -T`, and reading one gives you an `ETag`:
 
 ```
-curl -T note.md -H "Authorization: Bearer $RELAY_TOKEN" \
+curl -T note.md -H "Authorization: Bearer $MY_ARCHIVIST_TOKEN" \
      localhost:8091/file/notes/idea.md
 ```
+
+Omit `?vault=` and the relay uses the single vault your token opens; if it opens
+several, it asks you to name one rather than guessing.
 
 **If you read a note before editing it, send its ETag back as `If-Match`.**
 Without it the write is a blind overwrite and a change that landed in between is
