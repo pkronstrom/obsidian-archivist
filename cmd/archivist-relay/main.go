@@ -44,7 +44,6 @@ type config struct {
 	url       string
 	token     string
 	listen    string
-	relayTok  string
 	device    string
 	vault     string
 	webhooks  []string
@@ -67,11 +66,11 @@ func load(args []string) (*config, error) {
 	fs.StringVar(&c.url, "url", env("ARCHIVIST_URL", ""),
 		"base URL of the Archivist server")
 	fs.StringVar(&c.token, "token", env("ARCHIVIST_TOKEN", ""),
-		"bearer token for the server")
+		"the relay's OWN token, for background work only: the compatibility check, "+
+			"the webhook stream and the healthz probe. Callers present their own, which "+
+			"the relay forwards; this is never used on their behalf. Mint it read-only.")
 	fs.StringVar(&c.listen, "listen", env("ARCHIVIST_RELAY_LISTEN", ":8091"),
 		"HTTP listen address for the relay's own API and MCP")
-	fs.StringVar(&c.relayTok, "relay-token", env("ARCHIVIST_RELAY_TOKEN", ""),
-		"bearer token callers must present to the relay (defaults to -token)")
 	fs.StringVar(&c.vault, "vault", env("ARCHIVIST_VAULT", ""),
 		"vault this relay addresses by default; tools may override it per call")
 	fs.StringVar(&c.device, "device", env("ARCHIVIST_DEVICE", "relay"),
@@ -90,13 +89,17 @@ func load(args []string) (*config, error) {
 		return nil, errors.New("server URL is required (-url or ARCHIVIST_URL)")
 	}
 	if c.token == "" {
-		return nil, errors.New("server token is required (-token or ARCHIVIST_TOKEN)")
+		return nil, errors.New("the relay's own token is required (-token or ARCHIVIST_TOKEN)")
 	}
-	// Defaulting the relay token to the server's is a convenience for a
-	// single-user setup, not a recommendation: if the relay is reachable by
-	// anything you would not hand a vault credential, set it separately.
-	if c.relayTok == "" {
-		c.relayTok = c.token
+	// Removed, not deprecated. A silent fallback is how the old path survives
+	// forever, and a relay that starts happily while every caller gets 401 is
+	// the worst version of this change -- so refuse at the one moment somebody
+	// is in a position to fix it.
+	if os.Getenv("ARCHIVIST_RELAY_TOKEN") != "" {
+		return nil, errors.New(
+			"ARCHIVIST_RELAY_TOKEN is set but no longer used: callers now present " +
+				"their own archivist token, which the relay forwards. Mint one per " +
+				"caller with `archivist-server token add`, then unset this variable")
 	}
 	for _, h := range strings.Split(hooks, ",") {
 		if h = strings.TrimSpace(h); h != "" {
@@ -131,7 +134,12 @@ func main() {
 }
 
 func run(cfg *config, log *slog.Logger) error {
-	c := client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
+	// Two credentials with different jobs, and they must not be confused. bg is
+	// the relay's OWN, used only where there is no caller: the compatibility
+	// check, the webhook stream and the healthz probe. pool builds one client
+	// per CALLER token and is what every request goes through.
+	bg := client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
+	pool := relay.NewPool(cfg.url, cfg.device)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -144,7 +152,7 @@ func run(cfg *config, log *slog.Logger) error {
 	// reports degraded, and calls fail until it returns.
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := c.CheckCompatible(checkCtx); err != nil {
+	if err := bg.CheckCompatible(checkCtx); err != nil {
 		if strings.Contains(err.Error(), "protocol") {
 			return err
 		}
@@ -167,7 +175,7 @@ func run(cfg *config, log *slog.Logger) error {
 				return
 			case <-t.C:
 				cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				err := c.CheckCompatible(cctx)
+				err := bg.CheckCompatible(cctx)
 				cancel()
 				switch {
 				case err != nil && strings.Contains(err.Error(), "protocol"):
@@ -185,14 +193,19 @@ func run(cfg *config, log *slog.Logger) error {
 
 	var mcpHandler http.Handler
 	if cfg.enableMCP {
-		srv := relay.NewMCPServer(c, "archivist", version.Version)
-		mcpHandler = mcp.NewStreamableHTTPHandler(
-			func(*http.Request) *mcp.Server { return srv }, nil)
+		// The factory receives the request, which is the whole reason per-caller
+		// MCP is possible: the bearer is available before any tool runs, so the
+		// credential is a property of the server rather than something each of
+		// eight tool handlers must remember to read.
+		mcpHandler = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			return pool.MCPServer(tok, "archivist", version.Version)
+		}, nil)
 	}
 
 	var hooks *relay.Webhooks
 	if len(cfg.webhooks) > 0 {
-		hooks = relay.NewWebhooks(c, cfg.webhooks, log)
+		hooks = relay.NewWebhooks(bg, cfg.webhooks, log)
 		go func() {
 			if err := hooks.Run(ctx); err != nil {
 				log.Error("webhook fan-out stopped", "err", err)
@@ -202,7 +215,7 @@ func run(cfg *config, log *slog.Logger) error {
 
 	httpSrv := &http.Server{
 		Addr:              cfg.listen,
-		Handler:           relay.NewHandler(c, cfg.relayTok, log, mcpHandler, hooks),
+		Handler:           relay.NewHandler(pool, bg, log, mcpHandler, hooks),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -216,7 +229,7 @@ func run(cfg *config, log *slog.Logger) error {
 	}()
 	log.Info("archivist-relay listening",
 		"addr", cfg.listen, "mcp", cfg.enableMCP, "webhooks", len(cfg.webhooks),
-		"separateRelayToken", cfg.relayTok != cfg.token)
+		"auth", "pass-through")
 
 	select {
 	case <-ctx.Done():

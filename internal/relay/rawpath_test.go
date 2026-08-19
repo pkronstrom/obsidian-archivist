@@ -15,7 +15,7 @@ import (
 // path for us. Speak raw HTTP to find out what the relay actually does.
 func TestRawUnnormalisedPathsCannotEscape(t *testing.T) {
 	c := liveClient(t)
-	srv := httptest.NewServer(relay.NewHandler(c, "relay-token", quiet(), nil, nil))
+	srv := httptest.NewServer(relay.NewHandler(relay.NewPool(c.BaseURL(), "relay"), c, quiet(), nil, nil))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 

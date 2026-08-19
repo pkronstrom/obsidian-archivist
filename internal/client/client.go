@@ -568,6 +568,10 @@ func (c *Client) Ping(ctx context.Context) (protocol.HealthResponse, error) {
 	return getJSON[protocol.HealthResponse](ctx, c.atRoot(), "/healthz")
 }
 
+// BaseURL is the server this client addresses, without a trailing slash.
+// Exported so the relay can build a Pool pointed at the same server.
+func (c *Client) BaseURL() string { return c.base }
+
 // Token is the credential this client presents. Exported for the relay's pool,
 // which keys clients by it and must be able to assert it did not mix them up.
 func (c *Client) Token() string { return c.token }

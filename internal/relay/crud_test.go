@@ -14,12 +14,15 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
-const relayTok = "relay-token"
+// relayTok is the token callers present. Under pass-through it is an ordinary
+// ARCHIVIST token that the relay forwards, not a relay-specific credential --
+// which is why it is the same value liveClient mints on the server.
+const relayTok = "tok"
 
 func crudServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	c := liveClient(t)
-	srv := httptest.NewServer(relay.NewHandler(c, relayTok, quiet(), nil, nil))
+	pool, bg := livePool(t)
+	srv := httptest.NewServer(relay.NewHandler(pool, bg, quiet(), nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -120,14 +123,14 @@ func TestListAndPrefix(t *testing.T) {
 // the raw-socket version of this test (rawpath_test.go) covers the case where
 // a client does not normalise for us.
 func TestEscapingPathsCreateNothingOutsideTheVault(t *testing.T) {
-	c := liveClient(t)
-	srv := httptest.NewServer(relay.NewHandler(c, relayTok, quiet(), nil, nil))
+	pool, bg := livePool(t)
+	srv := httptest.NewServer(relay.NewHandler(pool, bg, quiet(), nil, nil))
 	t.Cleanup(srv.Close)
 
 	for _, p := range []string{"/file/../escape.md", "/file/a/../../b.md", "/file/./x.md"} {
 		req(t, srv, "PUT", p, []byte("pwned\n"), true)
 	}
-	files, err := c.List(t.Context(), "")
+	files, err := bg.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,11 +263,14 @@ func TestOversizedBodyIs413(t *testing.T) {
 // it used to panic at registration: a bare "GET /" catch-all conflicts with
 // "/mcp". Every other test passed a nil MCP handler and so never built it.
 func TestHandlerWithMCPEnabledDoesNotPanic(t *testing.T) {
-	c := liveClient(t)
-	mcpSrv := relay.NewMCPServer(c, "archivist", "test")
-	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpSrv }, nil)
+	pool, bg := livePool(t)
+	// The real factory shape: the caller's bearer decides which server they get.
+	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		return pool.MCPServer(tok, "archivist", "test")
+	}, nil)
 
-	srv := httptest.NewServer(relay.NewHandler(c, relayTok, quiet(), h, nil))
+	srv := httptest.NewServer(relay.NewHandler(pool, bg, quiet(), h, nil))
 	t.Cleanup(srv.Close)
 
 	// The ordinary routes still work alongside it.
@@ -290,5 +296,60 @@ func TestMCPDisabledSaysSoClearly(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&env)
 	if !strings.Contains(env.Error.Message, "MCP is disabled") {
 		t.Errorf("message = %q", env.Error.Message)
+	}
+}
+
+// The relay must not validate tokens itself: only the server knows. It forwards
+// and passes the verdict back, which is also what keeps ONE authority.
+func TestRelayForwardsTheCallersTokenAndItsRejection(t *testing.T) {
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]any{"code": "unauthorized", "message": "nope"})
+	}))
+	defer upstream.Close()
+
+	pool := relay.NewPool(upstream.URL, "relay")
+	h := relay.NewHandler(pool, nil, quiet(), nil, nil)
+
+	req := httptest.NewRequest("GET", "/file/notes/a.md?vault=personal", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 passed through from the server", w.Code)
+	}
+	if len(seen) == 0 || seen[0] != "Bearer caller-token" {
+		t.Errorf("upstream saw %v, want the CALLER's token forwarded verbatim", seen)
+	}
+}
+
+// No bearer at all is the one thing the relay can answer by itself.
+func TestRelayRefusesARequestWithNoBearer(t *testing.T) {
+	pool := relay.NewPool("https://unused.example", "relay")
+	h := relay.NewHandler(pool, nil, quiet(), nil, nil)
+
+	req := httptest.NewRequest("GET", "/list", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got == "" {
+		t.Error("a 401 must name the scheme")
+	}
+}
+
+func TestHealthzStaysUnauthenticated(t *testing.T) {
+	pool := relay.NewPool("https://unused.example", "relay")
+	h := relay.NewHandler(pool, nil, quiet(), nil, nil)
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code == http.StatusUnauthorized {
+		t.Error("healthz must not need a token; a container healthcheck has none")
 	}
 }

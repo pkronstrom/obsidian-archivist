@@ -125,7 +125,9 @@ func TestHTTPWithoutIfMatchOverwrites(t *testing.T) {
 
 func crudServerFor(t *testing.T, c *client.Client) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(relay.NewHandler(c, relayTok, quiet(), nil, nil))
+	// The pool aims at the same server c does; callers present relayTok, which
+	// under pass-through is that server's own token.
+	srv := httptest.NewServer(relay.NewHandler(relay.NewPool(c.BaseURL(), "relay"), c, quiet(), nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

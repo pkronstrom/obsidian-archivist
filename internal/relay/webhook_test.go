@@ -51,6 +51,16 @@ func liveClient(t *testing.T) *client.Client {
 	return client.New(srv.URL, "tok", "relay").WithVault("personal")
 }
 
+// livePool is liveClient's pass-through sibling: a Pool aimed at the same
+// server, plus a background client for healthz. Callers present relayTok, which
+// IS the server token now -- under pass-through there is no separate relay
+// credential to present.
+func livePool(t *testing.T) (*relay.Pool, *client.Client) {
+	t.Helper()
+	bg := liveClient(t)
+	return relay.NewPool(bg.BaseURL(), "relay"), bg
+}
+
 // A collector stands in for n8n or Node-RED.
 type collector struct {
 	mu     sync.Mutex

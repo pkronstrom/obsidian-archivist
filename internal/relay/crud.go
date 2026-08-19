@@ -1,7 +1,7 @@
 package relay
 
 import (
-	"crypto/subtle"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -28,25 +28,23 @@ const maxBody = 32 << 20
 // endpoint on the server: one write path lives there, in one place, and this is
 // ergonomics rather than a second way in.
 type Handler struct {
-	client *client.Client
-	token  string
-	log    *slog.Logger
-	mcp    http.Handler
-	hooks  *Webhooks
+	pool *Pool
+	// bg is the relay's OWN client, used only where there is no caller: the
+	// healthz upstream probe. Never used on a caller's behalf -- every request
+	// is served with the credential its caller presented.
+	bg    *client.Client
+	log   *slog.Logger
+	mcp   http.Handler
+	hooks *Webhooks
 }
 
-// vaultFor lets a script address a second vault without a second relay:
-//
-//	curl -T note.md ".../file/notes/idea.md?vault=work"
-func (h *Handler) vaultFor(r *http.Request) *client.Client {
-	if name := r.URL.Query().Get("vault"); name != "" {
-		return h.client.WithVault(name)
-	}
-	return h.client
-}
+// ctxKey carries the per-caller client from the middleware to the handlers.
+type ctxKey int
 
-func NewHandler(c *client.Client, token string, log *slog.Logger, mcpHandler http.Handler, hooks *Webhooks) http.Handler {
-	h := &Handler{client: c, token: token, log: log, mcp: mcpHandler, hooks: hooks}
+const ctxClient ctxKey = iota
+
+func NewHandler(pool *Pool, bg *client.Client, log *slog.Logger, mcpHandler http.Handler, hooks *Webhooks) http.Handler {
+	h := &Handler{pool: pool, bg: bg, log: log, mcp: mcpHandler, hooks: hooks}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /file/{path...}", h.read)
@@ -77,24 +75,58 @@ func NewHandler(c *client.Client, token string, log *slog.Logger, mcpHandler htt
 	return outer
 }
 
-// authenticate uses the RELAY's token, which is deliberately separate from the
-// server's. The relay may be reachable by callers that should not be handed a
-// credential for the vault itself, and rotating one should not disturb the
-// other.
+// authenticate lifts the caller's bearer and attaches a client carrying it.
+//
+// It deliberately does NOT check whether the token is valid: only the server
+// knows, and asking would mean the relay holding a table of credentials --
+// which is the thing this design removes. The relay forwards, and passes the
+// server's verdict back; relayError already preserves the upstream status.
+//
+// An empty bearer is the single case it can answer alone, because forwarding it
+// would present "Bearer " upstream -- the exact shape that looks like
+// authentication and is not.
 func (h *Handler) authenticate(next http.Handler) http.Handler {
-	want := "Bearer " + h.token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtleCompare(r.Header.Get("Authorization"), want) {
-			next.ServeHTTP(w, r)
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if token == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist-relay"`)
+			writeError(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
 			return
 		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="archivist-relay"`)
-		writeError(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
+		ctx := context.WithValue(r.Context(), ctxClient, h.pool.For(token))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
+// vaultFor picks the client for one request: the CALLER's, addressing the vault
+// they named, or the single vault their own token opens.
+//
+//	curl -T note.md ".../file/notes/idea.md?vault=work"
+//
+// ?vault= stops being a bypass here. It is still caller-controlled, but the
+// credential is now theirs too, so naming a vault they cannot open earns a 403
+// from the server rather than reaching it on the relay's authority.
+func (h *Handler) vaultFor(r *http.Request) (*client.Client, error) {
+	c, _ := r.Context().Value(ctxClient).(*client.Client)
+	if c == nil {
+		return nil, errors.New("no credential on this request")
+	}
+	if name := r.URL.Query().Get("vault"); name != "" {
+		return c.WithVault(name), nil
+	}
+	name, err := h.pool.DefaultVault(r.Context(), c.Token())
+	if err != nil {
+		return nil, err
+	}
+	return c.WithVault(name), nil
+}
+
 func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
-	c := h.vaultFor(r)
+	c, err := h.vaultFor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
@@ -113,7 +145,11 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
-	c := h.vaultFor(r)
+	c, err := h.vaultFor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
@@ -146,7 +182,11 @@ func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
-	c := h.vaultFor(r)
+	c, err := h.vaultFor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
 	p := r.PathValue("path")
 	if err := checkPath(p); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
@@ -206,7 +246,11 @@ func httpStatus(res protocol.Result) int {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	c := h.vaultFor(r)
+	c, err := h.vaultFor(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
+	}
 	files, err := c.List(r.Context(), r.URL.Query().Get("prefix"))
 	if err != nil {
 		h.relayError(w, err)
@@ -245,7 +289,17 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 // relay that is up but cut off from the vault is not usefully healthy.
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"status": "ok", "protocol": protocol.Version}
-	if up, err := h.client.Ping(r.Context()); err != nil {
+	// healthz is unauthenticated, so there is no caller credential to probe
+	// with. It uses the relay's own background token -- the same one the
+	// compatibility checker and the webhook stream use. Without one configured
+	// the relay can still report its own liveness, which is what a container
+	// healthcheck is actually asking.
+	if h.bg == nil {
+		out["upstream"] = "not probed: the relay has no background credential"
+		writeJSON(w, out)
+		return
+	}
+	if up, err := h.bg.Ping(r.Context()); err != nil {
 		out["status"] = "degraded"
 		out["upstream"] = "unreachable: " + err.Error()
 		w.Header().Set("Content-Type", "application/json")
@@ -325,10 +379,4 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 	json.NewEncoder(w).Encode(protocol.ErrorResponse{
 		Error: protocol.Error{Code: code, Message: msg},
 	})
-}
-
-// subtleCompare is a constant-time equality check, so a wrong token cannot be
-// recovered by timing the response.
-func subtleCompare(got, want string) bool {
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
