@@ -567,3 +567,7 @@ func (c *Client) Ping(ctx context.Context) (protocol.HealthResponse, error) {
 	// under a vault prefix is a 404 that reads as "the server is down".
 	return getJSON[protocol.HealthResponse](ctx, c.atRoot(), "/healthz")
 }
+
+// Token is the credential this client presents. Exported for the relay's pool,
+// which keys clients by it and must be able to assert it did not mix them up.
+func (c *Client) Token() string { return c.token }
