@@ -156,6 +156,57 @@ revocation: `add` reads the table, `revoke` writes one without the doomed hash,
 then `add` saves its copy — which still has it — and the watcher reloads the
 credential you just revoked.
 
+### Renames are a write, not a delete
+
+A rename used to arrive as a deletion plus an addition, so a token holding read
+and write but not delete could not rename a note — which is most of what you
+would give an agent write for. `move` carries the source path and no hash: the
+content is already on the server and survives at the new path, and that is
+exactly what separates a move from a deletion.
+
+Inferring a move from a del+put pair with a matching hash was the alternative,
+and it is a delete bypass. Anyone who can read a note knows its hash, so they
+could pair a delete of *anything* with a put of that content elsewhere.
+Declaring the intent is what makes the op safe to allow under `write`.
+
+A move is refused when the source is missing, when the target already exists,
+when either path changed on the server since base, or when the client has no
+base — the same rule that stops a freshly-bootstrapped device wiping a vault.
+
+The plugin folds a deletion and an addition of identical content into one move,
+strictly one-to-one. Two deletions of the same content are ambiguous and
+guessing would rename the wrong file, so those stay del+put.
+
+**Older clients are unaffected on the read side.** `/v1/changes` diffs trees, so
+a move reaches other devices as a deletion and an addition; they never see the
+op. Only a client that *emits* `move` needs a server that knows it, which is why
+the protocol went to 2 and why servers upgrade before plugins do.
+
+### Commit provenance
+
+A commit records three things about who made it:
+
+```
+sync from work-mac
+
+Token: mac
+Via: relay-rest
+```
+
+`sync from <device>` is client-supplied and forgeable — it is whatever the
+sender called itself. `Token` is the label of the principal the server resolved
+from the credential actually presented, so it is the one part that cannot be
+lied about. `Via` records the road taken: `relay-rest`, `relay-mcp`, or `api`
+for anything pushing directly. The relay sets it, because only it knows REST
+from MCP; it is a hint rather than a credential, and it is stripped of newlines
+and length-bounded before it reaches history, because a caller controls it.
+
+Trailers rather than a longer subject: the subject is what every listing shows,
+and conflict filenames are long enough already. Those dropped their timestamp
+for the same reason — `idea.conflict-mac-a1b2c3.md`, not
+`idea.conflict-mac-20260816T093012-a1b2c3.md`. The content fragment gives a name
+what it needs, which is uniqueness; git already holds the time.
+
 ### The relay holds no caller credential
 
 `archivist-relay` forwards each caller's own bearer token to the server. It
