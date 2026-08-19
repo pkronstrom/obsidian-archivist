@@ -140,6 +140,22 @@ file, because minting renames a new file over the old one and replaces the
 inode. A file that fails to parse is logged and ignored and the running table is
 kept, so a typo cannot lock every device out at once.
 
+`ARCHIVIST_TOKEN` without a tokens file is the bootstrap principal: every vault,
+all three verbs, no vault creation. It holds delete because withholding it would
+be theatre — a write token can already blank a note — while breaking the plugin,
+which renames and deletes routinely.
+
+Streams re-check their token. `/v1/events` authenticates once at connect but a
+stream can outlive that by days, so it re-resolves the principal on every
+keepalive tick and closes if the token was revoked, expired or narrowed. That
+bounds exposure after a revocation to one interval rather than forever.
+
+`token add` and `token revoke` take an exclusive lock on a sibling `.lock` file.
+Without it the dangerous interleaving is not a lost mint but a resurrected
+revocation: `add` reads the table, `revoke` writes one without the doomed hash,
+then `add` saves its copy — which still has it — and the watcher reloads the
+credential you just revoked.
+
 Minting is offline only, via `archivist-server token add`. There is no HTTP
 route that mints. The server is internet-facing behind Caddy, and a mint
 endpoint would let a leaked admin token issue itself a successor that survives

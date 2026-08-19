@@ -287,8 +287,9 @@ create one.
 be read back — losing it means minting another. The running server picks up the
 change without a restart.
 
-A token without `write` must not go into the Obsidian plugin: it will sync down
-and then fail on the first save. `token add` warns when it mints one.
+The Obsidian plugin needs **both** `read` and `write` — it syncs down, and asks
+the read-scoped `/v1/have` which blobs are missing before uploading. `token add`
+warns when it mints a token that cannot drive the plugin.
 
 Without `ARCHIVIST_TOKENS`, `ARCHIVIST_TOKEN` opens **every** vault with read and
 write. That is the one-vault convenience, not isolation — it is exactly what a

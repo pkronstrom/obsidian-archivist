@@ -147,10 +147,6 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if tokens.IsBootstrap() {
-		log.Warn("running on ARCHIVIST_TOKEN: one token opens every vault, with read and write. " +
-			"Mint per-device tokens with `archivist-server token add` and set ARCHIVIST_TOKENS")
-	}
 
 	n := notify.New(cfg.NtfyURL, time.Now, log)
 
@@ -196,7 +192,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	// so once at startup rather than letting it be discovered after a leak.
 	if tokens.IsBootstrap() {
 		log.Warn("running on a single ARCHIVIST_TOKEN, which opens EVERY vault",
-			"fix", "set ARCHIVIST_TOKENS to a JSON file mapping each token to its vaults")
+			"fix", "mint per-device tokens with `archivist-server token add` and set ARCHIVIST_TOKENS")
 	}
 
 	if cfg.NtfyURL == "" {

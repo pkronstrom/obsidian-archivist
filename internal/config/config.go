@@ -146,7 +146,7 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&c.MaxVaults, "max-vaults", int(envInt("ARCHIVIST_MAX_VAULTS", 5)),
 		"refuse creating more vaults than this; discovery past it warns and serves them")
 	fs.StringVar(&c.TokensFile, "tokens", env("ARCHIVIST_TOKENS", ""),
-		"JSON file mapping each token to the vaults it opens")
+		"tokens file written by `archivist-server token add`; hashed, never hand-edited")
 	fs.StringVar(&c.Listen, "listen", env("ARCHIVIST_LISTEN", ":8090"),
 		"HTTP listen address")
 	fs.StringVar(&c.Token, "token", env("ARCHIVIST_TOKEN", ""),

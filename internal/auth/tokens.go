@@ -239,14 +239,20 @@ func Load(path, fallback string) (*Set, error) {
 				"auth: no credentials. Set ARCHIVIST_TOKENS to a tokens file, or " +
 					"ARCHIVIST_TOKEN for a single unscoped token")
 		}
-		// Read and write, so a single-vault deployment syncs. Not delete and not
-		// creation: those are worth the one command it takes to mint a token.
+		// Every verb, so an existing single-token deployment keeps working across
+		// the upgrade. Withholding delete was the first shape of this and it was
+		// wrong twice over: a write token can already blank a note, so it bought
+		// no safety, and the plugin deletes and renames as a matter of course --
+		// upgrading would have turned ordinary edits into 403s.
+		//
+		// Creation stays off. That one is a real capability, not a verb, and it
+		// costs a single command to mint a token that has it.
 		return &Set{
 			byHash: map[string]Principal{
 				HashToken(fallback): {
 					Label:  "bootstrap",
 					Vaults: []string{"*"},
-					Scopes: []string{ScopeRead, ScopeWrite},
+					Scopes: []string{ScopeRead, ScopeWrite, ScopeDelete},
 				},
 			},
 			bootstrap: true,

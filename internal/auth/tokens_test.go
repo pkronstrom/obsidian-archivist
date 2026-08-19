@@ -222,8 +222,14 @@ func TestBootstrapTokenOpensEverythingAndSaysSo(t *testing.T) {
 	if !p.Can(ScopeRead) || !p.Can(ScopeWrite) {
 		t.Error("the bootstrap token must be able to sync a vault, which needs read and write")
 	}
-	if p.Can(ScopeDelete) || p.CanCreateVaults {
-		t.Error("the bootstrap token must not delete or create; those need a minted token")
+	// Delete too. Withholding it would be theatre -- a write token can already
+	// blank a note -- while breaking the plugin, which deletes and renames as a
+	// matter of course. An existing single-token install must keep working.
+	if !p.Can(ScopeDelete) {
+		t.Error("the bootstrap token must be able to delete; the plugin renames and deletes normally")
+	}
+	if p.CanCreateVaults {
+		t.Error("the bootstrap token must not create vaults; that needs a minted token")
 	}
 }
 

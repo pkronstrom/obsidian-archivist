@@ -88,6 +88,11 @@ func runAdd(args []string, out io.Writer) error {
 		CanCreateVaults: *canCreate,
 		CreatedAt:       time.Now().Unix(),
 	}
+	// A negative duration asked for an expiry and would silently have produced a
+	// permanent token, which is the opposite of what was requested.
+	if *expires < 0 {
+		return fmt.Errorf("token add: -expires-in must not be negative, got %s", *expires)
+	}
 	if *expires > 0 {
 		p.ExpiresAt = time.Now().Add(*expires).Unix()
 	}
@@ -97,15 +102,18 @@ func runAdd(args []string, out io.Writer) error {
 		}
 	}
 
-	set, err := load(*path)
-	if err != nil {
-		return err
-	}
-	token, err := set.Mint(p)
-	if err != nil {
-		return err
-	}
-	if err := set.Save(*path); err != nil {
+	var token string
+	if err := withFileLock(*path, func() error {
+		set, err := load(*path)
+		if err != nil {
+			return err
+		}
+		token, err = set.Mint(p)
+		if err != nil {
+			return err
+		}
+		return set.Save(*path)
+	}); err != nil {
 		return err
 	}
 
@@ -116,9 +124,13 @@ func runAdd(args []string, out io.Writer) error {
 		fmt.Fprintf(out, "Expires: %s\n", time.Unix(p.ExpiresAt, 0).Format(time.RFC3339))
 	}
 	fmt.Fprint(out, "\nThis is the only time the token is shown. It is stored hashed.\n")
-	if !p.Can(auth.ScopeWrite) {
-		fmt.Fprint(out, "NOTE: no write scope. Do NOT paste this into the Obsidian plugin -- "+
-			"it will sync down and then fail on the first save.\n")
+	// The plugin needs BOTH verbs, not just write: it syncs down, and asks the
+	// read-scoped POST /v1/have which blobs are missing before it uploads
+	// anything. Warning only about write let a write-only token through clean
+	// and then fail on the first sync.
+	if !p.Can(auth.ScopeRead) || !p.Can(auth.ScopeWrite) {
+		fmt.Fprint(out, "NOTE: the Obsidian plugin needs both read and write. Do NOT paste "+
+			"this token into it -- syncing will fail.\n")
 	}
 	return nil
 }
@@ -162,33 +174,36 @@ func runRevoke(args []string, out io.Writer) error {
 	}
 	prefix := fs.Arg(0)
 
-	set, err := load(*path)
-	if err != nil {
-		return err
-	}
-	var matches []string
-	for h := range set.Entries() {
-		if strings.HasPrefix(h, prefix) {
-			matches = append(matches, h)
+	var hash, label string
+	if err := withFileLock(*path, func() error {
+		set, err := load(*path)
+		if err != nil {
+			return err
 		}
-	}
-	switch len(matches) {
-	case 0:
-		return fmt.Errorf("token revoke: no token starts with %q", prefix)
-	case 1:
-	default:
-		// Refusing beats guessing: revoking the wrong token locks out a device,
-		// and the operator cannot tell which one it was afterwards.
-		return fmt.Errorf("token revoke: %q matches %d tokens; use more characters",
-			prefix, len(matches))
-	}
-
-	label := set.Entries()[matches[0]].Label
-	set.Revoke(matches[0])
-	if err := set.Save(*path); err != nil {
+		var matches []string
+		for h := range set.Entries() {
+			if strings.HasPrefix(h, prefix) {
+				matches = append(matches, h)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return fmt.Errorf("token revoke: no token starts with %q", prefix)
+		case 1:
+		default:
+			// Refusing beats guessing: revoking the wrong token locks out a
+			// device, and the operator cannot tell which one it was afterwards.
+			return fmt.Errorf("token revoke: %q matches %d tokens; use more characters",
+				prefix, len(matches))
+		}
+		hash = matches[0]
+		label = set.Entries()[hash].Label
+		set.Revoke(hash)
+		return set.Save(*path)
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "revoked %s (%s)\n", matches[0][:12], label)
+	fmt.Fprintf(out, "revoked %s (%s)\n", hash[:12], label)
 	return nil
 }
 
