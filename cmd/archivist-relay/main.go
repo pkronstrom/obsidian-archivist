@@ -199,7 +199,15 @@ func run(cfg *config, log *slog.Logger) error {
 		// eight tool handlers must remember to read.
 		mcpHandler = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-			return pool.MCPServer(tok, "archivist", version.Version)
+			srv, err := pool.MCPServer(r.Context(), tok, "archivist", version.Version)
+			if err != nil {
+				// nil makes the SDK answer with a protocol error the caller can
+				// read, rather than serving tools that would build unqualified
+				// paths and 404 on every call.
+				log.Warn("mcp: cannot resolve the caller's vault", "err", err)
+				return nil
+			}
+			return srv
 		}, nil)
 	}
 

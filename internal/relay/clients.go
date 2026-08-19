@@ -88,15 +88,34 @@ func (p *Pool) Len() int {
 // The credential is baked into the server's tools rather than read per call,
 // which is what stops a future tool from forgetting to plumb it: there is no
 // per-handler credential to forget.
-func (p *Pool) MCPServer(token, name, version string) *mcp.Server {
+func (p *Pool) MCPServer(ctx context.Context, token, name, version string) (*mcp.Server, error) {
+	p.mu.Lock()
+	if s, ok := p.servers[token]; ok {
+		p.mu.Unlock()
+		return s, nil
+	}
+	p.mu.Unlock()
+
+	// The client MUST carry a vault. Without one every tool builds an
+	// unqualified path -- /v1/head rather than /personal/v1/head -- which
+	// matches no route and comes back as a bare 404 that names nothing. That
+	// shipped: memo-ai's write_note failed with "404 page not found" for every
+	// run until this was fixed. The REST surface resolves the vault per
+	// request; MCP has to resolve it here, because the tools close over the
+	// client rather than seeing the request.
+	vault, err := p.DefaultVault(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if s, ok := p.servers[token]; ok {
-		return s
+		return s, nil
 	}
-	s := NewMCPServer(p.forLocked(token).WithVia("relay-mcp"), name, version)
+	s := NewMCPServer(p.forLocked(token).WithVia("relay-mcp").WithVault(vault), name, version)
 	p.servers[token] = s
-	return s
+	return s, nil
 }
 
 // DefaultVault is the vault to use when a caller names none.

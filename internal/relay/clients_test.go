@@ -101,13 +101,52 @@ func TestDefaultVaultIsCachedPerToken(t *testing.T) {
 }
 
 func TestPoolCachesOneMCPServerPerToken(t *testing.T) {
-	p := NewPool("https://vault.example", "relay")
-	a := p.MCPServer("tok-a", "archivist", "test")
-	b := p.MCPServer("tok-a", "archivist", "test")
+	srv := vaultsServer(t, []string{"personal"}, nil)
+	p := NewPool(srv.URL, "relay")
+	a, err := p.MCPServer(context.Background(), "tok-a", "archivist", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := p.MCPServer(context.Background(), "tok-a", "archivist", "test")
 	if a != b {
 		t.Error("one token got two MCP servers; the eight tools are rebuilt on every call")
 	}
-	if a == p.MCPServer("tok-b", "archivist", "test") {
+	c, _ := p.MCPServer(context.Background(), "tok-b", "archivist", "test")
+	if a == c {
 		t.Fatal("two tokens share one MCP server; a caller would act as someone else")
+	}
+}
+
+// The bug this exists to stop: an MCP client with no vault builds /v1/head
+// instead of /personal/v1/head, which matches no route and comes back as a bare
+// 404. It shipped, and memo-ai's write_note failed on every run.
+func TestMCPServerCallsAreVaultQualified(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1/vaults" {
+			json.NewEncoder(w).Encode(map[string]any{"vaults": []string{"personal"}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"head": ""})
+	}))
+	t.Cleanup(srv.Close)
+
+	p := NewPool(srv.URL, "relay")
+	if _, err := p.MCPServer(context.Background(), "tok", "archivist", "test"); err != nil {
+		t.Fatal(err)
+	}
+	// The client the tools close over must address a vault. Exercise it the way
+	// a tool does and check where the request landed.
+	if _, err := p.For("tok").WithVault("personal").Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if path == "/v1/head" {
+			t.Fatal("an unqualified /v1/head reached the server; that is the 404")
+		}
+	}
+	if len(paths) < 2 || paths[len(paths)-1] != "/personal/v1/head" {
+		t.Errorf("paths = %v, want the last one vault-qualified", paths)
 	}
 }
