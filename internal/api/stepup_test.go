@@ -401,3 +401,26 @@ func TestABlockedWaitStopsWhenItsGrantLapses(t *testing.T) {
 		t.Fatal("a blocked long poll outlived its grant")
 	}
 }
+
+// Two different facts, and the plugin needs both: which vaults the SERVER
+// protects, and what THIS token decided about them. One field cannot answer
+// both, and conflating them makes the plugin warn about vaults it is not gated
+// on.
+func TestVaultListReportsPolicyAndPostureSeparately(t *testing.T) {
+	s := newStepUpFixture(t)
+	res := s.as(t, "GET", "/v1/vaults", nil, s.opsOnly)
+
+	var got struct {
+		ProtectedVaults    []string `json:"protectedVaults"`
+		RequiresStepUpAuth []string `json:"requiresStepUpAuth"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProtectedVaults) != 2 {
+		t.Errorf("protectedVaults = %v, want work and private", got.ProtectedVaults)
+	}
+	if len(got.RequiresStepUpAuth) != 1 || got.RequiresStepUpAuth[0] != "ops:work" {
+		t.Errorf("requiresStepUpAuth = %v, want [ops:work]", got.RequiresStepUpAuth)
+	}
+}

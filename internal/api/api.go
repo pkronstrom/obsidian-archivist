@@ -955,11 +955,38 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 	if scopes == nil {
 		scopes = []string{}
 	}
+
+	// Two distinct facts, and a client needs both. protectedVaults is the
+	// SERVER's policy -- which vaults carry a marker. requiresStepUpAuth is THIS
+	// principal's posture. The plugin warns only where the two agree, so it
+	// cannot warn about a protected vault this token is not gated on.
+	//
+	// A vault whose protection cannot be determined fails the whole listing
+	// rather than being quietly omitted, which would read as "not protected".
+	visible := p.Visible(all)
+	protected := []string{}
+	for _, name := range visible {
+		is, err := s.reg.Protected(name)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+			return
+		}
+		if is {
+			protected = append(protected, name)
+		}
+	}
+	posture := p.RequiresStepUpAuth
+	if posture == nil {
+		posture = []string{}
+	}
+
 	writeJSON(w, map[string]any{
-		"vaults":    p.Visible(all),
-		"canCreate": p.CanCreateVaults,
-		"scopes":    scopes,
-		"label":     p.Label,
+		"vaults":             visible,
+		"canCreate":          p.CanCreateVaults,
+		"scopes":             scopes,
+		"label":              p.Label,
+		"protectedVaults":    protected,
+		"requiresStepUpAuth": posture,
 	})
 }
 
