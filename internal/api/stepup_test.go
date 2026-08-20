@@ -242,3 +242,83 @@ func TestOnlyTheUnlockRouteIsExempt(t *testing.T) {
 		t.Fatalf("routes exempt from step-up = %v, want exactly [POST /v1/unlock]", exempt)
 	}
 }
+
+func TestUnlockOpensTheGate(t *testing.T) {
+	s := newStepUpFixture(t)
+	s.unlock(t, "work", s.gated)
+	if res := s.as(t, "GET", "/work/v1/head", nil, s.gated); res.Code != http.StatusOK {
+		t.Fatalf("status = %d after unlocking, want 200", res.Code)
+	}
+}
+
+func TestAGrantDoesNotCoverASecondVault(t *testing.T) {
+	s := newStepUpFixture(t)
+	s.unlock(t, "work", s.gated)
+	if res := s.as(t, "GET", "/private/v1/head", nil, s.gated); res.Code != http.StatusForbidden {
+		t.Fatal("unlocking work also opened private")
+	}
+}
+
+func TestUnlockRejectsAWrongCode(t *testing.T) {
+	s := newStepUpFixture(t)
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.gated)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", res.Code)
+	}
+	if res := s.as(t, "GET", "/work/v1/head", nil, s.gated); res.Code != http.StatusForbidden {
+		t.Fatal("a failed unlock still opened the gate")
+	}
+}
+
+// Unlocking a vault this token has no access posture toward would spend a code
+// on a grant nothing consults.
+func TestUnlockIsRefusedWithoutAnAccessPosture(t *testing.T) {
+	s := newStepUpFixture(t)
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": s.code(t)}, s.opsOnly)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: this token gates ops, not access", res.Code)
+	}
+}
+
+func TestUnlockIsRefusedOnAnUnprotectedVault(t *testing.T) {
+	s := newStepUpFixture(t)
+	res := s.as(t, "POST", "/personal/v1/unlock", map[string]any{"code": s.code(t)}, s.gated)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: personal carries no marker", res.Code)
+	}
+}
+
+func TestUnlockIsRefusedWithNoSecret(t *testing.T) {
+	s := newStepUpFixture(t)
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.exempt)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", res.Code)
+	}
+}
+
+func TestUnlockReportsWhenTheGrantEnds(t *testing.T) {
+	s := newStepUpFixture(t)
+	before := s.clock.now.Unix()
+	res := s.unlock(t, "work", s.gated)
+	var got struct {
+		Vault     string `json:"vault"`
+		ExpiresAt int64  `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Vault != "work" || got.ExpiresAt <= before {
+		t.Errorf("got %+v, want vault=work and a future expiresAt", got)
+	}
+}
+
+func TestUnlockCooldownSetsRetryAfter(t *testing.T) {
+	s := newStepUpFixture(t)
+	for i := 0; i < 3; i++ {
+		s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.gated)
+	}
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.gated)
+	if res.Header().Get("Retry-After") == "" {
+		t.Error("a cooling-down refusal did not say when to try again")
+	}
+}

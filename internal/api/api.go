@@ -180,6 +180,57 @@ func (s *Server) withVault(scope string, skipStepUp bool, h func(http.ResponseWr
 	}
 }
 
+// unlock exchanges a one-time code for a grant on this vault.
+//
+// It requires that this vault is protected AND that this token gates access to
+// it. Without both, a code would be spent to create a grant nothing consults --
+// and an unlock issued before a marker existed would pre-authorise the vault
+// that is about to be protected.
+func (s *Server) unlock(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+
+	if !stepUpFrom(r).gated {
+		fail(w, http.StatusForbidden, protocol.CodeForbidden,
+			"nothing to unlock: "+inst.Name+" does not require step-up from this token")
+		return
+	}
+	if p.TotpSecret == "" {
+		fail(w, http.StatusForbidden, protocol.CodeForbidden,
+			"this token has no step-up secret, so it cannot unlock anything")
+		return
+	}
+	if s.verifier == nil || s.grants == nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal,
+			"this server was built without step-up support")
+		return
+	}
+
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, `expected {"code": "123456"}`)
+		return
+	}
+
+	hash := auth.HashToken(bearer(r))
+	if err := s.verifier.Check(hash, inst.Name, p.TotpSecret, body.Code); err != nil {
+		var cooling stepup.ErrCoolingDown
+		if errors.As(err, &cooling) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(cooling.Retry.Seconds())+1))
+		}
+		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired, err.Error())
+		return
+	}
+
+	until := s.grants.Grant(hash, inst.Name)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"vault":     inst.Name,
+		"expiresAt": until.Unix(),
+	})
+}
+
 // stepUpDecision enforces the consent gate and returns what the handler needs
 // to keep enforcing it. It writes the refusal itself, so the caller only has to
 // return.
@@ -725,6 +776,11 @@ func (s *Server) routes() []route {
 		{Method: "GET", Path: "/v1/at/{rev}/{path...}", Does: "a file as it was at a revision; does not restore", Scope: auth.ScopeRead, handle: s.at},
 		{Method: "GET", Path: "/v1/check", Does: "working tree versus head", Scope: auth.ScopeRead, handle: s.check},
 		{Method: "GET", Path: "/v1/export", Does: "consistent archive of history; ?gzip=1 to compress", Scope: auth.ScopeRead, handle: s.export},
+		// The one route exempt from the gate it opens. NoScope because a caller
+		// who cannot read the vault gains nothing by unlocking it, and requiring
+		// read would stop a write-only token unlocking in order to write.
+		{Method: "POST", Path: "/v1/unlock", Does: "{code} start a step-up grant for this vault",
+			NoScope: true, SkipStepUp: true, handle: s.unlock},
 		{Method: "GET", Path: "/healthz", Does: "liveness, no auth"},
 	}
 }
