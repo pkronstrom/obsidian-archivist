@@ -545,10 +545,18 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	name := r.PathValue("vault")
 
+	// The gate was decided at admission and carried here. Re-checking the marker
+	// or the grant now would be a TOCTOU window: a stream opened while the vault
+	// was unprotected would keep running after the marker appeared. A nil
+	// channel blocks forever, which is exactly right for an ungated caller.
+	lapsed := stepUpFrom(r).lapsed
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-lapsed:
+			return // the consent that opened this stream has ended
 		case ev, ok := <-ch:
 			if !ok {
 				return
@@ -636,7 +644,15 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
+	// The gate was decided at admission and carried here. Re-checking the marker
+	// or the grant now would be a TOCTOU window: a stream opened while the vault
+	// was unprotected would keep running after the marker appeared. A nil
+	// channel blocks forever, which is exactly right for an ungated caller.
+	lapsed := stepUpFrom(r).lapsed
+
 	select {
+	case <-lapsed:
+		return // the consent that opened this poll has ended
 	case ev, ok := <-ch:
 		if !ok {
 			writeJSON(w, protocol.WaitResponse{Head: since, Changed: false})

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -320,5 +321,83 @@ func TestUnlockCooldownSetsRetryAfter(t *testing.T) {
 	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.gated)
 	if res.Header().Get("Retry-After") == "" {
 		t.Error("a cooling-down refusal did not say when to try again")
+	}
+}
+
+// Both stream tests neutralise the keepalive. The events handler re-checks the
+// token on every keepalive tick and returns if it was revoked, so with the
+// default 25s interval a stream ends on its own and the test passes whether or
+// not the lapse arm works at all. An hour makes the lapse arm the only way out.
+//
+// They also assert 200 first: a test that never establishes the stream, because
+// the middleware refused it, proves nothing about what happens when consent
+// ends mid-stream.
+func TestAnEventStreamStopsWhenItsGrantLapses(t *testing.T) {
+	defer func(d time.Duration) { streamKeepalive = d }(streamKeepalive)
+	streamKeepalive = time.Hour
+
+	s := newStepUpFixture(t)
+	s.unlock(t, "work", s.gated)
+
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/work/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+s.gated)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the stream never opened", res.StatusCode)
+	}
+
+	drained := make(chan struct{})
+	go func() { io.ReadAll(res.Body); close(drained) }()
+
+	// The handler has to reach its select before consent is withdrawn, or the
+	// close races the registration.
+	time.Sleep(150 * time.Millisecond)
+	s.expireGrants()
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream outlived its grant")
+	}
+}
+
+func TestABlockedWaitStopsWhenItsGrantLapses(t *testing.T) {
+	s := newStepUpFixture(t)
+	s.unlock(t, "work", s.gated)
+
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	status := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest("GET", srv.URL+"/work/v1/wait?timeout=60", nil)
+		req.Header.Set("Authorization", "Bearer "+s.gated)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- 0
+			return
+		}
+		res.Body.Close()
+		status <- res.StatusCode
+	}()
+
+	time.Sleep(150 * time.Millisecond) // let the long poll block
+	s.expireGrants()
+
+	select {
+	case got := <-status:
+		if got != http.StatusOK {
+			t.Fatalf("status = %d, want 200: this poll was refused at admission "+
+				"rather than ended by the lapse", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a blocked long poll outlived its grant")
 	}
 }
