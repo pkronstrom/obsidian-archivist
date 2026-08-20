@@ -21,3 +21,14 @@ export { scanForSecrets } from "../src/secrets";
 export { plannedInstalls } from "../src/plugin-install";
 export { missingPluginScopes, scopeWarning } from "../src/scopes";
 export { pairRenames } from "../src/scopes";
+
+export {
+	formatDuration,
+	formatSyncSchedule,
+	formatRelativeTime,
+	formatBytes,
+	formatVaultStats,
+	formatPermissions,
+	suggestDeviceName,
+	clampInterval,
+} from "../src/status-text";
