@@ -66,16 +66,22 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("p", {
-			cls: "setting-item-description",
-			text:
-				"Self-hosted sync: your vault stays plain Markdown files on a server " +
-				"you own, with full history. This plugin needs your own Archivist " +
-				"server to connect to — setup instructions in the repository: ",
-		}).createEl("a", {
-			href: "https://github.com/pkronstrom/obsidian-archivist",
-			text: "github.com/pkronstrom/obsidian-archivist",
-		});
+		// A control-less Setting rather than a bare <p>: the description class
+		// only gets its muted styling inside a .setting-item, and themes align
+		// and pad setting rows -- loose paragraphs sit off-grid beside them.
+		new Setting(containerEl).setDesc(
+			createFragment((f) => {
+				f.appendText(
+					"Self-hosted sync: your vault stays plain Markdown files on a " +
+						"server you own, with full history. This plugin connects to " +
+						"your own Archivist server. Setup instructions: ",
+				);
+				f.createEl("a", {
+					href: "https://github.com/pkronstrom/obsidian-archivist",
+					text: "github.com/pkronstrom/obsidian-archivist",
+				});
+			}),
+		);
 
 		this.renderStatus(containerEl);
 		this.renderServer(containerEl);
@@ -462,13 +468,11 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// would reintroduce exactly that step. Say so rather than syncing the
 		// wrong paths.
 		if (this.app.vault.configDir !== CONFIG_DIR) {
-			containerEl.createEl("p", {
-				cls: "setting-item-description",
-				text:
-					`Config sync is unavailable: this vault's configuration directory is ` +
+			new Setting(containerEl).setDesc(
+				`Config sync is unavailable: this vault's configuration directory is ` +
 					`"${this.app.vault.configDir}" rather than "${CONFIG_DIR}", and the ` +
 					`server's allowlist names the default. Notes sync normally.`,
-			});
+			);
 			return;
 		}
 
@@ -496,14 +500,14 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		if (config.level !== "plugins") return;
 
-		containerEl.createEl("p", {
-			cls: "setting-item-description",
-			text:
-				"Plugin settings (data.json) are off for every plugin until you turn " +
-				"one on below. Each is scanned first, and a plugin whose settings look " +
-				"like they hold a credential is refused with a reason — nothing is " +
-				"stripped or rewritten, so you never get a settings file with a hole in it.",
-		});
+		new Setting(containerEl).setName("Plugin settings").setHeading();
+
+		new Setting(containerEl).setDesc(
+			"Settings (data.json) are off for every plugin until you turn one on " +
+				"below. Each is scanned first, and a plugin whose settings look like " +
+				"they hold a credential is refused with a reason. Nothing is stripped " +
+				"or rewritten, so you never get a settings file with a hole in it.",
+		);
 
 		void this.renderPluginOptIns(containerEl, config);
 	}
