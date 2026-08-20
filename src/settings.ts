@@ -66,6 +66,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		containerEl.createEl("h2", { text: "Archivist – self-hosted Obsidian sync" });
+
 		// A control-less Setting rather than a bare <p>: the description class
 		// only gets its muted styling inside a .setting-item, and themes align
 		// and pad setting rows -- loose paragraphs sit off-grid beside them.
@@ -349,15 +351,21 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			.setName("Mode")
 			.setDesc(
 				createFragment((f) => {
-					f.createDiv({
-						text: "Automatic — syncs right after you edit; changes from other devices arrive within about a second.",
-					});
-					f.createDiv({
-						text: "Periodic — syncs on a fixed interval only; no connection held open.",
-					});
-					f.createDiv({
-						text: "Manual — syncs only on demand: the ribbon icon, the sync command, or when the app gains focus.",
-					});
+					const list = f.createDiv("archivist-modes");
+					const row = (name: string, text: string) => {
+						const r = list.createDiv("archivist-mode-row");
+						r.createSpan({ cls: "archivist-mode-name", text: name });
+						r.createSpan({ text });
+					};
+					row(
+						"Automatic",
+						"syncs right after you edit; changes from other devices arrive within about a second.",
+					);
+					row("Periodic", "syncs on a fixed interval; no connection held open.");
+					row(
+						"Manual",
+						"syncs only on demand: the ribbon icon, the sync command, or when the app gains focus.",
+					);
 				}),
 			)
 			.addDropdown((d) =>

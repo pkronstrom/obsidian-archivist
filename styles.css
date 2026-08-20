@@ -58,17 +58,50 @@
 	display: none;
 }
 
-/* The status-bar icon: fixed size, state shown by motion and color. */
-.archivist-status-item.archivist-syncing .svg-icon {
-	animation: archivist-spin 1.2s linear infinite;
+/* The sync-mode explanations inside the Mode row's description: aligned
+ * name column so the three options read as a table, not a paragraph. */
+.archivist-modes {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	margin-top: var(--size-2-2);
 }
 
-.archivist-status-item.archivist-attention .svg-icon {
+.archivist-mode-row {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.archivist-mode-name {
+	flex: 0 0 5.5em;
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
+/* The status-bar item: icon + counts, width held stable. State shows as
+ * a static icon tint -- accent while syncing, red on error, orange when
+ * waiting on the user. No animation. */
+.archivist-status-item .svg-icon {
+	margin-right: var(--size-2-2);
+	vertical-align: middle;
+}
+
+.archivist-status-item.archivist-syncing .svg-icon {
+	color: var(--text-accent);
+}
+
+.archivist-status-item.archivist-error .svg-icon {
 	color: var(--color-red);
 }
 
-@keyframes archivist-spin {
-	to {
-		transform: rotate(360deg);
-	}
+.archivist-status-item.archivist-paused .svg-icon {
+	color: var(--color-orange);
+}
+
+/* Tabular digits and a small floor width, so a count changing from 9 to
+ * 10 does not shift the item. */
+.archivist-status-counts {
+	font-variant-numeric: tabular-nums;
+	display: inline-block;
+	min-width: 5ch;
 }
