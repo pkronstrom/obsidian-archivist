@@ -458,7 +458,7 @@ func TestMoveWorksForAnAttachmentToo(t *testing.T) {
 	// tool name invites someone to special-case later.
 	cs, _ := session(t)
 	call(t, cs, "write_attachment", map[string]any{
-		"path": "att/moveme.png",
+		"path":           "att/moveme.png",
 		"content_base64": base64.StdEncoding.EncodeToString(pngBytes)})
 
 	call(t, cs, "move_note", map[string]any{
