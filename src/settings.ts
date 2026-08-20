@@ -23,6 +23,15 @@ import {
 	suggestDeviceName,
 } from "./status-text";
 
+/**
+ * Shows a vault's name boldly on the control (right) side of a setting row --
+ * this is the value someone scans for first when checking "which vault is
+ * this device pointed at", not body text to read in a sentence.
+ */
+function addVaultBadge(setting: Setting, vault: string): void {
+	setting.controlEl.createEl("strong", { text: vault });
+}
+
 export type Settings = {
 	serverUrl: string;
 	/**
@@ -94,6 +103,11 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			.setName("Last synced")
 			.setDesc(formatRelativeTime(state.lastSyncedAt, Date.now()));
 
+		const vaultSetting = new Setting(containerEl)
+			.setName("Vault")
+			.setDesc("Which vault this device is synced with.");
+		addVaultBadge(vaultSetting, this.plugin.settings.vault || "Not configured");
+
 		const connectionSetting = new Setting(containerEl).setName("Connection").setDesc("Checking…");
 		const permissionsSetting = new Setting(containerEl).setName("Permissions").setDesc("Checking…");
 
@@ -142,7 +156,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		try {
 			const idx = await new Client(serverUrl, token, vault).index();
-			connectionSetting.setDesc(`Connected to ${serverUrl} (vault "${idx.vault || vault}")`);
+			// The vault name has its own row above; only repeat it here if it
+			// disagrees with what this device adopted, which is worth a flag.
+			connectionSetting.setDesc(
+				idx.vault && idx.vault !== vault
+					? `Connected to ${serverUrl} — mismatch: server reports vault "${idx.vault}"`
+					: `Connected to ${serverUrl}`,
+			);
 		} catch (err) {
 			connectionSetting.setDesc(
 				`Server unreachable: ${err instanceof Error ? err.message : String(err)}`,
@@ -236,10 +256,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		const vaultSetting = new Setting(containerEl)
 			.setName("Vault")
-			.setDesc(
-				`Which vault on that server. One server serves several; this device is ` +
-					`synced with "${vault}".`,
-			);
+			.setDesc("Which vault on that server. One server serves several.");
+		addVaultBadge(vaultSetting, vault);
 
 		void this.maybeShowChangeVaultButton(vaultSetting);
 	}
