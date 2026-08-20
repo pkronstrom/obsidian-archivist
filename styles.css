@@ -58,6 +58,26 @@
 	display: none;
 }
 
+/* The sync-mode explanations inside the Mode row's description: aligned
+ * name column so the three options read as a table, not a paragraph. */
+.archivist-modes {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-2);
+	margin-top: var(--size-2-2);
+}
+
+.archivist-mode-row {
+	display: flex;
+	gap: var(--size-4-2);
+}
+
+.archivist-mode-name {
+	flex: 0 0 5.5em;
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
 /* The status-bar icon: fixed size, state shown by motion and color. */
 .archivist-status-item.archivist-syncing .svg-icon {
 	animation: archivist-spin 1.2s linear infinite;
