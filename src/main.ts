@@ -21,6 +21,8 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 
 	private status?: HTMLElement;
+	private statusText?: HTMLElement;
+	private lastCounts = "↓– ↑–";
 	/**
 	 * The pending pairing question, once the user has said "not now".
 	 *
@@ -59,13 +61,19 @@ export default class ArchivistPlugin extends Plugin {
 			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
 		);
 
-		// Icon only, fixed size: text made the item change width on every
-		// state flip (visible as a blink when the click itself triggers a
-		// focus sync). State shows as spin/color; the words move to the
-		// hover tooltip.
+		// Icon plus the last sync counts. The counts are the ONLY thing the
+		// text ever shows -- transient states ("syncing…", "error") go to the
+		// tooltip and the icon color instead, so the item never changes width
+		// (the old full-text version visibly blinked when a click triggered a
+		// focus sync). Dashes, not zeros, before the first cycle: "↓0 ↑0"
+		// would claim a completed zero-change sync that has not happened.
 		this.status = this.addStatusBarItem();
 		this.status.addClasses(["mod-clickable", "archivist-status-item"]);
 		setIcon(this.status, "refresh-cw");
+		this.statusText = this.status.createSpan({
+			cls: "archivist-status-counts",
+			text: this.lastCounts,
+		});
 		this.registerDomEvent(this.status, "click", () => this.openSettings());
 		this.setStatus("idle");
 
@@ -357,17 +365,28 @@ export default class ArchivistPlugin extends Plugin {
 
 	private setStatus(text: string): void {
 		if (!this.status) return;
-		// The words live in the tooltip; the icon carries the state.
-		this.status.setAttribute("aria-label", `archivist: ${text}`);
-		this.status.setAttribute("data-tooltip-position", "top");
+
+		if (text.startsWith("↓")) {
+			this.lastCounts = text;
+			this.statusText?.setText(text);
+		}
+
+		// Severity, not one bucket: red is a real failure, orange is a state
+		// waiting on the user, and not-configured stays uncolored -- setup is
+		// not a fault. Syncing gets a static accent tint (visible only when a
+		// sync runs long enough to notice), never an animation.
 		this.status.toggleClass("archivist-syncing", text === "syncing…");
+		this.status.toggleClass("archivist-error", text === "error");
 		this.status.toggleClass(
-			"archivist-attention",
-			text === "error" ||
-				text === "not configured" ||
-				text === "needs a decision" ||
-				text.startsWith("paused"),
+			"archivist-paused",
+			text === "needs a decision" || text.startsWith("paused"),
 		);
+
+		// The refresh icon reads as "sync now", so the tooltip says what a
+		// click actually does.
+		const state = text.startsWith("↓") ? `last sync ${text}` : `${text} (last ${this.lastCounts})`;
+		this.status.setAttribute("aria-label", `archivist: ${state}. Click to open settings.`);
+		this.status.setAttribute("data-tooltip-position", "top");
 	}
 
 	async loadSettings(): Promise<void> {
