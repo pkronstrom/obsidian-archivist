@@ -89,6 +89,11 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Status").setHeading();
 
 		new Setting(containerEl)
+			.setName("Plugin version")
+			.setDesc("Useful when comparing devices that seem to behave differently.")
+			.then((s) => s.controlEl.createEl("strong", { text: this.plugin.manifest.version }));
+
+		new Setting(containerEl)
 			.setName("Sync schedule")
 			.setDesc(
 				formatSyncSchedule({
@@ -254,10 +259,12 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			return;
 		}
 
+		// The name itself is shown once, prominently, in the Status section
+		// above -- this row is only for the action, not a second place to
+		// re-confirm what it's already called.
 		const vaultSetting = new Setting(containerEl)
 			.setName("Vault")
 			.setDesc("Which vault on that server. One server serves several.");
-		addVaultBadge(vaultSetting, vault);
 
 		void this.maybeShowChangeVaultButton(vaultSetting);
 	}
