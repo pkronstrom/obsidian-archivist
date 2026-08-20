@@ -1,6 +1,8 @@
-import { App, Notice, PluginSettingTab, Setting, type TextComponent } from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { hostname as osHostname } from "os";
 import { Client } from "./client";
 import { scopeWarning } from "./scopes";
+import { loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
 import {
 	CONFIG_DIR,
@@ -12,6 +14,14 @@ import {
 import { scanForSecrets } from "./secrets";
 import { VaultPickerModal } from "./vault-picker";
 import type ArchivistPlugin from "./main";
+import {
+	clampInterval,
+	formatPermissions,
+	formatRelativeTime,
+	formatSyncSchedule,
+	formatVaultStats,
+	suggestDeviceName,
+} from "./status-text";
 
 export type Settings = {
 	serverUrl: string;
@@ -44,6 +54,9 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export class ArchivistSettingTab extends PluginSettingTab {
+	/** Filled in by "Test connection"; shown in the Status section once known. */
+	private vaultStats?: { files: number; bytes: number };
+
 	constructor(app: App, private plugin: ArchivistPlugin) {
 		super(app, plugin);
 	}
@@ -51,6 +64,103 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		this.renderStatus(containerEl);
+		this.renderConnection(containerEl);
+		this.renderVaultAndDevice(containerEl);
+		this.renderSyncBehavior(containerEl);
+		this.renderMaintenance(containerEl);
+		this.renderConfigSync(containerEl);
+	}
+
+	/** Health at a glance: what's configured, when it last synced, what the
+	 *  token can do, and how big the vault is -- populated from the same
+	 *  calls "Test connection" already makes, not new endpoints. */
+	private renderStatus(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Status").setHeading();
+
+		new Setting(containerEl)
+			.setName("Sync schedule")
+			.setDesc(
+				formatSyncSchedule({
+					syncOnChange: this.plugin.settings.syncOnChange,
+					intervalSeconds: this.plugin.settings.intervalSeconds,
+					watchRemote: this.plugin.settings.watchRemote,
+				}),
+			);
+
+		const state = loadState(this.app);
+		new Setting(containerEl)
+			.setName("Last synced")
+			.setDesc(formatRelativeTime(state.lastSyncedAt, Date.now()));
+
+		const connectionSetting = new Setting(containerEl).setName("Connection").setDesc("Checking…");
+		const permissionsSetting = new Setting(containerEl).setName("Permissions").setDesc("Checking…");
+
+		if (this.vaultStats) {
+			new Setting(containerEl)
+				.setName("Vault size")
+				.setDesc(formatVaultStats(this.vaultStats.files, this.vaultStats.bytes));
+		}
+
+		void this.refreshStatus(connectionSetting, permissionsSetting);
+
+		// A deferred pairing question is otherwise unreachable: the modal only
+		// reopens from a sync, and a deferred one stops syncing on purpose.
+		if (this.plugin.pendingPairing) {
+			const hazard = this.plugin.pendingPairing;
+			new Setting(containerEl)
+				.setName("This device is not syncing")
+				.setDesc(
+					`It holds ${hazard.localFiles} file(s) and has never synced, and the ` +
+						`server already has content. Nothing has been changed. Until you ` +
+						`choose, this device stays paused.`,
+				)
+				.addButton((b) =>
+					b
+						.setCta()
+						.setButtonText("Choose what happens")
+						.onClick(() => {
+							this.plugin.openPairingModal();
+						}),
+				);
+		}
+	}
+
+	/** New automatic network calls on every tab open: index() for reachability,
+	 *  listVaults() for scopes. Both already exist -- Test connection and the
+	 *  vault picker call them too -- this just also fires them here. */
+	private async refreshStatus(connectionSetting: Setting, permissionsSetting: Setting): Promise<void> {
+		const { serverUrl, vault } = this.plugin.settings;
+		const token = loadToken(this.app);
+
+		if (!serverUrl || !token || !vault) {
+			connectionSetting.setDesc("Not configured");
+			permissionsSetting.setDesc("Not configured");
+			return;
+		}
+
+		try {
+			const idx = await new Client(serverUrl, token, vault).index();
+			connectionSetting.setDesc(`Connected to ${serverUrl} (vault "${idx.vault || vault}")`);
+		} catch (err) {
+			connectionSetting.setDesc(
+				`Server unreachable: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
+		try {
+			const { scopes, label } = await new Client(serverUrl, token, "").listVaults();
+			permissionsSetting.setDesc(formatPermissions(scopes, label));
+		} catch (err) {
+			permissionsSetting.setDesc(
+				`Could not check: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	private renderConnection(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Connection").setHeading();
 
 		new Setting(containerEl)
 			.setName("Server URL")
@@ -76,8 +186,99 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					saveToken(this.app, v.trim());
 				});
 			});
+	}
 
-		let vaultField: TextComponent | null = null;
+	private renderVaultAndDevice(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Vault & device").setHeading();
+
+		this.renderVault(containerEl);
+
+		new Setting(containerEl)
+			.setName("Device name")
+			.setDesc("Names this device in commit messages and conflict filenames.")
+			.addText((t) => {
+				if (!this.plugin.settings.device) {
+					const suggestion = suggestDeviceName(Platform, this.desktopHostname());
+					this.plugin.settings.device = suggestion;
+					void this.plugin.saveSettings();
+					t.setValue(suggestion);
+				} else {
+					t.setValue(this.plugin.settings.device);
+				}
+				t.setPlaceholder("mac / iphone").onChange(async (v) => {
+					this.plugin.settings.device = v.trim();
+					await this.plugin.saveSettings();
+				});
+			});
+	}
+
+	/** os.hostname() only exists in the Electron/Node desktop runtime -- guarded
+	 *  behind Platform.isDesktopApp so the mobile bundle never reaches it. */
+	private desktopHostname(): string | null {
+		if (!Platform.isDesktopApp) return null;
+		try {
+			return osHostname();
+		} catch {
+			return null;
+		}
+	}
+
+	/** Once a vault is resolved, it is shown as a fixed label rather than a
+	 *  free-text field: the vault is tied to the token, not something to
+	 *  retype. */
+	private renderVault(containerEl: HTMLElement): void {
+		const vault = this.plugin.settings.vault;
+
+		if (!vault) {
+			this.renderVaultChooser(containerEl);
+			return;
+		}
+
+		const vaultSetting = new Setting(containerEl)
+			.setName("Vault")
+			.setDesc(
+				`Which vault on that server. One server serves several; this device is ` +
+					`synced with "${vault}".`,
+			);
+
+		void this.maybeShowChangeVaultButton(vaultSetting);
+	}
+
+	/** Only offered when the token can reach more than one vault -- changing to
+	 *  the only vault it opens is not a choice. */
+	private async maybeShowChangeVaultButton(vaultSetting: Setting): Promise<void> {
+		const { serverUrl } = this.plugin.settings;
+		const token = loadToken(this.app);
+		if (!serverUrl || !token) return;
+
+		try {
+			const { vaults, scopes, label } = await new Client(serverUrl, token, "").listVaults();
+			if (scopeWarning(scopes, label) || vaults.length <= 1) return;
+
+			vaultSetting.addButton((b) =>
+				b
+					.setWarning()
+					.setButtonText("Change vault")
+					.onClick(() => {
+						new VaultPickerModal(this.app, vaults, (v) => void this.chooseVault(v)).open();
+					}),
+			);
+		} catch {
+			// Server unreachable or token invalid: the Status section above
+			// already says so. Nothing to add here.
+		}
+	}
+
+	private async chooseVault(vault: string): Promise<void> {
+		this.plugin.settings.vault = vault;
+		await this.plugin.saveSettings();
+		new Notice(`archivist: syncing vault "${vault}"`);
+		this.display();
+	}
+
+	/** Fallback for an unresolved vault: no token yet, or a token open to more
+	 *  than one vault with no prior choice. */
+	private renderVaultChooser(containerEl: HTMLElement): void {
 		const vaultSetting = new Setting(containerEl)
 			.setName("Vault")
 			.setDesc(
@@ -86,30 +287,20 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"vault at different content, and the plugin refuses to sync if it does " +
 					"not match what this device already adopted.",
 			)
-			.addText((t) => {
-				vaultField = t;
+			.addText((t) =>
 				t.setPlaceholder("personal")
 					.setValue(this.plugin.settings.vault)
 					.onChange(async (v) => {
 						this.plugin.settings.vault = v.trim();
 						await this.plugin.saveSettings();
-					});
-			});
+					}),
+			);
 
-		// A token that opens one vault has one answer. Resolve it on open rather
-		// than making someone press a button to be told the only option.
+		// A token that opens one vault has one answer. Resolve it on open
+		// rather than making someone press a button to be told the only option.
 		void this.plugin.resolveVaultIfUnambiguous().then((ok) => {
-			if (ok) vaultField?.setValue(this.plugin.settings.vault);
+			if (ok) this.display();
 		});
-
-		const choose = async (vault: string) => {
-			this.plugin.settings.vault = vault;
-			await this.plugin.saveSettings();
-			// Fill the field in. A picker that tells you the answer and leaves
-			// you to type it is not a picker.
-			vaultField?.setValue(vault);
-			new Notice(`archivist: syncing vault "${vault}"`);
-		};
 
 		vaultSetting.addButton((b) =>
 			b.setButtonText("Choose").onClick(async () => {
@@ -120,11 +311,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					return;
 				}
 				try {
-					const { vaults, scopes, label } = await new Client(
-						serverUrl,
-						token,
-						"",
-					).listVaults();
+					const { vaults, scopes, label } = await new Client(serverUrl, token, "").listVaults();
 					// Refuse here rather than at the first save. A token without
 					// both verbs syncs down happily and then fails on a write,
 					// with the note already edited -- the worst moment to learn
@@ -138,30 +325,22 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						new Notice("archivist: this token opens no vaults", 8000);
 						return;
 					}
-					// One vault is not a choice. Fill it in rather than making
+					// One vault is not a choice. Adopt it rather than making
 					// someone pick from a list of one.
 					if (vaults.length === 1) {
-						await choose(vaults[0]);
+						await this.chooseVault(vaults[0]);
 						return;
 					}
-					new VaultPickerModal(this.app, vaults, (v) => void choose(v)).open();
+					new VaultPickerModal(this.app, vaults, (v) => void this.chooseVault(v)).open();
 				} catch (err) {
 					new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
 				}
 			}),
 		);
+	}
 
-		new Setting(containerEl)
-			.setName("Device name")
-			.setDesc("Names this device in commit messages and conflict filenames.")
-			.addText((t) =>
-				t.setPlaceholder("mac / iphone")
-					.setValue(this.plugin.settings.device)
-					.onChange(async (v) => {
-						this.plugin.settings.device = v.trim();
-						await this.plugin.saveSettings();
-					}),
-			);
+	private renderSyncBehavior(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Sync behavior").setHeading();
 
 		new Setting(containerEl)
 			.setName("Sync on change")
@@ -175,12 +354,16 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Sync interval (seconds)")
-			.setDesc("Background sync period. 0 disables it; syncing on focus and on change still happens.")
+			.setDesc(
+				"Background sync period. 0 disables it; syncing on focus and on change " +
+					"still happens. Values below 10 are rounded up to 10, to guard " +
+					"against a typo hammering the server.",
+			)
 			.addText((t) =>
 				t.setValue(String(this.plugin.settings.intervalSeconds)).onChange(async (v) => {
 					const n = Number(v);
 					if (!Number.isFinite(n) || n < 0) return;
-					this.plugin.settings.intervalSeconds = Math.floor(n);
+					this.plugin.settings.intervalSeconds = clampInterval(n);
 					await this.plugin.saveSettings();
 					this.plugin.restartTimer();
 				}),
@@ -200,6 +383,10 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					this.plugin.restartWatcher();
 				}),
 			);
+	}
+
+	private renderMaintenance(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Maintenance").setHeading();
 
 		// Most setup failures are a wrong URL or a wrong token. A button that
 		// says which beats asking someone to read a console on a phone.
@@ -223,45 +410,38 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					try {
 						const client = new Client(serverUrl, token, this.plugin.settings.vault);
 						const idx = await client.index();
-						const files = Object.keys((await client.snapshot()).files).length;
+						const { files } = await client.snapshot();
+						const entries = Object.values(files);
+						this.vaultStats = {
+							files: entries.length,
+							bytes: entries.reduce((sum, e) => sum + e.size, 0),
+						};
 						const name = idx.vault || "unnamed (older server)";
 						new Notice(
-							`archivist: connected to vault "${name}" — ${files} file(s), ` +
+							`archivist: connected to vault "${name}" — ${entries.length} file(s), ` +
 								`server ${idx.version}`,
 							10000,
 						);
+						// Re-render so the Status section above picks up vaultStats.
+						this.display();
 					} catch (err) {
 						new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
 					}
 				}),
 			);
 
-		// A deferred pairing question is otherwise unreachable: the modal only
-		// reopens from a sync, and a deferred one stops syncing on purpose.
-		if (this.plugin.pendingPairing) {
-			const hazard = this.plugin.pendingPairing;
-			new Setting(containerEl)
-				.setName("This device is not syncing")
-				.setDesc(
-					`It holds ${hazard.localFiles} file(s) and has never synced, and the ` +
-						`server already has content. Nothing has been changed. Until you ` +
-						`choose, this device stays paused.`,
-				)
-				.addButton((b) =>
-					b
-						.setCta()
-						.setButtonText("Choose what happens")
-						.onClick(() => {
-							this.plugin.openPairingModal();
-						}),
-				);
-		}
-
-		this.renderConfigSync(containerEl);
-
 		new Setting(containerEl)
 			.setName("Re-bootstrap from server")
-			.setDesc("Discards local sync state and adopts the server's. Deletes nothing; local-only files are pushed on the next sync.")
+			.setDesc(
+				"Use this if this device's sync history seems wrong — e.g. after " +
+					"restoring this vault from a backup, editing files outside of sync, or " +
+					"a sync that got stuck. It makes the plugin forget what it last saw " +
+					"here and re-derive that from what the server has now. Deletes " +
+					"nothing — local-only files are pushed on the next sync. It's marked " +
+					"red because discarding correct history unnecessarily can cause a " +
+					"burst of re-push/re-pull churn — only use it when something actually " +
+					"looks wrong.",
+			)
 			.addButton((b) =>
 				b.setWarning().setButtonText("Re-bootstrap").onClick(async () => {
 					await this.plugin.sync.forceRebootstrap();
@@ -272,7 +452,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	/** The config-sync section: level, then per-plugin opt-ins. */
 	private renderConfigSync(containerEl: HTMLElement): void {
-		containerEl.createEl("h3", { text: "Obsidian config" });
+		new Setting(containerEl).setName("Obsidian config").setHeading();
 
 		// Obsidian lets the config directory be renamed. This plugin does not
 		// follow that: the whole point of syncing config in-vault is that files
