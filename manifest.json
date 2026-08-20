@@ -1,7 +1,7 @@
 {
   "id": "archivist",
   "name": "Archivist",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "minAppVersion": "1.8.7",
   "description": "Self-hosted sync. Your vault stays plain Markdown files on a server you own, with full history.",
   "author": "pkronstrom",
