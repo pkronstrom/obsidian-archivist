@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 )
 
 func printedToken(t *testing.T, out string) string {
@@ -27,7 +28,7 @@ func TestAddMintsATokenAndPrintsItOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var out bytes.Buffer
 
-	err := Run([]string{"add", "-tokens", path, "-label", "mac",
+	err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "mac",
 		"-vaults", "personal", "-scopes", "read,write"}, &out)
 	if err != nil {
 		t.Fatal(err)
@@ -50,11 +51,11 @@ func TestAddMintsATokenAndPrintsItOnce(t *testing.T) {
 func TestAddAppendsRatherThanReplacing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var out bytes.Buffer
-	if err := Run([]string{"add", "-tokens", path, "-label", "one",
+	if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "one",
 		"-vaults", "personal", "-scopes", "read"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"add", "-tokens", path, "-label", "two",
+	if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "two",
 		"-vaults", "personal", "-scopes", "read"}, &out); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestAddAppendsRatherThanReplacing(t *testing.T) {
 func TestAddRejectsAnUnknownScope(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var out bytes.Buffer
-	err := Run([]string{"add", "-tokens", path, "-label", "x",
+	err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "x",
 		"-vaults", "personal", "-scopes", "read,admin"}, &out)
 	if err == nil {
 		t.Fatal("an unknown scope was accepted; the typo would silently grant nothing")
@@ -89,7 +90,7 @@ func TestAddRejectsAnUnknownScope(t *testing.T) {
 func TestListShowsLabelsAndHashesButNoSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var mint bytes.Buffer
-	if err := Run([]string{"add", "-tokens", path, "-label", "mac",
+	if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "mac",
 		"-vaults", "personal", "-scopes", "read"}, &mint); err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +112,11 @@ func TestListShowsLabelsAndHashesButNoSecrets(t *testing.T) {
 func TestRevokeRemovesByHashPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var mint bytes.Buffer
-	if err := Run([]string{"add", "-tokens", path, "-label", "gone",
+	if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "gone",
 		"-vaults", "personal", "-scopes", "read"}, &mint); err != nil {
 		t.Fatal(err)
 	}
-	if err := Run([]string{"add", "-tokens", path, "-label", "stays",
+	if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "stays",
 		"-vaults", "personal", "-scopes", "read"}, &mint); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestRevokeRefusesAnAmbiguousPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var mint bytes.Buffer
 	for _, label := range []string{"a", "b"} {
-		if err := Run([]string{"add", "-tokens", path, "-label", label,
+		if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", label,
 			"-vaults", "personal", "-scopes", "read"}, &mint); err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +182,7 @@ func TestConcurrentAddAndRevokeDoNotResurrectAToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var buf bytes.Buffer
 	for _, label := range []string{"doomed", "keeper"} {
-		if err := Run([]string{"add", "-tokens", path, "-label", label,
+		if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", label,
 			"-vaults", "personal", "-scopes", "read"}, &buf); err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +206,7 @@ func TestConcurrentAddAndRevokeDoNotResurrectAToken(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var o bytes.Buffer
-		errs <- Run([]string{"add", "-tokens", path, "-label", "newcomer",
+		errs <- Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "newcomer",
 			"-vaults", "personal", "-scopes", "read"}, &o)
 	}()
 	wg.Wait()
@@ -239,7 +240,7 @@ func TestConcurrentAddAndRevokeDoNotResurrectAToken(t *testing.T) {
 func TestAddRejectsANegativeExpiry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	var out bytes.Buffer
-	err := Run([]string{"add", "-tokens", path, "-label", "x",
+	err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "x",
 		"-vaults", "personal", "-scopes", "read", "-expires-in", "-1h"}, &out)
 	if err == nil {
 		t.Fatal("a negative expiry was accepted, minting a permanent token instead")
@@ -259,7 +260,7 @@ func TestAddWarnsWheneverTheTokenCannotDriveThePlugin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "tokens.json")
 			var out bytes.Buffer
-			if err := Run([]string{"add", "-tokens", path, "-label", "x",
+			if err := Run([]string{"add", "-tokens", path, "-root", filepath.Dir(path), "-label", "x",
 				"-vaults", "personal", "-scopes", tc.scopes}, &out); err != nil {
 				t.Fatal(err)
 			}
@@ -267,5 +268,179 @@ func TestAddWarnsWheneverTheTokenCannotDriveThePlugin(t *testing.T) {
 				t.Errorf("no plugin warning for scopes %q:\n%s", tc.scopes, out.String())
 			}
 		})
+	}
+}
+
+// newVaultRoot makes a root containing the named vaults, plus the tokens file
+// the CLI writes into.
+func newVaultRoot(t *testing.T, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(dir, "vaults", n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func protect(t *testing.T, dir, name string) {
+	t.Helper()
+	stateDir := filepath.Join(dir, ".archivist", name)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, vaults.StepUpMarker), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tokensPath(dir string) string { return filepath.Join(dir, "tokens.json") }
+
+func TestMintRefusesAProtectedVaultWithNoStatedPosture(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "agent", "-vaults", "work"}, &out)
+	if err == nil {
+		t.Fatal("a token for a protected vault minted with no posture")
+	}
+	if !strings.Contains(err.Error(), "-no-step-up") {
+		t.Errorf("the refusal does not name the opt-out flag: %v", err)
+	}
+}
+
+// A wildcard opens vaults that do not exist yet, so checking only what is
+// present at mint time is not a check.
+func TestMintRefusesWildcardWithoutAnExplicitDecision(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "agent", "-vaults", "*"}, &out); err == nil {
+		t.Fatal("a wildcard token minted against a root containing a protected vault")
+	}
+}
+
+// A check that silently skips itself when a variable is unset is not a check.
+func TestMintRequiresAVaultRoot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ARCHIVIST_ROOT", "")
+	var out bytes.Buffer
+	err := Run([]string{"add", "-tokens", tokensPath(dir),
+		"-label", "agent", "-vaults", "work"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "-root") {
+		t.Fatalf("minting without a root succeeded or failed unhelpfully: %v", err)
+	}
+}
+
+// The exemption must reach the file: the gate cannot otherwise tell it from a
+// token that predates the marker.
+func TestNoStepUpIsRecordedOnThePrincipal(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "phone", "-vaults", "work", "-no-step-up", "work"}, &out); err != nil {
+		t.Fatalf("the deliberate opt-out was refused: %v", err)
+	}
+	set, err := auth.Load(tokensPath(dir), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range set.Entries() {
+		if !p.StepUpExemptFrom("work") {
+			t.Fatalf("the exemption was not persisted: %+v", p)
+		}
+	}
+}
+
+func TestStepUpMintPrintsASecretExactlyOnce(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "agent", "-vaults", "work", "-step-up", "vault:work,ops:work"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "otpauth://totp/Archivist:agent") {
+		t.Errorf("no otpauth URL was printed:\n%s", s)
+	}
+	if !strings.Contains(s, "qrencode -t ANSIUTF8") {
+		t.Error("no ready-to-run QR command was printed")
+	}
+	if n := strings.Count(s, "secret="); n != 1 {
+		t.Errorf("the secret appears %d times, want exactly 1", n)
+	}
+}
+
+// Token last, and nothing after it: it is the line you select.
+func TestTokenIsTheFinalNonEmptyLine(t *testing.T) {
+	dir := newVaultRoot(t, "personal")
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "agent", "-vaults", "personal"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, auth.TokenPrefix) {
+		t.Errorf("last line = %q, want the token", last)
+	}
+}
+
+func TestProfileExpandsScopesAndPosture(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "mac", "-vaults", "work", "-profile", "obsidian-plugin"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "obsidian-plugin") {
+		t.Error("the profile was not printed, so what it granted is invisible")
+	}
+	if !strings.Contains(s, "read, write, delete") {
+		t.Errorf("obsidian-plugin did not expand to all three verbs:\n%s", s)
+	}
+	// Ops only, never vault access: the plugin cannot present a code.
+	if !strings.Contains(s, "ops:work") || strings.Contains(s, "vault:work") {
+		t.Errorf("obsidian-plugin posture is wrong:\n%s", s)
+	}
+}
+
+func TestExplicitStepUpOverridesTheProfile(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+		"-label", "mac", "-vaults", "work", "-profile", "obsidian-plugin",
+		"-step-up", "vault:work"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "vault:work") {
+		t.Error("an explicit -step-up did not override the profile default")
+	}
+}
+
+func TestUnattendedProfilesRefuseStepUp(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	protect(t, dir, "work")
+	for _, profile := range []string{"relay-background", "mcp-scheduled"} {
+		var out bytes.Buffer
+		err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", dir,
+			"-label", profile, "-vaults", "work", "-profile", profile,
+			"-step-up", "vault:work"}, &out)
+		if err == nil {
+			t.Errorf("%s accepted a step-up posture", profile)
+		}
 	}
 }
