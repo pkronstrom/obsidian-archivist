@@ -4,12 +4,6 @@
  * way scopes.ts is.
  */
 
-export function formatDuration(seconds: number): string {
-	if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
-	const minutes = Math.round((seconds / 60) * 10) / 10;
-	return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-}
-
 export type ScheduleSettings = {
 	syncOnChange: boolean;
 	intervalSeconds: number;
@@ -58,28 +52,6 @@ export function applySyncMode(mode: SyncMode, current: ScheduleSettings): Schedu
 	}
 }
 
-export function describeSyncMode(mode: SyncMode, intervalSeconds: number): string {
-	switch (mode) {
-		case "automatic":
-			return (
-				"Syncing right after you edit; changes from other devices arrive " +
-				"within about a second. A background pass every few minutes covers " +
-				"anything missed."
-			);
-		case "periodic":
-			return (
-				`Syncing every ${formatDuration(intervalSeconds)}; edits wait for ` +
-				`the next pass.`
-			);
-		case "manual":
-			// main.ts syncs on window focus regardless of these settings, so
-			// "only when you ask" would undersell what actually happens.
-			return (
-				"Syncing only on demand — the ribbon icon, the sync command, or " +
-				"when the app gains focus."
-			);
-	}
-}
 
 export function formatRelativeTime(atMs: number | undefined, nowMs: number): string {
 	if (atMs === undefined) return "Never";

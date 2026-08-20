@@ -17,7 +17,6 @@ import type ArchivistPlugin from "./main";
 import {
 	applySyncMode,
 	deriveSyncMode,
-	describeSyncMode,
 	formatPermissions,
 	formatRelativeTime,
 	formatVaultStats,
@@ -66,6 +65,17 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		containerEl.createEl("p", {
+			cls: "setting-item-description",
+			text:
+				"Self-hosted sync: your vault stays plain Markdown files on a server " +
+				"you own, with full history. This plugin needs your own Archivist " +
+				"server to connect to — setup instructions in the repository: ",
+		}).createEl("a", {
+			href: "https://github.com/pkronstrom/obsidian-archivist",
+			text: "github.com/pkronstrom/obsidian-archivist",
+		});
 
 		this.renderStatus(containerEl);
 		this.renderServer(containerEl);
@@ -329,30 +339,39 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const s = this.plugin.settings;
 		const mode = deriveSyncMode(s);
 
-		containerEl.createEl("p", {
-			cls: "setting-item-description",
-			text: describeSyncMode(mode, s.intervalSeconds),
-		});
-
-		new Setting(containerEl).setName("Mode").addDropdown((d) =>
-			d
-				.addOption("automatic", "Automatic")
-				.addOption("periodic", "Periodic")
-				.addOption("manual", "Manual")
-				.setValue(mode)
-				.onChange(async (v) => {
-					const next = applySyncMode(v as SyncMode, s);
-					s.syncOnChange = next.syncOnChange;
-					s.watchRemote = next.watchRemote;
-					s.intervalSeconds = next.intervalSeconds;
-					await this.plugin.saveSettings();
-					this.plugin.restartTimer();
-					this.plugin.restartWatcher();
-					// Re-render: the intro sentence and the interval field both
-					// depend on the mode.
-					this.display();
+		new Setting(containerEl)
+			.setName("Mode")
+			.setDesc(
+				createFragment((f) => {
+					f.createDiv({
+						text: "Automatic — syncs right after you edit; changes from other devices arrive within about a second.",
+					});
+					f.createDiv({
+						text: "Periodic — syncs on a fixed interval only; no connection held open.",
+					});
+					f.createDiv({
+						text: "Manual — syncs only on demand: the ribbon icon, the sync command, or when the app gains focus.",
+					});
 				}),
-		);
+			)
+			.addDropdown((d) =>
+				d
+					.addOption("automatic", "Automatic")
+					.addOption("periodic", "Periodic")
+					.addOption("manual", "Manual")
+					.setValue(mode)
+					.onChange(async (v) => {
+						const next = applySyncMode(v as SyncMode, s);
+						s.syncOnChange = next.syncOnChange;
+						s.watchRemote = next.watchRemote;
+						s.intervalSeconds = next.intervalSeconds;
+						await this.plugin.saveSettings();
+						this.plugin.restartTimer();
+						this.plugin.restartWatcher();
+						// Re-render: the interval field only exists in periodic.
+						this.display();
+					}),
+			);
 
 		if (mode === "periodic") {
 			new Setting(containerEl).setName("Sync interval (minutes)").addText((t) =>
@@ -444,6 +463,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// wrong paths.
 		if (this.app.vault.configDir !== CONFIG_DIR) {
 			containerEl.createEl("p", {
+				cls: "setting-item-description",
 				text:
 					`Config sync is unavailable: this vault's configuration directory is ` +
 					`"${this.app.vault.configDir}" rather than "${CONFIG_DIR}", and the ` +
@@ -477,6 +497,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		if (config.level !== "plugins") return;
 
 		containerEl.createEl("p", {
+			cls: "setting-item-description",
 			text:
 				"Plugin settings (data.json) are off for every plugin until you turn " +
 				"one on below. Each is scanned first, and a plugin whose settings look " +

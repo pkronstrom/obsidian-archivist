@@ -23,10 +23,8 @@ export { missingPluginScopes, scopeWarning } from "../src/scopes";
 export { pairRenames } from "../src/scopes";
 
 export {
-	formatDuration,
 	deriveSyncMode,
 	applySyncMode,
-	describeSyncMode,
 	formatRelativeTime,
 	formatBytes,
 	formatVaultStats,
