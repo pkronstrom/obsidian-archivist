@@ -147,21 +147,66 @@ func (c *Client) doRoot(ctx context.Context, method, path string, body io.Reader
 	return c.atRoot().do(ctx, method, path, body, contentType)
 }
 
-// ListVaults asks what this token opens. A SERVER-root route: a caller needs it
-// before it knows which vault to address, so it cannot itself be qualified.
-func (c *Client) ListVaults(ctx context.Context) ([]string, error) {
+// VaultList is everything GET /v1/vaults reports.
+//
+// ListVaults keeps returning names alone, because most callers want only that.
+// This exists because the relay and the plugin need the two step-up fields,
+// which the name-only shape silently discarded.
+type VaultList struct {
+	Vaults    []string `json:"vaults"`
+	CanCreate bool     `json:"canCreate,omitempty"`
+	Label     string   `json:"label,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
+	// ProtectedVaults is the SERVER's policy: which vaults carry a marker.
+	ProtectedVaults []string `json:"protectedVaults,omitempty"`
+	// RequiresStepUpAuth is THIS token's posture toward them.
+	RequiresStepUpAuth []string `json:"requiresStepUpAuth,omitempty"`
+}
+
+// VaultListing asks what this token opens, and under what policy. A SERVER-root
+// route: a caller needs it before it knows which vault to address, so it cannot
+// itself be qualified.
+func (c *Client) VaultListing(ctx context.Context) (VaultList, error) {
 	resp, err := c.doRoot(ctx, "GET", "/v1/vaults", nil, "")
 	if err != nil {
-		return nil, err
+		return VaultList{}, err
+	}
+	defer resp.Body.Close()
+	var out VaultList
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return VaultList{}, err
+	}
+	return out, nil
+}
+
+// ListVaults is VaultListing reduced to names, for the callers that want only
+// those. One decoder, so the two cannot drift.
+func (c *Client) ListVaults(ctx context.Context) ([]string, error) {
+	l, err := c.VaultListing(ctx)
+	return l.Vaults, err
+}
+
+// Unlock exchanges a one-time code for a step-up grant on this client's vault.
+//
+// The grant lives on the SERVER, keyed by the token this client presents. The
+// client keeps nothing, which is what lets the relay stay stateless.
+func (c *Client) Unlock(ctx context.Context, code string) (expiresAt int64, err error) {
+	body, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/v1/unlock", bytes.NewReader(body), "application/json")
+	if err != nil {
+		return 0, err
 	}
 	defer resp.Body.Close()
 	var out struct {
-		Vaults []string `json:"vaults"`
+		ExpiresAt int64 `json:"expiresAt"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return 0, fmt.Errorf("archivist: decoding the unlock response: %w", err)
 	}
-	return out.Vaults, nil
+	return out.ExpiresAt, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {

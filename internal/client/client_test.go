@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,5 +165,50 @@ func TestContextCancellationIsHonoured(t *testing.T) {
 	cancel()
 	if _, err := c.Head(ctx); err == nil {
 		t.Error("want an error for a cancelled context")
+	}
+}
+
+func TestVaultListingCarriesPolicyAndPosture(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"vaults":["personal","work"],"scopes":["read"],"label":"agent",
+			"protectedVaults":["work"],"requiresStepUpAuth":["vault:work"]}`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL, "tok", "test").VaultListing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProtectedVaults) != 1 || got.ProtectedVaults[0] != "work" {
+		t.Errorf("ProtectedVaults = %v, want [work]", got.ProtectedVaults)
+	}
+	if len(got.RequiresStepUpAuth) != 1 || got.RequiresStepUpAuth[0] != "vault:work" {
+		t.Errorf("RequiresStepUpAuth = %v, want [vault:work]", got.RequiresStepUpAuth)
+	}
+}
+
+func TestUnlockPostsTheCodeToTheVault(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Write([]byte(`{"vault":"work","expiresAt":4102444800}`))
+	}))
+	defer srv.Close()
+
+	until, err := New(srv.URL, "tok", "test").WithVault("work").
+		Unlock(context.Background(), "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/work/v1/unlock" {
+		t.Errorf("path = %q, want /work/v1/unlock", gotPath)
+	}
+	if !strings.Contains(gotBody, `"123456"`) {
+		t.Errorf("body = %q, does not carry the code", gotBody)
+	}
+	if until != 4102444800 {
+		t.Errorf("expiresAt = %d", until)
 	}
 }
