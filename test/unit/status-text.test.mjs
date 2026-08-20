@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
 	formatDuration,
-	formatSyncSchedule,
+	deriveSyncMode,
+	applySyncMode,
+	describeSyncMode,
 	formatRelativeTime,
 	formatBytes,
 	formatVaultStats,
 	formatPermissions,
 	suggestDeviceName,
-	clampInterval,
 } from "../../dist-test/entry.mjs";
 
 test("formatDuration: seconds below a minute stay in seconds", () => {
@@ -21,37 +22,6 @@ test("formatDuration: 60 and above switch to minutes", () => {
 	assert.equal(formatDuration(60), "1 minute");
 	assert.equal(formatDuration(300), "5 minutes");
 	assert.equal(formatDuration(90), "1.5 minutes");
-});
-
-test("formatSyncSchedule: on-change + interval + watch on", () => {
-	const s = formatSyncSchedule({ syncOnChange: true, intervalSeconds: 300, watchRemote: true });
-	assert.match(s, /right after you edit/);
-	assert.match(s, /every 5 minutes/);
-	assert.match(s, /arrive within about a second/);
-});
-
-test("formatSyncSchedule: on-change + interval + watch off", () => {
-	const s = formatSyncSchedule({ syncOnChange: true, intervalSeconds: 300, watchRemote: false });
-	assert.match(s, /show up on the next sync/);
-});
-
-test("formatSyncSchedule: interval only, no sync on change", () => {
-	const s = formatSyncSchedule({ syncOnChange: false, intervalSeconds: 60, watchRemote: true });
-	assert.match(s, /every 1 minute/);
-	assert.match(s, /not on every edit/);
-});
-
-test("formatSyncSchedule: sync on change, no interval", () => {
-	const s = formatSyncSchedule({ syncOnChange: true, intervalSeconds: 0, watchRemote: true });
-	assert.match(s, /right after you edit/);
-	assert.match(s, /no background interval set/);
-});
-
-test("formatSyncSchedule: everything off still mentions focus/blur and the command", () => {
-	const s = formatSyncSchedule({ syncOnChange: false, intervalSeconds: 0, watchRemote: false });
-	assert.match(s, /gains or loses focus/);
-	assert.match(s, /sync command/);
-	assert.doesNotMatch(s, /not syncing automatically/);
 });
 
 test("formatRelativeTime: undefined is Never", () => {
@@ -119,17 +89,59 @@ test("suggestDeviceName: Android phone vs tablet", () => {
 	assert.equal(suggestDeviceName(tablet, null), "Android tablet");
 });
 
-test("clampInterval: 0 stays 0 (disabled)", () => {
-	assert.equal(clampInterval(0), 0);
-	assert.equal(clampInterval(-5), 0);
+test("deriveSyncMode: any live trigger means automatic", () => {
+	assert.equal(deriveSyncMode({ syncOnChange: true, watchRemote: true, intervalSeconds: 300 }), "automatic");
+	assert.equal(deriveSyncMode({ syncOnChange: true, watchRemote: false, intervalSeconds: 0 }), "automatic");
+	assert.equal(deriveSyncMode({ syncOnChange: false, watchRemote: true, intervalSeconds: 0 }), "automatic");
 });
 
-test("clampInterval: below 10 is rounded up to 10", () => {
-	assert.equal(clampInterval(1), 10);
-	assert.equal(clampInterval(9), 10);
+test("deriveSyncMode: interval alone is periodic", () => {
+	assert.equal(deriveSyncMode({ syncOnChange: false, watchRemote: false, intervalSeconds: 300 }), "periodic");
 });
 
-test("clampInterval: 10 and above pass through, floored", () => {
-	assert.equal(clampInterval(10), 10);
-	assert.equal(clampInterval(300.9), 300);
+test("deriveSyncMode: nothing on is manual", () => {
+	assert.equal(deriveSyncMode({ syncOnChange: false, watchRemote: false, intervalSeconds: 0 }), "manual");
+});
+
+test("applySyncMode: automatic turns everything on with the standard backstop", () => {
+	const s = applySyncMode("automatic", { syncOnChange: false, watchRemote: false, intervalSeconds: 0 });
+	assert.deepEqual(s, { syncOnChange: true, watchRemote: true, intervalSeconds: 300 });
+});
+
+test("applySyncMode: periodic keeps a chosen interval and drops the live triggers", () => {
+	const s = applySyncMode("periodic", { syncOnChange: true, watchRemote: true, intervalSeconds: 600 });
+	assert.deepEqual(s, { syncOnChange: false, watchRemote: false, intervalSeconds: 600 });
+});
+
+test("applySyncMode: periodic falls back to the default when the interval was 0", () => {
+	const s = applySyncMode("periodic", { syncOnChange: true, watchRemote: true, intervalSeconds: 0 });
+	assert.equal(s.intervalSeconds, 300);
+});
+
+test("applySyncMode: manual turns everything off", () => {
+	const s = applySyncMode("manual", { syncOnChange: true, watchRemote: true, intervalSeconds: 300 });
+	assert.deepEqual(s, { syncOnChange: false, watchRemote: false, intervalSeconds: 0 });
+});
+
+test("round trip: applying a mode derives back to the same mode", () => {
+	for (const mode of ["automatic", "periodic", "manual"]) {
+		assert.equal(deriveSyncMode(applySyncMode(mode, { syncOnChange: true, watchRemote: false, intervalSeconds: 45 })), mode);
+	}
+});
+
+test("describeSyncMode: automatic mentions edits and the ~1s arrival", () => {
+	const s = describeSyncMode("automatic", 300);
+	assert.match(s, /right after you edit/);
+	assert.match(s, /about a second/);
+});
+
+test("describeSyncMode: periodic names the interval as a duration", () => {
+	assert.match(describeSyncMode("periodic", 300), /every 5 minutes/);
+	assert.match(describeSyncMode("periodic", 90), /every 1.5 minutes/);
+});
+
+test("describeSyncMode: manual names the ways to trigger a sync", () => {
+	const s = describeSyncMode("manual", 0);
+	assert.match(s, /command/);
+	assert.match(s, /focus/);
 });

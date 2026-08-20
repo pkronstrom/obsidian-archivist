@@ -17,44 +17,68 @@ export type ScheduleSettings = {
 };
 
 /**
- * watchRemote governs INCOMING changes, independently of how this device
- * schedules its own outgoing syncs -- so this clause is appended identically
- * in every branch below, never tied to whether an interval is set.
+ * The three underlying switches produce combinations nobody wants (edits
+ * held local while remote changes stream in, say), so the UI offers three
+ * INTENTS instead and maps them onto the switches. The switches stay in
+ * storage untouched -- a device upgrading from the toggle era derives its
+ * mode from what it already had.
  */
-function remoteClause(watchRemote: boolean): string {
-	return watchRemote
-		? "Changes from other devices arrive within about a second."
-		: "Changes from other devices show up on the next sync.";
+export type SyncMode = "automatic" | "periodic" | "manual";
+
+/** The backstop interval automatic mode runs behind the scenes: it covers a
+ *  missed watcher wake, never drives the experience, and is not worth a
+ *  visible knob. */
+export const AUTOMATIC_BACKSTOP_SECONDS = 300;
+
+export function deriveSyncMode(s: ScheduleSettings): SyncMode {
+	// Either live trigger means the user wanted immediacy; the interval is
+	// then just the backstop, whatever its value.
+	if (s.syncOnChange || s.watchRemote) return "automatic";
+	if (s.intervalSeconds > 0) return "periodic";
+	return "manual";
 }
 
-export function formatSyncSchedule(s: ScheduleSettings): string {
-	const { syncOnChange, intervalSeconds, watchRemote } = s;
+export function applySyncMode(mode: SyncMode, current: ScheduleSettings): ScheduleSettings {
+	switch (mode) {
+		case "automatic":
+			return {
+				syncOnChange: true,
+				watchRemote: true,
+				intervalSeconds: AUTOMATIC_BACKSTOP_SECONDS,
+			};
+		case "periodic":
+			return {
+				syncOnChange: false,
+				watchRemote: false,
+				intervalSeconds:
+					current.intervalSeconds > 0 ? current.intervalSeconds : AUTOMATIC_BACKSTOP_SECONDS,
+			};
+		case "manual":
+			return { syncOnChange: false, watchRemote: false, intervalSeconds: 0 };
+	}
+}
 
-	if (intervalSeconds > 0 && syncOnChange) {
-		return (
-			`Syncing right after you edit, and every ${formatDuration(intervalSeconds)} ` +
-			`in the background. ${remoteClause(watchRemote)}`
-		);
+export function describeSyncMode(mode: SyncMode, intervalSeconds: number): string {
+	switch (mode) {
+		case "automatic":
+			return (
+				"Syncing right after you edit; changes from other devices arrive " +
+				"within about a second. A background pass every few minutes covers " +
+				"anything missed."
+			);
+		case "periodic":
+			return (
+				`Syncing every ${formatDuration(intervalSeconds)}; edits wait for ` +
+				`the next pass.`
+			);
+		case "manual":
+			// main.ts syncs on window focus regardless of these settings, so
+			// "only when you ask" would undersell what actually happens.
+			return (
+				"Syncing only on demand — the ribbon icon, the sync command, or " +
+				"when the app gains focus."
+			);
 	}
-	if (intervalSeconds > 0 && !syncOnChange) {
-		return (
-			`Syncing every ${formatDuration(intervalSeconds)} in the background — ` +
-			`not on every edit. ${remoteClause(watchRemote)}`
-		);
-	}
-	if (intervalSeconds === 0 && syncOnChange) {
-		return (
-			`Syncing right after you edit — no background interval set. ` +
-			`${remoteClause(watchRemote)}`
-		);
-	}
-	// intervalSeconds === 0 && !syncOnChange: main.ts still syncs on window
-	// blur/focus and via the sync-now command/ribbon icon regardless of
-	// these two settings, so "not syncing automatically" would be false.
-	return (
-		`Syncing when Obsidian gains or loses focus, and via the sync command ` +
-		`— no automatic interval or on-edit sync set. ${remoteClause(watchRemote)}`
-	);
 }
 
 export function formatRelativeTime(atMs: number | undefined, nowMs: number): string {
@@ -113,11 +137,3 @@ export function suggestDeviceName(platform: DevicePlatform, hostname: string | n
 	return "This device";
 }
 
-/**
- * intervalSeconds below 10 is almost always a typo (e.g. "1" for "10"); 0
- * means "disabled" and stays 0.
- */
-export function clampInterval(seconds: number): number {
-	if (seconds <= 0) return 0;
-	return Math.max(10, Math.floor(seconds));
-}

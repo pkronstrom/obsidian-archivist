@@ -1,0 +1,59 @@
+/* The Status card: one compact glance-block instead of a Setting row per
+ * fact. Labels muted and fixed-width so the values line up in a column. */
+
+.archivist-status {
+	background: var(--background-secondary);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-3) var(--size-4-4);
+	margin-bottom: var(--size-4-4);
+}
+
+.archivist-status-row {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-4);
+	padding: var(--size-2-1) 0;
+}
+
+.archivist-status-label {
+	color: var(--text-muted);
+	flex: 0 0 6em;
+	font-size: var(--font-ui-small);
+}
+
+.archivist-status-value {
+	overflow-wrap: anywhere;
+}
+
+.archivist-status-value.is-vault {
+	font-weight: var(--font-bold);
+}
+
+.archivist-status-dot {
+	margin-left: var(--size-2-2);
+	font-size: var(--font-ui-smaller);
+}
+
+.archivist-status-dot.is-ok {
+	color: var(--color-green);
+}
+
+.archivist-status-dot.is-error {
+	color: var(--color-red);
+}
+
+.archivist-status-dot.is-checking {
+	color: var(--text-faint);
+}
+
+/* An error's reason gets its own indented line under the server row.
+ * Created eagerly so it sits in the right place; hidden until filled. */
+.archivist-status-detail {
+	color: var(--color-red);
+	font-size: var(--font-ui-small);
+	padding-left: calc(6em + var(--size-4-4));
+}
+
+.archivist-status-detail:empty {
+	display: none;
+}

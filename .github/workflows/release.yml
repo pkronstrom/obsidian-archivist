@@ -79,4 +79,4 @@ jobs:
           gh release create "${GITHUB_REF#refs/tags/}" \
             --title "${GITHUB_REF#refs/tags/}" \
             --generate-notes \
-            main.js manifest.json dist/archivist-* dist/SHA256SUMS
+            main.js manifest.json styles.css dist/archivist-* dist/SHA256SUMS

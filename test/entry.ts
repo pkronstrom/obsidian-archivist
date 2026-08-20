@@ -24,11 +24,12 @@ export { pairRenames } from "../src/scopes";
 
 export {
 	formatDuration,
-	formatSyncSchedule,
+	deriveSyncMode,
+	applySyncMode,
+	describeSyncMode,
 	formatRelativeTime,
 	formatBytes,
 	formatVaultStats,
 	formatPermissions,
 	suggestDeviceName,
-	clampInterval,
 } from "../src/status-text";
