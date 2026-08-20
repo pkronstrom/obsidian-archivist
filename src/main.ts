@@ -4,6 +4,7 @@ import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
+import { stepUpWarning } from "./scopes";
 import { loadToken, migrateToken } from "./credentials";
 import { loadConfigSync } from "./config-sync";
 import {
@@ -192,8 +193,21 @@ export default class ArchivistPlugin extends Plugin {
 		const token = loadToken(this.app);
 		if (!this.settings.serverUrl || !token) return false;
 		try {
-			const { vaults } = await new Client(this.settings.serverUrl, token, "").listVaults();
+			const { vaults, protectedVaults, requiresStepUpAuth, label } = await new Client(
+				this.settings.serverUrl,
+				token,
+				"",
+			).listVaults();
 			if (vaults.length !== 1) return false;
+			// One vault is not a reason to skip the check the Choose button
+			// makes. A token gated on vault ACCESS cannot drive this plugin --
+			// there is nowhere here to present a code -- so adopting it silently
+			// would start a sync that can only fail.
+			const gated = stepUpWarning(protectedVaults, requiresStepUpAuth, label);
+			if (gated) {
+				console.log("[archivist] not adopting the only vault:", gated);
+				return false;
+			}
 			this.settings.vault = vaults[0];
 			await this.saveSettings();
 			console.log("[archivist] token opens one vault; adopted", vaults[0]);

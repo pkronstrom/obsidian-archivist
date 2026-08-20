@@ -167,3 +167,29 @@ func TestARestartDoesNotResurrectASkewedCode(t *testing.T) {
 		t.Fatal("a skewed code spent before the restart was accepted after it")
 	}
 }
+
+// Both maps are keyed by token hash, and tokens churn over a process lifetime.
+// State that can no longer affect a decision must not accumulate forever.
+func TestSpentStepsAreEvictedOnceTheyCannotBeReplayed(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1111111109, 0)}
+	v := stepup.NewVerifier(clock.Now)
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
+
+	code, _ := stepup.Code(rfcSecret, clock.now)
+	if err := v.Check("old-token", "work", rfcSecret, code); err != nil {
+		t.Fatal(err)
+	}
+	if n := v.TrackedTokens(); n != 1 {
+		t.Fatalf("tracked tokens = %d, want 1", n)
+	}
+
+	// A different token succeeds much later; the first is now unreplayable.
+	clock.advance(time.Hour)
+	later, _ := stepup.Code(rfcSecret, clock.now)
+	if err := v.Check("new-token", "work", rfcSecret, later); err != nil {
+		t.Fatal(err)
+	}
+	if n := v.TrackedTokens(); n != 1 {
+		t.Errorf("tracked tokens = %d, want 1: the stale entry was never evicted", n)
+	}
+}

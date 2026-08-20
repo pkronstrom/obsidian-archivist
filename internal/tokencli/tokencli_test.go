@@ -444,3 +444,32 @@ func TestUnattendedProfilesRefuseStepUp(t *testing.T) {
 		}
 	}
 }
+
+// "Non-empty" is not "usable". A typo discovers no vaults, so the protection
+// check silently passes and mints a token against a root nobody looked at.
+func TestMintRefusesAnUnusableRoot(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	for _, bad := range []string{
+		filepath.Join(dir, "does-not-exist"),
+		filepath.Join(dir, "vaults", "work", "..", "..", "vaults", "work", "not-a-dir"),
+	} {
+		var out bytes.Buffer
+		if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", bad,
+			"-label", "agent", "-vaults", "work"}, &out); err == nil {
+			t.Errorf("minting succeeded against an unusable root %q", bad)
+		}
+	}
+}
+
+func TestMintRefusesARootThatIsAFile(t *testing.T) {
+	dir := newVaultRoot(t, "work")
+	file := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Run([]string{"add", "-tokens", tokensPath(dir), "-root", file,
+		"-label", "agent", "-vaults", "work"}, &out); err == nil {
+		t.Error("minting succeeded against a root that is a file")
+	}
+}

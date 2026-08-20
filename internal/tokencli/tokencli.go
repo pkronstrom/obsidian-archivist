@@ -201,6 +201,14 @@ func runAdd(args []string, out io.Writer) error {
 		return errors.New("token add: -root (or ARCHIVIST_ROOT) is required, so minting can " +
 			"tell which vaults are protected")
 	}
+	// A typo satisfies "non-empty" and then discovers no vaults, so the
+	// protection check passes over a root that does not exist. That mints a
+	// token nobody checked rather than refusing, so stat it.
+	if info, err := os.Stat(*root); err != nil {
+		return fmt.Errorf("token add: cannot read -root %s: %w", *root, err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("token add: -root %s is not a directory", *root)
+	}
 	layout := vaults.Layout{Root: *root}
 
 	p := auth.Principal{

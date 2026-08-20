@@ -37,6 +37,10 @@ var cooldowns = []time.Duration{
 // code typed as it expired without letting an overnight guess run.
 const freeAttempts = 3
 
+// evictAfter is how long past its cooldown a failure record is kept. Well beyond
+// the longest rung, so eviction never resets a ladder somebody is still climbing.
+const evictAfter = 2 * time.Hour
+
 type failure struct {
 	count int
 	until time.Time
@@ -116,7 +120,33 @@ func (v *Verifier) Check(tokenHash, vault, secret, presented string) error {
 
 	v.usedStep[tokenHash] = step
 	delete(v.failures, key)
+	v.evictLocked(now)
 	return nil
+}
+
+// evictLocked drops state that can no longer affect a decision.
+//
+// Both maps are keyed by token hash, and tokens are minted and revoked over the
+// life of a process, so without this every generation accumulates forever. Not
+// a remote exhaustion vector -- only a token the server already accepted reaches
+// Check -- but an unbounded map in a long-lived process is a leak either way.
+//
+// A used step outside the skew window can never be presented again, and a
+// failure record whose cooldown has long passed is indistinguishable from no
+// record at all.
+func (v *Verifier) evictLocked(now time.Time) {
+	cutoff := now.Unix()/int64(Step/time.Second) - (SkewSteps + 1)
+	for h, step := range v.usedStep {
+		if step < cutoff {
+			delete(v.usedStep, h)
+		}
+	}
+	stale := now.Add(-evictAfter)
+	for k, f := range v.failures {
+		if !f.until.IsZero() && f.until.Before(stale) {
+			delete(v.failures, k)
+		}
+	}
 }
 
 func (v *Verifier) noteFailure(key string, now time.Time) {
@@ -130,4 +160,12 @@ func (v *Verifier) noteFailure(key string, now time.Time) {
 		f.until = now.Add(cooldowns[rung])
 	}
 	v.failures[key] = f
+}
+
+// TrackedTokens reports how many tokens hold spent-step state, so a test can
+// assert that eviction happens rather than trusting that it does.
+func (v *Verifier) TrackedTokens() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.usedStep)
 }
