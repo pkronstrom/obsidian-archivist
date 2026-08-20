@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -511,5 +513,52 @@ func TestMoveRejectsIncompleteOrNoOpArguments(t *testing.T) {
 		if err == nil && !res.IsError {
 			t.Errorf("move_note%v was accepted", args)
 		}
+	}
+}
+
+// The unlock tool must be advertised, or an agent that hits step_up_required has
+// no way to act on the code the human hands it.
+func TestUnlockToolIsAdvertised(t *testing.T) {
+	cs, _ := session(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "unlock" {
+			if tool.Description == "" {
+				t.Error("unlock has no description; an agent cannot tell when to use it")
+			}
+			return
+		}
+	}
+	t.Error("the relay exposes no unlock tool, so a gated agent has no way back in")
+}
+
+// The tool forwards the code to the vault-qualified route and reports when the
+// grant ends. The relay itself stores nothing.
+func TestUnlockToolForwardsTheCodeToTheVaultRoute(t *testing.T) {
+	var gotPath, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Write([]byte(`{"vault":"work","expiresAt":4102444800}`))
+	}))
+	defer upstream.Close()
+
+	until, err := client.New(upstream.URL, "tok", "relay").WithVault("work").
+		Unlock(context.Background(), "123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/work/v1/unlock" {
+		t.Errorf("path = %q, want /work/v1/unlock", gotPath)
+	}
+	if !strings.Contains(gotBody, `"123456"`) {
+		t.Errorf("body = %q, does not carry the code", gotBody)
+	}
+	if until != 4102444800 {
+		t.Errorf("expiresAt = %d", until)
 	}
 }

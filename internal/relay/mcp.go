@@ -124,6 +124,14 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	}, readNoteAt(c))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name: "unlock",
+		Description: "Present a one-time code to unlock a vault that requires step-up " +
+			"authentication. Ask the human for the current code from their authenticator " +
+			"app; a code is single-use and cannot be reused. Call this after a tool fails " +
+			"with step_up_required.",
+	}, unlockVault(c))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_notes",
 		Description: "Find notes whose content or path contains the given text. " +
 			"Case-insensitive substring match, not a regular expression.",
@@ -896,5 +904,33 @@ func listVaults(c *client.Client) mcp.ToolHandlerFor[listVaultsInput, listVaults
 			return nil, listVaultsOutput{}, err
 		}
 		return nil, listVaultsOutput{Vaults: names, Default: c.Vault()}, nil
+	}
+}
+
+type unlockInput struct {
+	Vault string `json:"vault,omitempty" jsonschema:"which vault to unlock; defaults to the token's only vault"`
+	Code  string `json:"code" jsonschema:"the six-digit code from the authenticator app"`
+}
+
+type unlockOutput struct {
+	Vault     string `json:"vault"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+// unlockVault spends a code the human handed over.
+//
+// The relay stores nothing: the grant lives on the server, keyed by the caller's
+// own token, which is what keeps this surface stateless.
+func unlockVault(c *client.Client) mcp.ToolHandlerFor[unlockInput, unlockOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in unlockInput) (*mcp.CallToolResult, unlockOutput, error) {
+		vc := forVault(c, in.Vault)
+		if strings.TrimSpace(in.Code) == "" {
+			return nil, unlockOutput{}, fmt.Errorf("code is required")
+		}
+		until, err := vc.Unlock(ctx, in.Code)
+		if err != nil {
+			return nil, unlockOutput{}, err
+		}
+		return nil, unlockOutput{Vault: in.Vault, ExpiresAt: until}, nil
 	}
 }
