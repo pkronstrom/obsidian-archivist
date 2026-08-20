@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -332,4 +334,36 @@ func (r *Registry) Close() error {
 	}
 	r.open = map[string]*Instance{}
 	return nil
+}
+
+// StepUpMarker is the file whose presence makes a vault protected. It holds no
+// secret: presence is the whole content. It lives in the vault's state directory
+// rather than the vault, so it is never synced to a device and it travels with
+// the vault when the vault moves.
+const StepUpMarker = "step-up"
+
+// Protected reports whether this vault requires step-up authentication.
+//
+// It returns an error rather than a bare bool because the two failure directions
+// are not symmetric. Only fs.ErrNotExist means "not protected". A permission
+// error, an I/O error or a broken symlink means "cannot tell", and a caller that
+// reads "cannot tell" as "not protected" serves a protected vault with no gate.
+// The caller must turn an error into a refusal.
+//
+// One stat per call, uncached, deliberately. The tokens file justifies a watcher
+// because a stale read there fails CLOSED. A stale read here fails OPEN, and a
+// syscall is the cheaper mistake.
+//
+// Lstat, not Stat: a dangling symlink at this path is still somebody having put
+// something there, and resolving it would report absence.
+func (r *Registry) Protected(name string) (bool, error) {
+	_, err := os.Lstat(filepath.Join(r.layout.GitDir(name), StepUpMarker))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("vaults: cannot tell whether %s is protected: %w", name, err)
+	}
 }

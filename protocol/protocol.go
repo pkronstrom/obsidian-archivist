@@ -85,6 +85,10 @@ const (
 	CodeQuarantined    = "path_quarantined" // repeated writes to one path
 	CodeThrottled      = "throttled"        // vault-wide write rate exceeded
 	CodeDiskLow        = "disk_low"         // free disk below the floor
+	// CodeStepUpRequired is a valid token that must present a one-time code
+	// first. Distinct from forbidden so a client can turn it into a request for
+	// a code rather than reporting a permanent refusal.
+	CodeStepUpRequired = "step_up_required"
 )
 
 // MaxUploadBytes bounds a single content upload. Beyond it the server answers

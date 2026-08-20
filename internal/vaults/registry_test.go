@@ -223,3 +223,66 @@ func TestLocalWritePathIsPerVault(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestProtectedFollowsTheMarkerFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "vaults", "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry(Layout{Root: root}, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	got, err := reg.Protected("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("a vault with no marker reported protected")
+	}
+
+	stateDir := filepath.Join(root, ".archivist", "work")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, StepUpMarker), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No restart and no cache to wait out: the marker IS the policy.
+	got, err = reg.Protected("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("the marker was written but the vault did not report protected")
+	}
+}
+
+// An unreadable state directory is not the same fact as an absent marker, and
+// collapsing them serves a protected vault ungated.
+func TestProtectedReportsAnErrorRatherThanGuessing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test relies on")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".archivist", "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, ".archivist"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, ".archivist"), 0o755) })
+
+	reg, err := NewRegistry(Layout{Root: root}, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	if _, err := reg.Protected("work"); err == nil {
+		t.Fatal("an unreadable state directory reported as 'not protected' instead of erroring")
+	}
+}
