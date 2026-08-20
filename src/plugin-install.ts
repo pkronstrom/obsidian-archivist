@@ -152,9 +152,24 @@ export async function installPlugins(
 			if (styles !== null) await app.vault.adapter.write(`${dir}/styles.css`, styles);
 
 			// Undocumented, and the only way in: there is no public API for
-			// installing or enabling a community plugin. Same call BRAT makes.
-			const plugins = (app as unknown as { plugins?: { enablePlugin?: (id: string) => Promise<void> } })
-				.plugins;
+			// installing or enabling a community plugin. Same calls BRAT makes,
+			// in the same order.
+			//
+			// Obsidian's plugin manager only knows about plugins from its last
+			// directory scan. Writing manifest.json straight to the adapter does
+			// not refresh that cache, so calling enablePlugin immediately after
+			// an install silently no-ops against a stale manifest list: the
+			// files land on disk, but the plugin never turns on. loadManifests
+			// forces the rescan first.
+			const plugins = (
+				app as unknown as {
+					plugins?: {
+						loadManifests?: () => Promise<void>;
+						enablePlugin?: (id: string) => Promise<void>;
+					};
+				}
+			).plugins;
+			await plugins?.loadManifests?.();
 			await plugins?.enablePlugin?.(id);
 
 			installed.push(id);
