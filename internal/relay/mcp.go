@@ -97,6 +97,16 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	}, deleteNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name: "move_note",
+		Description: "Rename or move one file to a new vault path. Works for any " +
+			"file — a note or an attachment. This is a true rename: the content " +
+			"is preserved and the file keeps one history, where writing the new " +
+			"path and deleting the old one would split it in two and needs a " +
+			"delete scope this token may not hold. Refuses when the destination " +
+			"already exists; delete it first if that is what you mean.",
+	}, moveNote(c))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name: "note_history",
 		Description: "List the revisions in which a note changed, newest first. " +
 			"Use the returned revision with read_note_at to see an old version.",
@@ -628,6 +638,52 @@ func deleteNote(c *client.Client) mcp.ToolHandlerFor[deleteInput, deleteOutput] 
 		out := deleteOutput{Path: res.Path, Status: res.Status}
 		if res.Status == protocol.StatusRefused {
 			out.Note = "the server declined this deletion: " + res.Reason
+		}
+		return nil, out, nil
+	}
+}
+
+type moveInput struct {
+	Vault    string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	From     string `json:"from" jsonschema:"current vault-relative path, e.g. 'Inbox/idea.md'"`
+	To       string `json:"to" jsonschema:"new vault-relative path, e.g. '2. Areas/Tech/idea.md'. Folders are implied by the path and need no creating"`
+	Revision string `json:"revision,omitempty" jsonschema:"the revision you read the source at, if you read it before deciding to move it"`
+}
+
+type moveOutput struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Status string `json:"status"`
+	Note   string `json:"note,omitempty"`
+}
+
+func moveNote(c *client.Client) mcp.ToolHandlerFor[moveInput, moveOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in moveInput) (*mcp.CallToolResult, moveOutput, error) {
+		c := forVault(c, in.Vault)
+		if in.From == "" || in.To == "" {
+			return nil, moveOutput{}, fmt.Errorf("from and to are both required")
+		}
+		if in.From == in.To {
+			return nil, moveOutput{}, fmt.Errorf("from and to are the same path: %s", in.From)
+		}
+
+		// Refuse rather than overwrite. A move that silently replaced the
+		// destination would destroy a file the caller never named, and the
+		// caller cannot see what is at the destination from here.
+		if existing, err := c.List(ctx, in.To); err == nil {
+			if _, taken := existing[in.To]; taken {
+				return nil, moveOutput{}, fmt.Errorf(
+					"refusing to move onto %s: something is already there. Delete it first, or choose another destination", in.To)
+			}
+		}
+
+		res, err := c.MoveAt(ctx, in.From, in.To, in.Revision)
+		if err != nil {
+			return nil, moveOutput{}, err
+		}
+		out := moveOutput{From: in.From, To: res.Path, Status: res.Status}
+		if res.Status == protocol.StatusRefused {
+			out.Note = "the server declined this move: " + res.Reason
 		}
 		return nil, out, nil
 	}

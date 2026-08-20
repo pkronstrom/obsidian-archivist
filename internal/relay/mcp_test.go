@@ -418,3 +418,95 @@ func TestReadNoteStillHandlesTextAndPointsAtTheAttachmentTool(t *testing.T) {
 		t.Errorf("the refusal does not name the tool that would work: %s", msg)
 	}
 }
+
+// ---- move ------------------------------------------------------------------
+
+func TestMoveRenamesANoteAndKeepsItsContent(t *testing.T) {
+	cs, _ := session(t)
+	call(t, cs, "write_note", map[string]any{"path": "Inbox/idea.md", "content": "keep me\n"})
+
+	res := call(t, cs, "move_note", map[string]any{
+		"from": "Inbox/idea.md", "to": "Areas/idea.md"})
+	var out struct {
+		From, To, Status string
+	}
+	if err := json.Unmarshal([]byte(text(res)), &out); err != nil {
+		t.Fatalf("move_note: %v (%s)", err, text(res))
+	}
+	if out.Status == "refused" {
+		t.Fatalf("move refused: %s", text(res))
+	}
+	if out.To != "Areas/idea.md" {
+		t.Errorf("to = %q, want Areas/idea.md", out.To)
+	}
+
+	got := call(t, cs, "read_note", map[string]any{"path": "Areas/idea.md"})
+	if !strings.Contains(text(got), "keep me") {
+		t.Errorf("content did not survive the move: %s", text(got))
+	}
+	// A move that leaves the source behind is a copy, and the caller asked to
+	// reorganise, not duplicate.
+	if src, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "read_note", Arguments: map[string]any{"path": "Inbox/idea.md"}}); err == nil && !src.IsError {
+		t.Errorf("the source path still reads: %s", text(src))
+	}
+}
+
+func TestMoveWorksForAnAttachmentToo(t *testing.T) {
+	// The server moves a blob by path and never inspects it, so binary must
+	// behave exactly as text. Worth asserting: this is the case a note-shaped
+	// tool name invites someone to special-case later.
+	cs, _ := session(t)
+	call(t, cs, "write_attachment", map[string]any{
+		"path": "att/moveme.png",
+		"content_base64": base64.StdEncoding.EncodeToString(pngBytes)})
+
+	call(t, cs, "move_note", map[string]any{
+		"from": "att/moveme.png", "to": "Media/moveme.png"})
+
+	res := call(t, cs, "read_attachment", map[string]any{"path": "Media/moveme.png"})
+	var out struct {
+		ContentBase64 string `json:"content_base64"`
+	}
+	if err := json.Unmarshal([]byte(text(res)), &out); err != nil {
+		t.Fatalf("read_attachment after move: %v (%s)", err, text(res))
+	}
+	got, err := base64.StdEncoding.DecodeString(out.ContentBase64)
+	if err != nil || !bytes.Equal(got, pngBytes) {
+		t.Errorf("the attachment did not survive the move byte-for-byte")
+	}
+}
+
+func TestMoveRefusesToOverwriteTheDestination(t *testing.T) {
+	// The caller cannot see what is at the destination, so a silent overwrite
+	// would destroy a file they never named.
+	cs, _ := session(t)
+	call(t, cs, "write_note", map[string]any{"path": "Inbox/a.md", "content": "source\n"})
+	call(t, cs, "write_note", map[string]any{"path": "Inbox/b.md", "content": "occupied\n"})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "move_note", Arguments: map[string]any{"from": "Inbox/a.md", "to": "Inbox/b.md"}})
+	if err == nil && !res.IsError {
+		t.Fatalf("move onto an existing path succeeded: %s", text(res))
+	}
+
+	kept := call(t, cs, "read_note", map[string]any{"path": "Inbox/b.md"})
+	if !strings.Contains(text(kept), "occupied") {
+		t.Errorf("the destination was clobbered anyway: %s", text(kept))
+	}
+}
+
+func TestMoveRejectsIncompleteOrNoOpArguments(t *testing.T) {
+	cs, _ := session(t)
+	ctx := context.Background()
+	for _, args := range []map[string]any{
+		{"from": "a.md"},
+		{"to": "b.md"},
+		{"from": "a.md", "to": "a.md"},
+	} {
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "move_note", Arguments: args})
+		if err == nil && !res.IsError {
+			t.Errorf("move_note%v was accepted", args)
+		}
+	}
+}

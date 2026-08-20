@@ -508,6 +508,48 @@ func (c *Client) DeleteAt(ctx context.Context, path, base string) (protocol.Resu
 	return resp.Results[0], nil
 }
 
+// Move renames a path, preserving its content and its history as one file.
+//
+// It is not delete-plus-write. That pairing needs the delete scope, which no
+// agent token holds, splits the file's history in two, and destroys content the
+// server already has. OpMove carries From and no Hash for exactly that reason,
+// so a write-only token can rename.
+//
+// Works for any file the vault holds -- a note or an attachment. The server
+// moves a blob by path and never inspects what is in it.
+func (c *Client) Move(ctx context.Context, from, to string) (protocol.Result, error) {
+	return c.MoveAt(ctx, from, to, "")
+}
+
+// MoveAt renames a path as of `base`, so the server can notice that the source
+// changed after the caller decided to move it. An empty base means "move
+// whatever is there now".
+func (c *Client) MoveAt(ctx context.Context, from, to, base string) (protocol.Result, error) {
+	var zero protocol.Result
+	if from == "" || to == "" {
+		return zero, fmt.Errorf("archivist: move needs both a source and a destination")
+	}
+	if from == to {
+		return zero, fmt.Errorf("archivist: move source and destination are the same path: %s", from)
+	}
+	if base == "" {
+		var err error
+		if base, err = c.Head(ctx); err != nil {
+			return zero, err
+		}
+	}
+	resp, err := c.Push(ctx, base, []protocol.Change{{
+		Path: to, Op: protocol.OpMove, From: from,
+	}})
+	if err != nil {
+		return zero, err
+	}
+	if len(resp.Results) == 0 {
+		return zero, fmt.Errorf("archivist: move of %s returned no result", from)
+	}
+	return resp.Results[0], nil
+}
+
 // List returns the current files, optionally filtered by prefix.
 //
 // The server has no prefix filter, so this fetches the whole manifest and
