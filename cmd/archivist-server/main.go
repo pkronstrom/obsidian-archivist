@@ -38,6 +38,7 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/guard"
 	"github.com/pkronstrom/obsidian-archivist/internal/logging"
 	"github.com/pkronstrom/obsidian-archivist/internal/notify"
+	"github.com/pkronstrom/obsidian-archivist/internal/stepup"
 	"github.com/pkronstrom/obsidian-archivist/internal/tokencli"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 )
@@ -231,9 +232,16 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		log.Warn("filesystem watching is disabled; local edits will not be committed")
 	}
 
+	// Step-up state, both in memory and both dying with the process. A deploy
+	// therefore revokes every grant, which is the conservative direction: you did
+	// not consent to the new binary.
+	grants := stepup.NewGrants(cfg.StepUpTTL, nil)
+	defer grants.Close()
+	verifier := stepup.NewVerifier(nil)
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(reg, tokens),
+		Handler:           api.New(reg, tokens, api.WithStepUp(grants, verifier)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

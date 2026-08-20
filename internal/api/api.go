@@ -26,6 +26,7 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
+	"github.com/pkronstrom/obsidian-archivist/internal/stepup"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 	"github.com/pkronstrom/obsidian-archivist/internal/version"
@@ -33,8 +34,41 @@ import (
 )
 
 type Server struct {
-	reg    *vaults.Registry
-	tokens *auth.Set
+	reg      *vaults.Registry
+	tokens   *auth.Set
+	grants   *stepup.Grants
+	verifier *stepup.Verifier
+}
+
+// Option configures the server. Variadic because step-up is additive: every
+// existing caller builds a server with no protected vaults and must keep
+// compiling unchanged.
+type Option func(*Server)
+
+// WithStepUp supplies the grant table and verifier.
+//
+// Without it the server still ENFORCES the gate -- it simply cannot open it, so
+// a protected vault refuses everything. That is the correct direction for a
+// build that forgot to wire this: unavailable, not unguarded.
+func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
+	return func(s *Server) { s.grants, s.verifier = g, v }
+}
+
+// stepUpState is the gate decision made at admission.
+//
+// Handlers that outlive the middleware -- SSE, long-poll -- must act on this
+// rather than re-deriving it. Re-statting the marker inside a handler is a
+// TOCTOU window: a stream opened while a vault was unprotected would otherwise
+// keep running after the marker appeared, and a transient error would silently
+// downgrade a gated stream to an unwatched one.
+type stepUpState struct {
+	gated  bool
+	lapsed <-chan struct{}
+}
+
+func stepUpFrom(r *http.Request) stepUpState {
+	st, _ := r.Context().Value(ctxStepUp).(stepUpState)
+	return st
 }
 
 // ctxKey carries the resolved principal from the middleware to the handlers, so
@@ -42,13 +76,21 @@ type Server struct {
 // already happened.
 type ctxKey int
 
-const ctxPrincipal ctxKey = iota
+const (
+	ctxPrincipal ctxKey = iota
+	// ctxStepUp carries the gate decision from withVault to handlers that
+	// outlive it.
+	ctxStepUp
+)
 
 // New builds the whole surface: one set of routes per vault, path-qualified,
 // from the SAME route table that generates the index. A route still cannot
 // exist without being documented, or be documented without existing.
-func New(reg *vaults.Registry, tokens *auth.Set) http.Handler {
+func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
 	s := &Server{reg: reg, tokens: tokens}
+	for _, o := range opts {
+		o(s)
+	}
 
 	mux := http.NewServeMux()
 
@@ -61,12 +103,12 @@ func New(reg *vaults.Registry, tokens *auth.Set) http.Handler {
 	// Per-vault routes. {vault} is a single path segment, so a name containing
 	// a space is addressable percent-encoded -- My%20Own%20Vault -- which the
 	// plugin does automatically and a human writing curl must remember.
-	mux.HandleFunc("GET /{vault}/v1", s.withVault(s.scopeFor("GET", "/v1"), s.index))
+	mux.HandleFunc("GET /{vault}/v1", s.withVault(s.scopeFor("GET", "/v1"), false, s.index))
 	for _, rt := range s.routes() {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
 		}
-		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.handle))
+		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.SkipStepUp, rt.handle))
 	}
 
 	// healthz sits OUTSIDE the auth middleware, deliberately and alone. It is
@@ -103,7 +145,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 // secret worth protecting here -- both vaults are the same person's -- and
 // collapsing them into one status makes a misconfigured token
 // indistinguishable from a typo, which is the failure people actually hit.
-func (s *Server) withVault(scope string, h func(http.ResponseWriter, *http.Request, *vaults.Instance)) http.HandlerFunc {
+func (s *Server) withVault(scope string, skipStepUp bool, h func(http.ResponseWriter, *http.Request, *vaults.Instance)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("vault")
 		p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
@@ -127,8 +169,68 @@ func (s *Server) withVault(scope string, h func(http.ResponseWriter, *http.Reque
 				"this token does not hold the "+scope+" scope")
 			return
 		}
-		h(w, r, inst)
+		// Step-up LAST, so a caller who would be refused anyway is refused for
+		// the reason that actually applies rather than being asked for a
+		// single-use code it cannot spend.
+		st, ok := s.stepUpDecision(w, r, p, name, skipStepUp)
+		if !ok {
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxStepUp, st)), inst)
 	}
+}
+
+// stepUpDecision enforces the consent gate and returns what the handler needs
+// to keep enforcing it. It writes the refusal itself, so the caller only has to
+// return.
+//
+// Two halves, both required: the vault carries a marker, and this token recorded
+// a decision about it. See docs/adr/0003-protected-vault-and-token-posture.md.
+func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.Principal, vault string, skip bool) (stepUpState, bool) {
+	protected, err := s.reg.Protected(vault)
+	if err != nil {
+		// Cannot tell is not no. Serving here would be the one failure this
+		// gate exists to prevent.
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return stepUpState{}, false
+	}
+	if !protected {
+		return stepUpState{}, true
+	}
+
+	// Absence denies. A token that recorded nothing about this vault predates
+	// the marker, and treating silence as consent is exactly the fail-open that
+	// ruled out making this a property of the token alone.
+	if !p.StepUpDecided(vault) {
+		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
+			"this token predates step-up on "+vault+
+				" and has no recorded posture; re-mint it with -step-up or -no-step-up")
+		return stepUpState{}, false
+	}
+	if !p.NeedsStepUp(auth.StepUpVault, vault) {
+		return stepUpState{}, true
+	}
+	if skip {
+		// The unlock route: gated by policy, but it is what opens the gate.
+		return stepUpState{gated: true}, true
+	}
+	hash := auth.HashToken(bearer(r))
+	if s.grants == nil || !s.grants.Held(hash, vault) {
+		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
+			"this token needs an unlock code for "+vault+
+				"; POST a code to /"+vault+"/v1/unlock")
+		return stepUpState{}, false
+	}
+	return stepUpState{gated: true, lapsed: s.grants.Watch(hash, vault)}, true
+}
+
+// bearer lifts the presented token back out of the request.
+//
+// The middleware resolves it to a principal and deliberately does not carry the
+// secret onward; grants are keyed by its hash, so this is the one place that
+// needs it again.
+func bearer(r *http.Request) string {
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
 // Wire types live in the protocol package.
@@ -565,8 +667,19 @@ type route struct {
 	// than in a middleware table because this list already IS the mux: a route
 	// cannot exist without appearing here, so it cannot exist without declaring
 	// what it needs.
-	Scope  string `json:"-"`
-	handle func(http.ResponseWriter, *http.Request, *vaults.Instance)
+	Scope string `json:"-"`
+	// SkipStepUp exempts a route from the step-up gate. Exactly one route may
+	// set it -- the one that opens the gate -- and a test asserts that. It lives
+	// on this table for the same reason Scope does: the table IS the mux, so an
+	// exemption cannot exist without being visible next to what it exempts.
+	SkipStepUp bool `json:"-"`
+	// NoScope marks a route that needs authentication but no verb. Only unlock:
+	// requiring read there would stop a write-only token unlocking to write, and
+	// a caller who cannot read the vault gains nothing by unlocking it. A field
+	// rather than an empty Scope, so the route invariant can tell "deliberately
+	// none" from "somebody forgot".
+	NoScope bool `json:"-"`
+	handle  func(http.ResponseWriter, *http.Request, *vaults.Instance)
 }
 
 // streamKeepalive is the SSE comment interval, and also how often an open
@@ -593,26 +706,26 @@ const maxWait = 120 * time.Second
 
 func (s *Server) routes() []route {
 	return []route{
-		{"GET", "/v1", "this list", auth.ScopeRead, nil},
-		{"GET", "/v1/head", "current commit hash", auth.ScopeRead, s.head},
-		{"GET", "/v1/snapshot", "every file at head: path, hash, size", auth.ScopeRead, s.snapshot},
-		{"GET", "/v1/changes", "what changed since ?since=<commit>; 409 if unknown", auth.ScopeRead, s.changes},
-		{"POST", "/v1/have", "{hashes:[...]} -> {missing:[...]}", auth.ScopeRead, s.have},
+		{Method: "GET", Path: "/v1", Does: "this list", Scope: auth.ScopeRead},
+		{Method: "GET", Path: "/v1/head", Does: "current commit hash", Scope: auth.ScopeRead, handle: s.head},
+		{Method: "GET", Path: "/v1/snapshot", Does: "every file at head: path, hash, size", Scope: auth.ScopeRead, handle: s.snapshot},
+		{Method: "GET", Path: "/v1/changes", Does: "what changed since ?since=<commit>; 409 if unknown", Scope: auth.ScopeRead, handle: s.changes},
+		{Method: "POST", Path: "/v1/have", Does: "{hashes:[...]} -> {missing:[...]}", Scope: auth.ScopeRead, handle: s.have},
 		// Staging a blob is a WRITE. Nothing references it until a push, but an
 		// unreferenced blob still consumes disk, and the write guards count
 		// writes per path at push time -- they never see an orphan.
-		{"PUT", "/v1/content/{hash}", "upload content; 400 if it does not hash to {hash}", auth.ScopeWrite, s.putContent},
-		{"GET", "/v1/content/{hash}", "download content by hash", auth.ScopeRead, s.getContent},
+		{Method: "PUT", Path: "/v1/content/{hash}", Does: "upload content; 400 if it does not hash to {hash}", Scope: auth.ScopeWrite, handle: s.putContent},
+		{Method: "GET", Path: "/v1/content/{hash}", Does: "download content by hash", Scope: auth.ScopeRead, handle: s.getContent},
 		// Delete is an op INSIDE the change set, so this route needs write and
 		// the handler additionally checks delete. See push.
-		{"POST", "/v1/push", "{base,device,changes:[...]} apply a change set", auth.ScopeWrite, s.push},
-		{"GET", "/v1/events", "SSE:one per commit with changed paths, kind, size", auth.ScopeRead, s.events},
-		{"GET", "/v1/wait", "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", auth.ScopeRead, s.wait},
-		{"GET", "/v1/history", "?path=&limit= revisions that touched a path", auth.ScopeRead, s.history},
-		{"GET", "/v1/at/{rev}/{path...}", "a file as it was at a revision; does not restore", auth.ScopeRead, s.at},
-		{"GET", "/v1/check", "working tree versus head", auth.ScopeRead, s.check},
-		{"GET", "/v1/export", "consistent archive of history; ?gzip=1 to compress", auth.ScopeRead, s.export},
-		{"GET", "/healthz", "liveness, no auth", "", nil},
+		{Method: "POST", Path: "/v1/push", Does: "{base,device,changes:[...]} apply a change set", Scope: auth.ScopeWrite, handle: s.push},
+		{Method: "GET", Path: "/v1/events", Does: "SSE:one per commit with changed paths, kind, size", Scope: auth.ScopeRead, handle: s.events},
+		{Method: "GET", Path: "/v1/wait", Does: "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", Scope: auth.ScopeRead, handle: s.wait},
+		{Method: "GET", Path: "/v1/history", Does: "?path=&limit= revisions that touched a path", Scope: auth.ScopeRead, handle: s.history},
+		{Method: "GET", Path: "/v1/at/{rev}/{path...}", Does: "a file as it was at a revision; does not restore", Scope: auth.ScopeRead, handle: s.at},
+		{Method: "GET", Path: "/v1/check", Does: "working tree versus head", Scope: auth.ScopeRead, handle: s.check},
+		{Method: "GET", Path: "/v1/export", Does: "consistent archive of history; ?gzip=1 to compress", Scope: auth.ScopeRead, handle: s.export},
+		{Method: "GET", Path: "/healthz", Does: "liveness, no auth"},
 	}
 }
 

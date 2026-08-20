@@ -703,6 +703,14 @@ func TestEveryRouteDeclaresAScope(t *testing.T) {
 		if rt.Path == "/healthz" {
 			continue // outside the auth middleware by design
 		}
+		// A route may deliberately need no verb -- unlock does -- but it has to
+		// say so, so the invariant can tell that from somebody forgetting.
+		if rt.NoScope {
+			if rt.Scope != "" {
+				t.Errorf("route %s %s sets NoScope and a scope", rt.Method, rt.Path)
+			}
+			continue
+		}
 		if rt.Scope == "" {
 			t.Errorf("route %s %s declares no scope", rt.Method, rt.Path)
 		}

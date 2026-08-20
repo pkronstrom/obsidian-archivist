@@ -69,6 +69,10 @@ type Config struct {
 	// ThrottleMaxDebounce caps how far the local path may defer commits while
 	// a threshold is tripped.
 	ThrottleMaxDebounce time.Duration
+
+	// StepUpTTL is how long one unlock lasts on a protected vault. Absolute
+	// from the unlock, never extended by use.
+	StepUpTTL time.Duration
 	// MinFreeBytes refuses writes below this much free disk.
 	MinFreeBytes int64
 	// NtfyURL is a full ntfy URL including the topic. Empty disables alerts.
@@ -130,6 +134,10 @@ func Load(args []string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	stepUpTTL, err := envDuration("ARCHIVIST_STEP_UP_TTL", "15m")
+	if err != nil {
+		return nil, err
+	}
 	maxDebounce, err := envDuration("ARCHIVIST_THROTTLE_MAX_DEBOUNCE", "60s")
 	if err != nil {
 		return nil, err
@@ -179,6 +187,8 @@ func Load(args []string) (*Config, error) {
 		"rolling window for the guard counters")
 	fs.DurationVar(&c.QuarantineCooldown, "quarantine-cooldown", qCooldown,
 		"how long a quarantine holds")
+	fs.DurationVar(&c.StepUpTTL, "step-up-ttl", stepUpTTL,
+		"how long one unlock lasts on a protected vault (ARCHIVIST_STEP_UP_TTL)")
 	fs.DurationVar(&c.ThrottleMaxDebounce, "throttle-max-debounce", maxDebounce,
 		"ceiling on the local path's deferred commit cadence")
 	fs.Int64Var(&c.MinFreeBytes, "min-free-bytes",
