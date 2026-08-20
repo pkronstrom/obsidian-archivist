@@ -256,3 +256,114 @@ func TestWildcardOpensEverythingButCannotCreate(t *testing.T) {
 		t.Error(`"*" must not imply the creation capability`)
 	}
 }
+
+const rfcSecretForAuthTest = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+func TestStepUpCatalogRejectsUnknownKinds(t *testing.T) {
+	for _, ok := range []string{"vault:work", "ops:work"} {
+		if !ValidStepUp(ok) {
+			t.Errorf("%q was rejected", ok)
+		}
+	}
+	// op: is reserved for gating individual operations. Nothing enforces it, so
+	// a token carrying one would promise a gate that does not exist.
+	for _, bad := range []string{"op:reclaim", "work", "vault:", ":work", "vault:work:extra"} {
+		if ValidStepUp(bad) {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestNeedsStepUpMatchesOnlyItsOwnVaultAndKind(t *testing.T) {
+	p := Principal{
+		Vaults:             []string{"*"},
+		Scopes:             []string{ScopeRead},
+		RequiresStepUpAuth: []string{"vault:work"},
+	}
+	if !p.NeedsStepUp(StepUpVault, "work") {
+		t.Error("vault:work did not gate work")
+	}
+	if p.NeedsStepUp(StepUpVault, "personal") {
+		t.Error("vault:work gated personal")
+	}
+	if p.NeedsStepUp(StepUpOps, "work") {
+		t.Error("vault:work gated destructive ops; the kinds are independent")
+	}
+}
+
+// A recorded exemption and no record at all must be different facts, because
+// only the second may be denied.
+func TestExemptIsDistinctFromSilence(t *testing.T) {
+	if !(Principal{StepUpExempt: []string{"work"}}).StepUpExemptFrom("work") {
+		t.Error("a recorded exemption did not report as one")
+	}
+	if (Principal{}).StepUpExemptFrom("work") {
+		t.Error("a token with no record reported as exempt")
+	}
+}
+
+func TestStepUpDecidedCoversBothKindsAndExemption(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Principal
+		want bool
+	}{
+		{"access posture", Principal{RequiresStepUpAuth: []string{"vault:work"}}, true},
+		{"ops posture", Principal{RequiresStepUpAuth: []string{"ops:work"}}, true},
+		{"exempt", Principal{StepUpExempt: []string{"work"}}, true},
+		{"another vault only", Principal{RequiresStepUpAuth: []string{"vault:other"}}, false},
+		{"nothing", Principal{}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.p.StepUpDecided("work"); got != tc.want {
+			t.Errorf("%s: StepUpDecided(work) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestMintRejectsAnUnknownStepUpEntry(t *testing.T) {
+	s := New()
+	if _, err := s.Mint(Principal{
+		Vaults: []string{"work"}, Scopes: []string{ScopeRead},
+		RequiresStepUpAuth: []string{"nonsense:work"},
+	}); err == nil {
+		t.Fatal("a typo in a step-up entry minted cleanly")
+	}
+}
+
+func TestMintRejectsAPostureWithNoSecret(t *testing.T) {
+	s := New()
+	if _, err := s.Mint(Principal{
+		Vaults: []string{"work"}, Scopes: []string{ScopeRead},
+		RequiresStepUpAuth: []string{"vault:work"},
+	}); err == nil {
+		t.Fatal("a token that must step up was minted with no secret to do it with")
+	}
+}
+
+// Mint is not the only way a principal reaches the table. A hand-edited or
+// corrupted file must be refused by the same rules, or the catalog is advisory.
+func TestLoadRejectsAnUnknownStepUpEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	body := `{"v":2,"tokens":{"abc":{"label":"x","vaults":["work"],` +
+		`"scopes":["read"],"requiresStepUpAuth":["nonsense:work"],` +
+		`"totpSecret":"` + rfcSecretForAuthTest + `"}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, ""); err == nil {
+		t.Fatal("a tokens file with an unknown step-up entry loaded cleanly")
+	}
+}
+
+func TestLoadRejectsAPostureWithNoSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	body := `{"v":2,"tokens":{"abc":{"label":"x","vaults":["work"],` +
+		`"scopes":["read"],"requiresStepUpAuth":["vault:work"]}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, ""); err == nil {
+		t.Fatal("a posture with no secret loaded cleanly; the token could never unlock")
+	}
+}

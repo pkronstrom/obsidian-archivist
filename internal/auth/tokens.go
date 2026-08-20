@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -45,6 +46,29 @@ func ValidScope(s string) bool {
 	return false
 }
 
+// Step-up kinds. Two, and deliberately not more: the kind decides the LIFETIME
+// of what a code buys. See docs/adr/0004-step-up-has-two-lifetimes.md.
+const (
+	// StepUpVault gates reading and writing a vault, and produces a grant.
+	StepUpVault = "vault"
+	// StepUpOps gates a destructive operation, and produces nothing: one code,
+	// one operation.
+	StepUpOps = "ops"
+)
+
+// ValidStepUp reports whether entry is in the catalog.
+//
+// `op:<name>` entries are reserved for gating individual operations and are NOT
+// accepted: nothing enforces them yet, and a token carrying one would promise a
+// gate that does not exist.
+func ValidStepUp(entry string) bool {
+	kind, name, ok := strings.Cut(entry, ":")
+	if !ok || name == "" || strings.Contains(name, ":") {
+		return false
+	}
+	return kind == StepUpVault || kind == StepUpOps
+}
+
 // Principal is what one token may do.
 type Principal struct {
 	// Label names the holder in logs and in `token list`. Never a secret.
@@ -62,6 +86,21 @@ type Principal struct {
 	// ExpiresAt is unix seconds; 0 means never. Checked on every lookup, so an
 	// expired token stops working without anyone editing the file.
 	ExpiresAt int64 `json:"expiresAt,omitempty"`
+	// TotpSecret is base32, stored REVERSIBLY because HMAC needs it. This is the
+	// one field here that is not a digest, and it is deliberate: a second factor
+	// is worthless without the first, so a stolen tokens file still yields no
+	// credential. See docs/adr/0001-totp-secret-in-the-tokens-file.md.
+	TotpSecret string `json:"totpSecret,omitempty"`
+	// RequiresStepUpAuth is what this token must prove presence for, as
+	// "<kind>:<vault>" entries validated against the catalog below.
+	RequiresStepUpAuth []string `json:"requiresStepUpAuth,omitempty"`
+	// StepUpExempt names protected vaults this token deliberately does not gate.
+	//
+	// It exists so that "decided not to gate" and "never asked" are different
+	// facts. Only the second is denied, and without this field they are
+	// indistinguishable -- which is how every token minted before a vault was
+	// protected would have stayed silently ungated.
+	StepUpExempt []string `json:"stepUpExempt,omitempty"`
 }
 
 func (p Principal) Opens(vault string) bool {
@@ -81,6 +120,79 @@ func (p Principal) Can(scope string) bool {
 		}
 	}
 	return false
+}
+
+// NeedsStepUp reports whether this token must prove presence for one kind of
+// action on one vault.
+func (p Principal) NeedsStepUp(kind, vault string) bool {
+	want := kind + ":" + vault
+	for _, e := range p.RequiresStepUpAuth {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+// StepUpExemptFrom reports a RECORDED decision not to gate this vault. Absence
+// is not exemption; see StepUpDecided.
+func (p Principal) StepUpExemptFrom(vault string) bool {
+	for _, v := range p.StepUpExempt {
+		if v == vault {
+			return true
+		}
+	}
+	return false
+}
+
+// StepUpDecided reports whether this token carries any recorded decision about
+// this vault.
+//
+// A protected vault plus a token that decided nothing is refused: that token
+// predates the marker, and treating silence as consent is the fail-open this
+// design exists to avoid. See docs/adr/0003-protected-vault-and-token-posture.md.
+func (p Principal) StepUpDecided(vault string) bool {
+	return p.NeedsStepUp(StepUpVault, vault) ||
+		p.NeedsStepUp(StepUpOps, vault) ||
+		p.StepUpExemptFrom(vault)
+}
+
+// StepUpVaults lists every vault this token has a posture toward.
+func (p Principal) StepUpVaults() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, e := range p.RequiresStepUpAuth {
+		_, name, ok := strings.Cut(e, ":")
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// validateStepUp is the shared rule for Mint and Load. Both must apply it: a
+// principal reaches the table by minting OR by being read off disk, and a
+// catalog enforced on only one path is advisory.
+func validateStepUp(p Principal) error {
+	for _, e := range p.RequiresStepUpAuth {
+		if !ValidStepUp(e) {
+			return fmt.Errorf("%q is not a step-up entry (vault:<name>, ops:<name>)", e)
+		}
+	}
+	if len(p.RequiresStepUpAuth) > 0 && p.TotpSecret == "" {
+		return errors.New("a token that must step up needs a totpSecret to do it with")
+	}
+	for _, v := range p.StepUpExempt {
+		if v == "" {
+			return errors.New("an empty vault name in stepUpExempt")
+		}
+		if p.NeedsStepUp(StepUpVault, v) {
+			return fmt.Errorf("%q is both gated and exempt", v)
+		}
+	}
+	return nil
 }
 
 // Expired reports whether this token is past its deadline. A zero ExpiresAt
@@ -190,6 +302,9 @@ func (s *Set) Mint(p Principal) (string, error) {
 			return "", fmt.Errorf("auth: %q is not a scope (read, write, delete)", sc)
 		}
 	}
+	if err := validateStepUp(p); err != nil {
+		return "", fmt.Errorf("auth: %w", err)
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("auth: generating a token: %w", err)
@@ -297,6 +412,9 @@ func Load(path, fallback string) (*Set, error) {
 			if !ValidScope(sc) {
 				return nil, fmt.Errorf("auth: token %q has unknown scope %q", p.Label, sc)
 			}
+		}
+		if err := validateStepUp(p); err != nil {
+			return nil, fmt.Errorf("auth: token %q: %w", p.Label, err)
 		}
 	}
 	return &Set{byHash: f.Tokens}, nil
