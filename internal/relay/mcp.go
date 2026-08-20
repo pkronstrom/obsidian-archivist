@@ -88,12 +88,17 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 		Name: "write_attachment",
 		Description: "Create or replace an attachment from base64 content. Same " +
 			"concurrency rules as write_note: pass the revision you read at, and " +
-			"check the returned status. Use write_note for text; this is for bytes.",
+			"check the returned status. Use write_note for text; this is for bytes. " +
+			"Accepts the image, audio, video and pdf types Obsidian renders, and " +
+			"refuses executables and any file whose bytes do not match its " +
+			"extension — the refusal names the reason.",
 	}, writeAttachment(c))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "delete_note",
-		Description: "Delete a note. Its history is retained and it can be restored.",
+		Name: "delete_note",
+		Description: "Delete a note, or any other file including an attachment — it is " +
+			"the path that matters, not the extension. Its history is retained and it " +
+			"can be restored.",
 	}, deleteNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -601,6 +606,12 @@ func writeAttachment(c *client.Client) mcp.ToolHandlerFor[writeAttachmentInput, 
 		if len(body) > maxAttachmentWrite {
 			return nil, writeOutput{}, fmt.Errorf(
 				"%s is %d bytes, over the %d-byte write limit", in.Path, len(body), maxAttachmentWrite)
+		}
+		// Type and content checks. Relay-only on purpose: the sync API must keep
+		// accepting any bytes, because a paired device legitimately syncs plugin
+		// JavaScript and themes. It is this door an injected instruction reaches.
+		if err := guardAttachment(in.Path, body); err != nil {
+			return nil, writeOutput{}, err
 		}
 
 		res, err := c.WriteAt(ctx, in.Path, body, in.Revision)

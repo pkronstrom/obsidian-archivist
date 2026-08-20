@@ -366,13 +366,16 @@ func TestAttachmentRoundTripsThroughTools(t *testing.T) {
 func TestReadAttachmentRefusesOversizeRatherThanTruncating(t *testing.T) {
 	cs, _ := session(t)
 	ctx := context.Background()
-	big := bytes.Repeat([]byte{0x00, 0x01}, 4096) // 8 KB
+	// A real PNG header padded out: write_attachment refuses content that does
+	// not match its extension, so an oversize fixture has to be a true file of
+	// an allowed type rather than arbitrary bytes.
+	big := append(append([]byte{}, pngBytes...), bytes.Repeat([]byte{0x00, 0x01}, 4086)...)
 	call(t, cs, "write_attachment", map[string]any{
-		"path": "att/big.bin", "content_base64": base64.StdEncoding.EncodeToString(big)})
+		"path": "att/big.png", "content_base64": base64.StdEncoding.EncodeToString(big)})
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "read_attachment",
-		Arguments: map[string]any{"path": "att/big.bin", "max_bytes": 100}})
+		Arguments: map[string]any{"path": "att/big.png", "max_bytes": 100}})
 	if err == nil && !res.IsError {
 		t.Fatalf("oversize read succeeded; half an attachment is a corrupt one: %s", text(res))
 	}
