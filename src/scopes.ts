@@ -112,3 +112,40 @@ export function pairRenames(changes: Pending[], serverProtocol = 0): Pending[] {
 	}
 	return out;
 }
+
+/** Step-up kinds, mirroring internal/auth's catalog. */
+export const STEP_UP_VAULT = "vault";
+
+/**
+ * stepUpWarning names the protected vaults this token is gated on for ACCESS.
+ *
+ * Two inputs, because they are two different facts: which vaults the server
+ * protects, and what this token decided about them. Warning on either alone
+ * would be wrong -- a posture for a vault the server does not protect is
+ * harmless, and a protected vault this token is not gated on is somebody else's
+ * problem.
+ *
+ * Only `vault:` entries warn. A device gated on vault ACCESS is a
+ * misconfiguration: the plugin cannot present a code, and it persists the whole
+ * vault to disk anyway, so a synced protected vault is plaintext on that device
+ * forever. An `ops:` posture is the opposite -- confirming a destructive
+ * operation triggered from the plugin is worth having.
+ *
+ * Both fields are absent on a server predating step-up. Absent is not "gated on
+ * everything": treating it that way would refuse every device on a server that
+ * is working perfectly well.
+ */
+export function stepUpWarning(
+	protectedVaults: string[] | undefined,
+	posture: string[] | undefined,
+	label?: string,
+): string {
+	if (!protectedVaults?.length || !posture?.length) return "";
+	const gated = protectedVaults.filter((v) => posture.includes(`${STEP_UP_VAULT}:${v}`));
+	if (gated.length === 0) return "";
+	const who = label ? ` "${label}"` : "";
+	return (
+		`this token${who} needs an unlock code for ${gated.join(", ")}, ` +
+		`and the plugin cannot supply one. Mint a token without a vault: posture for this device.`
+	);
+}

@@ -1,7 +1,7 @@
 import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import { hostname as osHostname } from "os";
 import { Client } from "./client";
-import { scopeWarning } from "./scopes";
+import { scopeWarning, stepUpWarning } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
 import {
@@ -308,7 +308,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					return;
 				}
 				try {
-					const { vaults, scopes, label } = await new Client(serverUrl, token, "").listVaults();
+					const { vaults, scopes, label, protectedVaults, requiresStepUpAuth } =
+						await new Client(serverUrl, token, "").listVaults();
 					// Refuse here rather than at the first save. A token without
 					// both verbs syncs down happily and then fails on a write,
 					// with the note already edited -- the worst moment to learn
@@ -316,6 +317,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					const warning = scopeWarning(scopes, label);
 					if (warning) {
 						new Notice(`archivist: ${warning}`, 12000);
+						return;
+					}
+					// A token gated on vault ACCESS can never drive this plugin:
+					// there is nowhere here to type a code, and the vault lands
+					// on disk in plaintext anyway. Say so now rather than at the
+					// first sync.
+					const gated = stepUpWarning(protectedVaults, requiresStepUpAuth, label);
+					if (gated) {
+						new Notice(`archivist: ${gated}`, 12000);
 						return;
 					}
 					if (vaults.length === 0) {

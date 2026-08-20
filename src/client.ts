@@ -106,6 +106,10 @@ export class Client {
 		scopes?: string[];
 		/** What the token is called on the server. Never a secret. */
 		label?: string;
+		/** Vaults the SERVER protects with step-up. Absent on older servers. */
+		protectedVaults?: string[];
+		/** What THIS token decided about them. Absent on older servers. */
+		requiresStepUpAuth?: string[];
 	}> {
 		const res = await this.callRoot("GET", "/v1/vaults");
 		return res.json as {
@@ -113,6 +117,8 @@ export class Client {
 			canCreate: boolean;
 			scopes?: string[];
 			label?: string;
+			protectedVaults?: string[];
+			requiresStepUpAuth?: string[];
 		};
 	}
 
