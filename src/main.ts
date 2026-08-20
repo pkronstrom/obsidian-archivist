@@ -94,7 +94,13 @@ export default class ArchivistPlugin extends Plugin {
 			},
 		});
 
-		this.addRibbonIcon("refresh-cw", "archivist: sync now", () => void this.runSync());
+		// Title case, because this string is a UI LABEL rather than a toast
+		// prefix. It shows up in the ribbon tooltip and, on mobile, in the
+		// quick-action menu beside "Open command palette" and "Create new base"
+		// -- so it has to read like those, not like the "archivist: …" prefix
+		// the Notices use. Obsidian titles the real command itself from the
+		// manifest name; this one is ours to get right.
+		this.addRibbonIcon("refresh-cw", "Archivist: Sync now", () => void this.runSync());
 
 		// Vault events fire for EVERY existing file when the vault loads, which
 		// the API documents and recommends handling by registering inside
