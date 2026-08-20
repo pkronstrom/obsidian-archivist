@@ -1,7 +1,9 @@
 package relay_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
@@ -316,5 +318,103 @@ func TestCleanWriteOmitsCurrentState(t *testing.T) {
 	}))
 	if strings.Contains(got, "currentContent") {
 		t.Errorf("a clean write carried currentContent: %s", got)
+	}
+}
+
+// ---- attachments -----------------------------------------------------------
+
+// A PNG header: real binary, and short enough to read back whole.
+var pngBytes = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01")
+
+func TestAttachmentRoundTripsThroughTools(t *testing.T) {
+	cs, _ := session(t)
+	encoded := base64.StdEncoding.EncodeToString(pngBytes)
+
+	call(t, cs, "write_attachment", map[string]any{
+		"path": "att/pixel.png", "content_base64": encoded})
+
+	res := call(t, cs, "read_attachment", map[string]any{"path": "att/pixel.png"})
+	var out struct {
+		ContentBase64 string `json:"content_base64"`
+		Size          int64  `json:"size"`
+		Ext           string `json:"ext"`
+		Revision      string `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(text(res)), &out); err != nil {
+		t.Fatalf("read_attachment: %v (%s)", err, text(res))
+	}
+	got, err := base64.StdEncoding.DecodeString(out.ContentBase64)
+	if err != nil {
+		t.Fatalf("returned content is not base64: %v", err)
+	}
+	// Byte-exact matters more here than anywhere else: a PNG that differs by
+	// one byte is not a slightly wrong PNG, it is not a PNG.
+	if !bytes.Equal(got, pngBytes) {
+		t.Errorf("round trip changed the bytes: got %q want %q", got, pngBytes)
+	}
+	if out.Size != int64(len(pngBytes)) {
+		t.Errorf("size = %d, want %d", out.Size, len(pngBytes))
+	}
+	if out.Ext != "png" {
+		t.Errorf("ext = %q, want png", out.Ext)
+	}
+	if out.Revision == "" {
+		t.Error("no revision returned; a caller cannot replace the file safely")
+	}
+}
+
+func TestReadAttachmentRefusesOversizeRatherThanTruncating(t *testing.T) {
+	cs, _ := session(t)
+	ctx := context.Background()
+	big := bytes.Repeat([]byte{0x00, 0x01}, 4096) // 8 KB
+	call(t, cs, "write_attachment", map[string]any{
+		"path": "att/big.bin", "content_base64": base64.StdEncoding.EncodeToString(big)})
+
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "read_attachment",
+		Arguments: map[string]any{"path": "att/big.bin", "max_bytes": 100}})
+	if err == nil && !res.IsError {
+		t.Fatalf("oversize read succeeded; half an attachment is a corrupt one: %s", text(res))
+	}
+	// The message has to carry the real size, or the caller cannot choose a
+	// max_bytes that would work.
+	if msg := text(res); !strings.Contains(msg, "8192") {
+		t.Errorf("refusal does not name the actual size: %s", msg)
+	}
+}
+
+func TestReadAttachmentRefusesAMaxBytesOverTheHardLimit(t *testing.T) {
+	cs, _ := session(t)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "read_attachment",
+		Arguments: map[string]any{"path": "att/pixel.png", "max_bytes": 999 << 20}})
+	if err == nil && !res.IsError {
+		t.Error("a caller could request an arbitrarily large read")
+	}
+}
+
+func TestWriteAttachmentRejectsInvalidBase64(t *testing.T) {
+	cs, _ := session(t)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "write_attachment",
+		Arguments: map[string]any{"path": "att/x.png", "content_base64": "not!base64!"}})
+	if err == nil && !res.IsError {
+		t.Error("invalid base64 was accepted; the vault would hold garbage")
+	}
+}
+
+func TestReadNoteStillHandlesTextAndPointsAtTheAttachmentTool(t *testing.T) {
+	cs, c := session(t)
+	ctx := context.Background()
+	blob := []byte("\x00\x01\x02 not text at all")
+	h := protocol.HashContent(blob)
+	c.PutContent(ctx, h, blob)
+	base, _ := c.Head(ctx)
+	c.Push(ctx, base, []protocol.Change{{Path: "att/scan.pdf", Op: protocol.OpPut, Hash: h}})
+
+	res, _ := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "read_note", Arguments: map[string]any{"path": "att/scan.pdf"}})
+	if msg := text(res); !strings.Contains(msg, "read_attachment") {
+		t.Errorf("the refusal does not name the tool that would work: %s", msg)
 	}
 }

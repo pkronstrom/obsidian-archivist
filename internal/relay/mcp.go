@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -73,6 +74,22 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 			"returned status: 'applied' means your exact content was stored, " +
 			"'merged' means the stored content differs from what you sent.",
 	}, writeNote(c))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "read_attachment",
+		Description: "Read an attachment (image, pdf, audio, any non-text file) as " +
+			"base64. read_note refuses these on purpose; this is the tool for them. " +
+			"Capped at 1 MB by default because the bytes land in your context — " +
+			"raise max_bytes deliberately, up to 10 MB. Oversize is refused with " +
+			"the real size, never truncated: half an attachment is a corrupt one.",
+	}, readAttachment(c))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "write_attachment",
+		Description: "Create or replace an attachment from base64 content. Same " +
+			"concurrency rules as write_note: pass the revision you read at, and " +
+			"check the returned status. Use write_note for text; this is for bytes.",
+	}, writeAttachment(c))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "delete_note",
@@ -387,7 +404,8 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 			// An agent cannot use raw bytes and would waste a large amount of
 			// context discovering that. Say so instead.
 			return nil, readOutput{}, fmt.Errorf(
-				"%s is a binary file (%d bytes); read_note only returns text", in.Path, len(body))
+				"%s is a binary file (%d bytes); read_note only returns text. "+
+					"Use read_attachment to get it as base64", in.Path, len(body))
 		}
 		return nil, readOutput{Path: in.Path, Content: string(body), Revision: base}, nil
 	}
@@ -480,6 +498,115 @@ type deleteOutput struct {
 	Path   string `json:"path"`
 	Status string `json:"status"`
 	Note   string `json:"note,omitempty"`
+}
+
+// Attachment ceilings.
+//
+// Read is capped low because the bytes go into the caller's context: 1 MB is
+// the same threshold search_notes already treats as "too big to be a note". A
+// caller that genuinely wants more raises max_bytes and pays for it knowingly,
+// up to a hard limit that exists so a 200 MB video cannot be requested at all.
+//
+// Write is capped higher because nothing is read into a context to produce it,
+// but not unbounded: the base64 arrives as one JSON string in memory.
+const (
+	defaultAttachmentRead = 1 << 20  // 1 MB
+	maxAttachmentRead     = 10 << 20 // 10 MB
+	maxAttachmentWrite    = 25 << 20 // 25 MB
+)
+
+type readAttachmentInput struct {
+	Vault    string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path     string `json:"path" jsonschema:"vault-relative path, e.g. 'attachments/diagram.png'"`
+	MaxBytes int    `json:"max_bytes,omitempty" jsonschema:"refuse anything larger than this. Default 1048576 (1 MB), hard maximum 10485760 (10 MB). The content lands in your context, so raise it deliberately"`
+}
+
+type readAttachmentOutput struct {
+	Path string `json:"path"`
+	// ContentBase64 is the file's exact bytes, base64-encoded. Decode before
+	// use; this is never a truncated prefix.
+	ContentBase64 string `json:"content_base64"`
+	Size          int64  `json:"size"`
+	Ext           string `json:"ext,omitempty"`
+	// Revision is the vault revision these bytes were read at. Pass it back as
+	// write_attachment's `revision` to replace the file safely.
+	Revision string `json:"revision,omitempty"`
+}
+
+func readAttachment(c *client.Client) mcp.ToolHandlerFor[readAttachmentInput, readAttachmentOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in readAttachmentInput) (*mcp.CallToolResult, readAttachmentOutput, error) {
+		c := forVault(c, in.Vault)
+		if in.Path == "" {
+			return nil, readAttachmentOutput{}, fmt.Errorf("path is required")
+		}
+
+		limit := in.MaxBytes
+		if limit <= 0 {
+			limit = defaultAttachmentRead
+		}
+		if limit > maxAttachmentRead {
+			return nil, readAttachmentOutput{}, fmt.Errorf(
+				"max_bytes %d exceeds the hard limit of %d", limit, maxAttachmentRead)
+		}
+
+		body, base, err := c.ReadForEdit(ctx, in.Path)
+		if err != nil {
+			return nil, readAttachmentOutput{}, err
+		}
+		// Refuse rather than truncate. A caller that receives half a PNG has no
+		// way to know, and every use of it is wrong.
+		if len(body) > limit {
+			return nil, readAttachmentOutput{}, fmt.Errorf(
+				"%s is %d bytes, over the %d-byte limit; raise max_bytes (hard maximum %d) if you really want it",
+				in.Path, len(body), limit, maxAttachmentRead)
+		}
+
+		return nil, readAttachmentOutput{
+			Path:          in.Path,
+			ContentBase64: base64.StdEncoding.EncodeToString(body),
+			Size:          int64(len(body)),
+			Ext:           strings.ToLower(strings.TrimPrefix(path.Ext(in.Path), ".")),
+			Revision:      base,
+		}, nil
+	}
+}
+
+type writeAttachmentInput struct {
+	Vault         string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path          string `json:"path" jsonschema:"vault-relative path, e.g. 'attachments/diagram.png'"`
+	ContentBase64 string `json:"content_base64" jsonschema:"the file's bytes, base64-encoded"`
+	Revision      string `json:"revision,omitempty" jsonschema:"the revision read_attachment returned, if you are replacing a file you read. Without it the write is a blind overwrite"`
+}
+
+func writeAttachment(c *client.Client) mcp.ToolHandlerFor[writeAttachmentInput, writeOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in writeAttachmentInput) (*mcp.CallToolResult, writeOutput, error) {
+		c := forVault(c, in.Vault)
+		if in.Path == "" {
+			return nil, writeOutput{}, fmt.Errorf("path is required")
+		}
+		body, err := base64.StdEncoding.DecodeString(in.ContentBase64)
+		if err != nil {
+			return nil, writeOutput{}, fmt.Errorf("content_base64 is not valid base64: %w", err)
+		}
+		if len(body) > maxAttachmentWrite {
+			return nil, writeOutput{}, fmt.Errorf(
+				"%s is %d bytes, over the %d-byte write limit", in.Path, len(body), maxAttachmentWrite)
+		}
+
+		res, err := c.WriteAt(ctx, in.Path, body, in.Revision)
+		if err != nil {
+			return nil, writeOutput{}, err
+		}
+		out := writeOutput{Path: res.Path, Status: res.Status, ConflictPath: res.ConflictPath}
+		// A binary file has no line-level merge, so anything but a clean apply
+		// means the stored bytes are not the bytes sent. Say so; do not hand
+		// back the current content, which would be base64 nobody asked for.
+		if res.Status != protocol.StatusApplied {
+			out.Note = "the stored file is NOT what you sent (status " + res.Status +
+				"). Binary content cannot be merged; re-read it and decide."
+		}
+		return nil, out, nil
+	}
 }
 
 type deleteInput struct {
