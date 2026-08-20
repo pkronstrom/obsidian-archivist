@@ -20,6 +20,12 @@ export type SyncState = {
 	 * rather than treated as a mismatch.
 	 */
 	vault?: string;
+	/**
+	 * When the last cycle completed successfully, epoch ms. Undefined if this
+	 * device has never completed one -- distinct from `base === ""`, which
+	 * means never SYNCED but says nothing about whether a cycle ran and failed.
+	 */
+	lastSyncedAt?: number;
 };
 
 const KEY = "archivist.state";
@@ -42,6 +48,7 @@ export function loadState(app: App): SyncState {
 		base: typeof s.base === "string" ? s.base : "",
 		files: s.files ?? {},
 		vault: typeof s.vault === "string" ? s.vault : undefined,
+		lastSyncedAt: typeof s.lastSyncedAt === "number" ? s.lastSyncedAt : undefined,
 	};
 }
 

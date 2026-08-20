@@ -281,6 +281,7 @@ export class Sync {
 			}
 		}
 
+		state.lastSyncedAt = Date.now();
 		saveState(this.app, state);
 		return report;
 	}
