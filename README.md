@@ -41,47 +41,106 @@ for free, and can recover a note you mangled three weeks ago.
 
 ## How it flows
 
-```mermaid
-flowchart LR
-    mac["Obsidian<br/>laptop"]
-    phone["Obsidian<br/>phone"]
+![archivist architecture](docs/diagrams/architecture.svg)
 
-    subgraph server ["your server"]
-        direction TB
-        vs(["archivist-server<br/><i>one 8 MB binary</i>"])
-        vault[/"~/knowledge/personal<br/><b>plain .md .pdf .png</b>"/]
-        git[("git history")]
-        vs --- vault
-        vs -->|"every change<br/>is a commit"| git
-    end
+<sub>Source and regeneration: [`docs/diagrams/`](docs/diagrams/).</sub>
 
-    web["web viewer"]
-    local["AI agent, grep,<br/>scripts, cron"]
-    restic["restic"]
-    relay["archivist-relay"]
-    remote["remote agents<br/>n8n, Claude Code"]
+**Thick lines** carry vault traffic over HTTP — device sync, and the relay
+forwarding each caller's own token. **Thin lines are ordinary file I/O** — that
+is the whole point: anything on the server opens files rather than calling an
+API. Dotted lines are optional.
 
-    mac <==> vs
-    phone <==> vs
+The relay usually runs on the same box as the server — that is the simplest
+deployment and the one to start with. Nothing ties it there: it is stateless,
+holds no vault and no cursor, so it runs equally well on your laptop, in a
+container elsewhere, or on another host entirely. It keeps no credential of its
+own beyond a read-only background token, and forwards each caller's. The server
+stays the only authority wherever the relay sits.
 
-    vault <--> web
-    vault <--> local
+## Deployment scenarios
 
-    vs -.->|"/v1/export"| restic
-    vs -.->|"HTTP + events"| relay
-    relay -.->|"MCP, webhooks"| remote
+Four shapes people actually run. They compose — most setups end up as two or
+three of them at once.
 
-    classDef plain fill:#fff,stroke:#999
-    classDef hot fill:#fffbe6,stroke:#c9a227,stroke-width:2px
-    classDef todo fill:#fff,stroke:#999,stroke-dasharray:4 3
-    class vault,vs hot
-    class mac,phone,web,local,restic,relay plain
-    class remote todo
+### Obsidian on several devices
+
+The baseline, and the one to start with.
+
+```
+Mac (plugin) ──┐
+               ├──> archivist-server + vault on a remote box
+iPhone (plugin)┘
 ```
 
-**Thick lines** are sync. **Thin lines are ordinary file I/O** — that is the
-whole point: anything on the server opens files rather than calling an API.
-Dotted lines are optional.
+Install the server next to the vault directory, mint one token per device, point
+the plugin at the URL. Nothing else is required — no relay, no webhooks, no
+agents. Each device holds a cursor and pulls what it missed, so a phone that was
+off for a fortnight catches up rather than fighting.
+
+The one thing to get right is the first connect on a device that *already* has
+notes. Pairing a populated, never-synced vault against a populated server is the
+case that silently merges two unrelated vaults, so the plugin refuses it and
+offers three explicit recoveries. See [Connecting a vault that already has
+notes](#connecting-a-vault-that-already-has-notes).
+
+### Agents over MCP
+
+Add `archivist-relay` when something that is not on the server needs the vault.
+
+```
+Claude Code, nanoclaw ──> archivist-relay (MCP) ──> archivist-server
+```
+
+The relay forwards each caller's own token rather than standing in for everyone,
+so an agent token's scopes are evaluated by the server that enforces them. Mint
+the agent a token with `read,write` and no `delete`, and a leaked token cannot
+erase notes. The relay usually runs on the same box; it is stateless, so it can
+equally run on your laptop or in the container that needs it.
+
+### Editing files directly on the server
+
+The vault is a plain directory, so anything that writes Markdown works — `vim`
+over ssh, a cron job, or a web editor.
+
+```
+browser ──> NoteDiscovery ─┐
+                           ├──> the vault directory ──> archivist-server ──> commit
+ssh, cron, scripts ────────┘
+```
+
+This repository's own server runs NoteDiscovery (`ghcr.io/gamosoft/notediscovery`)
+with the vault mounted read-write, so the same notes are editable in a browser
+and in Obsidian. There is no bridge and no API between them: both write plain
+Markdown to one directory, and the server's watcher commits whatever appears
+there.
+
+Read-write on purpose, and with Obsidian on two devices that makes three writers
+on one directory. Two of them editing one note is exactly the case the three-way
+merge exists for, and the loser of a genuine conflict gets a conflict copy rather
+than losing text.
+
+Two things to check when picking a web editor for this. It must keep **no
+database** — an editor that indexes the vault into its own store goes stale the
+moment a device syncs a change underneath it, and NoteDiscovery is usable here
+precisely because it has none. And it must run as the user that owns the vault:
+an image with no `USER` runs as root and writes root-owned files that neither
+Obsidian nor the server can then touch.
+
+### Reacting to changes
+
+Three surfaces, none of them a websocket.
+
+| surface | shape | use it for |
+|---|---|---|
+| `GET /v1/events` | SSE, one message per commit | a long-lived consumer on the box |
+| `GET /v1/wait` | long-poll until head moves | a shell script, a poller with no SSE client |
+| relay webhooks | best-effort POST per commit | n8n, memo-ai, anything with an HTTP endpoint |
+
+All three tell you *that* something changed and roughly what. None of them is a
+durable queue — webhook delivery has no retry and no dead-letter on purpose.
+Durability comes from the cursor instead: a consumer that was down for a week
+asks `/v1/changes?since=<commit>` and gets exactly what it missed. Keep the
+cursor, treat the notification as a hint to go look.
 
 ## What this is good for
 
@@ -98,8 +157,10 @@ into the vault where you will see them on your phone.
 re-embed it, update an index, run a linter, post to a channel. The cursor in
 `/v1/changes` means a consumer that was down for a week catches up correctly.
 
-**Read your notes on the web** without another sync system. Point any viewer at
-the directory. Read-only is safest, since server-side edits cannot be merged.
+**Read and write your notes on the web** without another sync system. Point an
+editor at the directory — this repo's own server runs NoteDiscovery that way. A
+server-side edit is committed by the watcher like any other, and a concurrent
+edit from a device is merged rather than lost.
 
 **Generate notes from scripts.** A cron job writing a daily note, a job pulling
 in your calendar, a script filing receipts. Write a file, and it is on your
@@ -299,6 +360,97 @@ In the plugin, **Server URL** and **Vault** are two separate fields. A device
 switches vault by editing one of them. There is deliberately no compatibility
 alias for the old unqualified paths: an un-updated device gets a 404, which is
 visible, rather than writing into the wrong vault, which is not.
+
+### Protecting a vault
+
+A protected vault refuses to serve a token until a human presents a one-time
+code from an authenticator app. It is a **consent gate, not encryption** — the
+server can always read the vault, it just declines to hand it over until you say
+so. Point of it: an agent holding a valid token cannot read or change your notes
+without asking.
+
+Mark a vault by creating an empty file:
+
+```bash
+touch $ARCHIVIST_ROOT/.archivist/work/step-up
+```
+
+**Do the re-minting first.** The moment that file exists, every token that opens
+`work` starts failing with `step_up_required`, including the ones already in your
+devices. That is deliberate — the alternative is a vault everyone believes is
+protected and is not — but it means the order is: list the tokens, re-mint each
+one, update its holders, and only then create the marker.
+
+From then on `token add` refuses to mint for `work` without being told what to
+do about it:
+
+```
+work requires an explicit step-up posture.
+Pass -step-up vault:work[,ops:work], or -no-step-up work to opt out deliberately.
+```
+
+Two postures, and they are independent:
+
+| entry | gates | lifetime |
+|---|---|---|
+| `vault:work` | reading and writing the vault | a grant, 15 minutes by default |
+| `ops:work` | destructive operations on it | one code, one operation, no grant |
+
+`-no-step-up work` records a deliberate exemption. It is written to the token
+rather than merely permitted, because the server has to tell "decided not to
+gate this" from "minted before the marker existed" — and it denies the second.
+
+Profiles set both, named for who holds the token:
+
+```bash
+token add -root $ARCHIVIST_ROOT -label agent-claude -vaults work,personal   -profile mcp-client
+```
+
+| profile | scopes | posture | attended |
+|---|---|---|---|
+| `obsidian-plugin` | read, write, delete | `ops:` only | yes |
+| `mcp-client` | read, write | `vault:` + `ops:` | yes |
+| `mcp-scheduled` | read, write | refused | no |
+| `relay-background` | read | refused | no |
+
+The attended column is the one that breaks things. A token gated on vault access
+with nobody behind it is a service that dies at its first restart and cannot
+recover, so the two unattended profiles refuse a posture outright. `mcp-scheduled`
+exists for exactly this: memo-ai is an MCP client running on a schedule with
+nobody watching.
+
+Minting prints the permissions first and the token last, with an `otpauth://` URL
+for the authenticator:
+
+```
+Scan this, or run:
+  qrencode -t ANSIUTF8 'otpauth://totp/Archivist:agent-claude?secret=...&issuer=Archivist'
+```
+
+archivist ships no QR encoder — that would be a dependency in an internet-facing
+binary for something you run three times.
+
+**Unlocking.** Over HTTP:
+
+```bash
+curl -sX POST -H "Authorization: Bearer $TOKEN"   -d '{"code":"123456"}' https://archivist.example/work/v1/unlock
+```
+
+Through the relay, an agent calls the `unlock` tool with the code you read out.
+A code is single-use, so telling an agent one is safe — it cannot spend it twice.
+
+**Two things that surprise people.**
+
+A deploy drops every grant. They live in memory and die with the process, so
+after a restart each protected token needs a fresh code. That is the
+conservative direction: you did not consent to the new binary.
+
+Webhooks keep firing. Fan-out runs on the relay's own background token with no
+caller present, so a protected vault keeps publishing change events whether or
+not anyone has unlocked it. The relay says so at startup when it has targets for
+a protected vault. It is a narrower leak than it sounds — a webhook consumer
+holds a read token anyway — but it is not zero.
+
 
 ### Reaching it from elsewhere
 

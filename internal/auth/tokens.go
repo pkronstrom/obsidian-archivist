@@ -226,7 +226,12 @@ const FormatVersion = 2
 const TokenPrefix = "arch_"
 
 // file is the on-disk shape. Keys of Tokens are the lowercase hex sha256 of the
-// token, so the file holds nothing replayable.
+// token, so the file holds nothing that can be PRESENTED as a credential.
+//
+// It is no longer true that it holds nothing replayable: TotpSecret is stored
+// reversibly, because HMAC cannot be computed from a digest. A second factor is
+// worthless without the first, so a stolen file still yields no access -- read
+// docs/adr/0001-totp-secret-in-the-tokens-file.md before "fixing" this.
 type file struct {
 	V      int                  `json:"v"`
 	Tokens map[string]Principal `json:"tokens"`
