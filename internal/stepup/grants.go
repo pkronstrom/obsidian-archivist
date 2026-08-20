@@ -89,6 +89,35 @@ func (g *Grants) Held(tokenHash, vault string) bool {
 	return true
 }
 
+// HeldWatch answers "is the window open" and "tell me when it closes" in ONE
+// lock acquisition, for the exact grant that was live at that instant.
+//
+// Calling Held and then Watch separately is a TOCTOU window: a re-grant landing
+// between them hands the caller the SUCCESSOR's channel, so a request admitted
+// under the old grant survives that grant being replaced -- which re-granting
+// deliberately closes watchers to prevent.
+func (g *Grants) HeldWatch(tokenHash, vault string) (<-chan struct{}, bool) {
+	key := grantKey(tokenHash, vault)
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	entry, ok := g.live[key]
+	if !ok {
+		return closedChan(), false
+	}
+	if !g.now().Before(entry.until) {
+		g.dropLocked(key)
+		return closedChan(), false
+	}
+	return entry.lapsed, true
+}
+
+func closedChan() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
 // Watch returns a channel closed when the grant ends. A key with no live grant
 // gets an already-closed channel, so a caller that never had one is not left
 // waiting for a lapse that cannot come.
@@ -99,9 +128,7 @@ func (g *Grants) Watch(tokenHash, vault string) <-chan struct{} {
 	defer g.mu.Unlock()
 	entry, ok := g.live[key]
 	if !ok || !g.now().Before(entry.until) {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
+		return closedChan()
 	}
 	return entry.lapsed
 }

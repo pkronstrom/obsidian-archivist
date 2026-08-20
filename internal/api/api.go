@@ -266,13 +266,49 @@ func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.P
 		return stepUpState{gated: true}, true
 	}
 	hash := auth.HashToken(bearer(r))
-	if s.grants == nil || !s.grants.Held(hash, vault) {
+	if s.grants == nil {
+		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
+			"this server was built without step-up support, so "+vault+" cannot be unlocked")
+		return stepUpState{}, false
+	}
+	// One lock acquisition for both answers. Asking Held and then Watch would
+	// let a re-grant land in between and hand this request the successor's
+	// channel, so it would outlive the grant it was actually admitted under.
+	lapsed, held := s.grants.HeldWatch(hash, vault)
+	if !held {
 		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
 			"this token needs an unlock code for "+vault+
 				"; POST a code to /"+vault+"/v1/unlock")
 		return stepUpState{}, false
 	}
-	return stepUpState{gated: true, lapsed: s.grants.Watch(hash, vault)}, true
+	return stepUpState{gated: true, lapsed: lapsed}, true
+}
+
+// stepUpStillPermits re-answers the gate for a stream that has already been
+// running, and returns why it must stop.
+//
+// The admission-time decision is the right one for the request that carried it,
+// but a long-lived stream outlives the facts it was based on. Protection can
+// begin mid-stream, and the marker can become unreadable -- both of which must
+// end the stream rather than be assumed benign.
+func (s *Server) stepUpStillPermits(p auth.Principal, vault, presented string) error {
+	protected, err := s.reg.Protected(vault)
+	if err != nil {
+		return err // cannot tell is not no, here as anywhere else
+	}
+	if !protected {
+		return nil
+	}
+	if !p.StepUpDecided(vault) {
+		return errors.New("no recorded step-up posture")
+	}
+	if !p.NeedsStepUp(auth.StepUpVault, vault) {
+		return nil
+	}
+	if s.grants == nil || !s.grants.Held(auth.HashToken(presented), vault) {
+		return errors.New("no active grant")
+	}
+	return nil
 }
 
 // bearer lifts the presented token back out of the request.
@@ -567,6 +603,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 			p, ok := s.tokens.Lookup(bearer)
 			if !ok || !p.Opens(name) || !p.Can(auth.ScopeRead) {
 				return // revoked, expired, or narrowed since this stream opened
+			}
+			// The vault may have been PROTECTED since this stream opened. A
+			// stream admitted while it was not has no lapse channel and would
+			// otherwise keep publishing changed paths for days after the marker
+			// appeared. Bounded by one tick, same as the revocation check above,
+			// and for the same reason: the timer already exists.
+			if s.stepUpStillPermits(p, name, bearer) != nil {
+				return
 			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()

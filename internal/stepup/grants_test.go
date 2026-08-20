@@ -115,3 +115,38 @@ func TestCloseReleasesEveryWatcher(t *testing.T) {
 		}
 	}
 }
+
+// Held-then-Watch is a TOCTOU window: a re-grant between the two calls hands
+// back the successor's channel, so a request admitted under the first grant
+// never learns that grant was replaced.
+func TestHeldWatchIsAtomicAcrossARegrant(t *testing.T) {
+	g := stepup.NewGrants(time.Minute, nil)
+	defer g.Close()
+	g.Grant("tokenhash", "work")
+
+	lapsed, held := g.HeldWatch("tokenhash", "work")
+	if !held {
+		t.Fatal("the grant was not held")
+	}
+	g.Grant("tokenhash", "work") // supersede it
+
+	select {
+	case <-lapsed:
+	case <-time.After(time.Second):
+		t.Fatal("the channel handed to the admitted request outlived the grant it belonged to")
+	}
+}
+
+func TestHeldWatchOnAnUngrantedKeyIsClosedAndNotHeld(t *testing.T) {
+	g := stepup.NewGrants(time.Minute, nil)
+	defer g.Close()
+	lapsed, held := g.HeldWatch("nobody", "work")
+	if held {
+		t.Error("an ungranted key reported held")
+	}
+	select {
+	case <-lapsed:
+	case <-time.After(time.Second):
+		t.Fatal("the channel for an ungranted key was not already closed")
+	}
+}

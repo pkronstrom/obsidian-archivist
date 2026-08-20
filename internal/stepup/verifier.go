@@ -52,10 +52,18 @@ type failure struct {
 // caller can lock out another by failing on purpose.
 type Verifier struct {
 	now func() time.Time
-	// floor is the step at construction. Every token starts refusing steps at or
-	// below it, because a code spent just before a restart would otherwise be
-	// accepted again by the empty map -- single use silently resetting on every
-	// deploy. The lockout this creates is bounded by one step.
+	// floor is the highest step that could already have been spent when this
+	// verifier was built. Every token starts refusing steps at or below it,
+	// because a code spent just before a restart would otherwise be accepted
+	// again by the empty map -- single use silently resetting on every deploy.
+	//
+	// It is construction step PLUS the skew, not the construction step alone.
+	// Skew means the previous process would have accepted a code from one step
+	// in the FUTURE, which an authenticator running slightly fast will produce;
+	// a floor at the current step leaves exactly that code replayable.
+	//
+	// The lockout this creates is bounded by SkewSteps+1 steps, during which
+	// every grant is gone anyway because they died with the process.
 	floor int64
 
 	mu       sync.Mutex
@@ -69,7 +77,7 @@ func NewVerifier(now func() time.Time) *Verifier {
 	}
 	return &Verifier{
 		now:      now,
-		floor:    now().Unix() / int64(Step/time.Second),
+		floor:    now().Unix()/int64(Step/time.Second) + SkewSteps,
 		usedStep: map[string]int64{},
 		failures: map[string]failure{},
 	}

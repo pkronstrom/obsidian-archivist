@@ -16,10 +16,11 @@ func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 func TestAUsedCodeIsRefused(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	v := stepup.NewVerifier(clock.Now)
-	// A fresh verifier refuses every step up to and including the one it was
-	// built in, so that a code spent just before a restart cannot be replayed
-	// just after. Move past it before spending anything.
-	clock.advance(stepup.Step)
+	// A fresh verifier refuses every step up to its construction step plus the
+	// skew, so that a code spent just before a restart -- including one an
+	// authenticator running fast produced -- cannot be replayed just after.
+	// Move past that window before spending anything.
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	code, err := stepup.Code(rfcSecret, clock.now)
 	if err != nil {
 		t.Fatal(err)
@@ -37,10 +38,11 @@ func TestAUsedCodeIsRefused(t *testing.T) {
 func TestReplayIsRefusedAcrossVaults(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	v := stepup.NewVerifier(clock.Now)
-	// A fresh verifier refuses every step up to and including the one it was
-	// built in, so that a code spent just before a restart cannot be replayed
-	// just after. Move past it before spending anything.
-	clock.advance(stepup.Step)
+	// A fresh verifier refuses every step up to its construction step plus the
+	// skew, so that a code spent just before a restart -- including one an
+	// authenticator running fast produced -- cannot be replayed just after.
+	// Move past that window before spending anything.
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	code, _ := stepup.Code(rfcSecret, clock.now)
 	if err := v.Check("tokenhash", "work", rfcSecret, code); err != nil {
 		t.Fatal(err)
@@ -55,7 +57,7 @@ func TestReplayIsRefusedAcrossVaults(t *testing.T) {
 func TestARestartDoesNotResurrectASpentCode(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	before := stepup.NewVerifier(clock.Now)
-	clock.advance(stepup.Step)
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	code, _ := stepup.Code(rfcSecret, clock.now)
 	if err := before.Check("tokenhash", "work", rfcSecret, code); err != nil {
 		t.Fatal(err)
@@ -79,10 +81,11 @@ func TestARestartDoesNotResurrectASpentCode(t *testing.T) {
 func TestBackoffAfterThreeFailures(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	v := stepup.NewVerifier(clock.Now)
-	// A fresh verifier refuses every step up to and including the one it was
-	// built in, so that a code spent just before a restart cannot be replayed
-	// just after. Move past it before spending anything.
-	clock.advance(stepup.Step)
+	// A fresh verifier refuses every step up to its construction step plus the
+	// skew, so that a code spent just before a restart -- including one an
+	// authenticator running fast produced -- cannot be replayed just after.
+	// Move past that window before spending anything.
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	for i := 0; i < 3; i++ {
 		if err := v.Check("tokenhash", "work", rfcSecret, "000000"); err == nil {
 			t.Fatalf("attempt %d: a wrong code was accepted", i)
@@ -104,10 +107,11 @@ func TestBackoffAfterThreeFailures(t *testing.T) {
 func TestBackoffIsPerTokenAndVault(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	v := stepup.NewVerifier(clock.Now)
-	// A fresh verifier refuses every step up to and including the one it was
-	// built in, so that a code spent just before a restart cannot be replayed
-	// just after. Move past it before spending anything.
-	clock.advance(stepup.Step)
+	// A fresh verifier refuses every step up to its construction step plus the
+	// skew, so that a code spent just before a restart -- including one an
+	// authenticator running fast produced -- cannot be replayed just after.
+	// Move past that window before spending anything.
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	for i := 0; i < 3; i++ {
 		v.Check("tokenhash", "work", rfcSecret, "000000")
 	}
@@ -120,10 +124,11 @@ func TestBackoffIsPerTokenAndVault(t *testing.T) {
 func TestCooldownLadderLengthens(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(1111111109, 0)}
 	v := stepup.NewVerifier(clock.Now)
-	// A fresh verifier refuses every step up to and including the one it was
-	// built in, so that a code spent just before a restart cannot be replayed
-	// just after. Move past it before spending anything.
-	clock.advance(stepup.Step)
+	// A fresh verifier refuses every step up to its construction step plus the
+	// skew, so that a code spent just before a restart -- including one an
+	// authenticator running fast produced -- cannot be replayed just after.
+	// Move past that window before spending anything.
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 	for i := 0; i < 3; i++ {
 		v.Check("t", "work", rfcSecret, "000000")
 	}
@@ -139,5 +144,26 @@ func TestCooldownLadderLengthens(t *testing.T) {
 	good, _ = stepup.Code(rfcSecret, clock.now)
 	if err := v.Check("t", "work", rfcSecret, good); err != nil {
 		t.Fatalf("after the 60s rung elapsed: %v", err)
+	}
+}
+
+// Skew means the previous process would have accepted a code one step in the
+// FUTURE -- an authenticator running slightly fast produces exactly that. A
+// floor at the construction step alone leaves that code replayable across a
+// restart, which is the same hole the floor exists to close.
+func TestARestartDoesNotResurrectASkewedCode(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1111111109, 0)}
+	before := stepup.NewVerifier(clock.Now)
+	clock.advance((stepup.SkewSteps + 1) * stepup.Step)
+
+	// A code from one step ahead: valid now, because skew accepts it.
+	ahead, _ := stepup.Code(rfcSecret, clock.now.Add(stepup.Step))
+	if err := before.Check("tokenhash", "work", rfcSecret, ahead); err != nil {
+		t.Fatalf("a code one step ahead was refused before the restart: %v", err)
+	}
+
+	after := stepup.NewVerifier(clock.Now)
+	if err := after.Check("tokenhash", "work", rfcSecret, ahead); err == nil {
+		t.Fatal("a skewed code spent before the restart was accepted after it")
 	}
 }

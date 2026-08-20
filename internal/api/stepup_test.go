@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +21,30 @@ import (
 
 const rfcSecretForAPITest = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
-type stepUpClock struct{ now time.Time }
+// stepUpClock is read by request handlers on other goroutines while the test
+// advances it, so it needs a lock. Without one the stream tests race.
+type stepUpClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
 
-func (c *stepUpClock) Now() time.Time { return c.now }
+func (c *stepUpClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *stepUpClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func (c *stepUpClock) at() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
 
 // stepUpFixture is a server over three vaults: personal unprotected, work and
 // private both carrying a marker.
@@ -36,6 +59,7 @@ type stepUpFixture struct {
 	opsOnly       string // ops:work, exempt from private -- decided, not gated
 	exempt        string // recorded exemption for both, no secret
 	undecided     string // nothing recorded: predates the marker
+	gatedNoSecret string // gated on access but carrying no secret to unlock with
 }
 
 func newStepUpFixture(t *testing.T) *stepUpFixture {
@@ -73,6 +97,7 @@ func newStepUpFixture(t *testing.T) *stepUpFixture {
 		opsOnly:       "tok-ops",
 		exempt:        "tok-exempt",
 		undecided:     "tok-undecided",
+		gatedNoSecret: "tok-gated-nosecret",
 	}
 	rw := []string{auth.ScopeRead, auth.ScopeWrite}
 	set := auth.NewSetForTest(map[string]auth.Principal{
@@ -99,14 +124,22 @@ func newStepUpFixture(t *testing.T) *stepUpFixture {
 		f.undecided: {
 			Label: "undecided", Vaults: []string{"*"}, Scopes: rw,
 		},
+		// Mint and Load both refuse this combination, so it can only arrive by
+		// somebody hand-editing the file -- which is exactly why the handler
+		// must still cope rather than trusting the invariant.
+		f.gatedNoSecret: {
+			Label: "gated-nosecret", Vaults: []string{"*"}, Scopes: rw,
+			RequiresStepUpAuth: []string{"vault:work"},
+		},
 	})
 
 	f.grants = stepup.NewGrants(time.Minute, f.clock.Now)
 	t.Cleanup(f.grants.Close)
-	// The verifier refuses every step up to the one it was built in, so move
-	// the clock on before any code is spent.
+	// The verifier refuses every step up to its construction step plus the skew,
+	// so that a restart cannot resurrect a spent code. Move past that window
+	// before any code is spent here.
 	verifier := stepup.NewVerifier(f.clock.Now)
-	f.clock.now = f.clock.now.Add(stepup.Step)
+	f.clock.advance((stepup.SkewSteps + 1) * stepup.Step)
 
 	f.handler = New(reg, set, WithStepUp(f.grants, verifier))
 	return f
@@ -119,7 +152,7 @@ func (f *stepUpFixture) as(t *testing.T, method, path string, body any, tok stri
 
 func (f *stepUpFixture) code(t *testing.T) string {
 	t.Helper()
-	c, err := stepup.Code(rfcSecretForAPITest, f.clock.now)
+	c, err := stepup.Code(rfcSecretForAPITest, f.clock.at())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,16 +166,20 @@ func (f *stepUpFixture) unlock(t *testing.T, vault, tok string) *httptest.Respon
 		t.Fatalf("unlock %s = %d: %s", vault, res.Code, res.Body.String())
 	}
 	// Every code is single-use, so move to the next window before the next one.
-	f.clock.now = f.clock.now.Add(stepup.Step)
+	f.clock.advance(stepup.Step)
 	return res
 }
 
-// expireGrants moves past the TTL and forces the expiry through, closing any
-// watcher a stream is holding.
-func (f *stepUpFixture) expireGrants() {
-	f.clock.now = f.clock.now.Add(2 * time.Minute)
-	f.grants.Held("", "")
-	f.grants.Close()
+// expireGrant advances past the TTL and forces THAT grant's expiry through.
+//
+// Deliberately not Close(): closing the whole table would release every watcher
+// and the stream tests would prove only that shutdown ends a stream, not that an
+// absolute TTL does.
+func (f *stepUpFixture) expireGrant(tok, vault string) {
+	f.clock.advance(2 * time.Minute)
+	if f.grants.Held(auth.HashToken(tok), vault) {
+		panic("the grant survived its TTL; the tests below would prove nothing")
+	}
 }
 
 func (f *stepUpFixture) breakMarkerLookup(t *testing.T) {
@@ -289,11 +326,17 @@ func TestUnlockIsRefusedOnAnUnprotectedVault(t *testing.T) {
 	}
 }
 
+// A gated token with no secret reaches the secret check rather than exiting at
+// the "nothing to unlock" branch above it. Using an exempt token here would
+// return 403 for the wrong reason and never exercise this at all.
 func TestUnlockIsRefusedWithNoSecret(t *testing.T) {
 	s := newStepUpFixture(t)
-	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.exempt)
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": "000000"}, s.gatedNoSecret)
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", res.Code)
+	}
+	if body := res.Body.String(); !strings.Contains(body, "no step-up secret") {
+		t.Errorf("refused for the wrong reason: %s", body)
 	}
 }
 
@@ -359,7 +402,7 @@ func TestAnEventStreamStopsWhenItsGrantLapses(t *testing.T) {
 	// The handler has to reach its select before consent is withdrawn, or the
 	// close races the registration.
 	time.Sleep(150 * time.Millisecond)
-	s.expireGrants()
+	s.expireGrant(s.gated, "work")
 
 	select {
 	case <-drained:
@@ -389,7 +432,7 @@ func TestABlockedWaitStopsWhenItsGrantLapses(t *testing.T) {
 	}()
 
 	time.Sleep(150 * time.Millisecond) // let the long poll block
-	s.expireGrants()
+	s.expireGrant(s.gated, "work")
 
 	select {
 	case got := <-status:
@@ -422,5 +465,53 @@ func TestVaultListReportsPolicyAndPostureSeparately(t *testing.T) {
 	}
 	if len(got.RequiresStepUpAuth) != 1 || got.RequiresStepUpAuth[0] != "ops:work" {
 		t.Errorf("requiresStepUpAuth = %v, want [ops:work]", got.RequiresStepUpAuth)
+	}
+}
+
+// protect marks a vault after the fixture is already running, so a stream can be
+// opened before protection begins.
+func (f *stepUpFixture) protect(t *testing.T, name string) {
+	t.Helper()
+	dir := filepath.Join(f.root, ".archivist", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, vaults.StepUpMarker), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Protection begins when the marker appears, including for streams already
+// running. One admitted while the vault was open has no lapse channel, so
+// without a periodic re-check it would keep publishing changed paths forever.
+func TestAStreamOpenedBeforeProtectionStopsWhenTheMarkerAppears(t *testing.T) {
+	defer func(d time.Duration) { streamKeepalive = d }(streamKeepalive)
+	streamKeepalive = 50 * time.Millisecond
+
+	s := newStepUpFixture(t)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	// personal carries no marker yet, so this is admitted ungated.
+	req, _ := http.NewRequest("GET", srv.URL+"/personal/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+s.gated)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the stream never opened", res.StatusCode)
+	}
+
+	drained := make(chan struct{})
+	go func() { io.ReadAll(res.Body); close(drained) }()
+
+	s.protect(t, "personal")
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream kept running after its vault became protected")
 	}
 }
