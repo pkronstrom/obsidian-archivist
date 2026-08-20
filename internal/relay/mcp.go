@@ -572,8 +572,11 @@ func readAttachment(c *client.Client) mcp.ToolHandlerFor[readAttachmentInput, re
 		// way to know, and every use of it is wrong.
 		if len(body) > limit {
 			return nil, readAttachmentOutput{}, fmt.Errorf(
-				"%s is %d bytes, over the %d-byte limit; raise max_bytes (hard maximum %d) if you really want it",
-				in.Path, len(body), limit, maxAttachmentRead)
+				"%s is %d bytes, over the %d-byte limit; raise max_bytes (hard maximum %d) if you "+
+					"really want it in context. To get the file WITHOUT spending context, fetch it "+
+					"straight to disk instead: GET <relay>/file/%s with your usual Authorization "+
+					"header streams the raw bytes, no base64 and no size cap",
+				in.Path, len(body), limit, maxAttachmentRead, in.Path)
 		}
 
 		return nil, readAttachmentOutput{
