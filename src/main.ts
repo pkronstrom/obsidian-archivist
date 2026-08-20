@@ -21,7 +21,6 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 
 	private status?: HTMLElement;
-	private statusText?: HTMLElement;
 	/**
 	 * The pending pairing question, once the user has said "not now".
 	 *
@@ -60,9 +59,13 @@ export default class ArchivistPlugin extends Plugin {
 			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
 		);
 
+		// Icon only, fixed size: text made the item change width on every
+		// state flip (visible as a blink when the click itself triggers a
+		// focus sync). State shows as spin/color; the words move to the
+		// hover tooltip.
 		this.status = this.addStatusBarItem();
+		this.status.addClasses(["mod-clickable", "archivist-status-item"]);
 		setIcon(this.status, "refresh-cw");
-		this.statusText = this.status.createSpan();
 		this.registerDomEvent(this.status, "click", () => this.openSettings());
 		this.setStatus("idle");
 
@@ -353,7 +356,18 @@ export default class ArchivistPlugin extends Plugin {
 	}
 
 	private setStatus(text: string): void {
-		this.statusText?.setText(text);
+		if (!this.status) return;
+		// The words live in the tooltip; the icon carries the state.
+		this.status.setAttribute("aria-label", `archivist: ${text}`);
+		this.status.setAttribute("data-tooltip-position", "top");
+		this.status.toggleClass("archivist-syncing", text === "syncing…");
+		this.status.toggleClass(
+			"archivist-attention",
+			text === "error" ||
+				text === "not configured" ||
+				text === "needs a decision" ||
+				text.startsWith("paused"),
+		);
 	}
 
 	async loadSettings(): Promise<void> {

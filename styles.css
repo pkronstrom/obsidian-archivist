@@ -57,3 +57,18 @@
 .archivist-status-detail:empty {
 	display: none;
 }
+
+/* The status-bar icon: fixed size, state shown by motion and color. */
+.archivist-status-item.archivist-syncing .svg-icon {
+	animation: archivist-spin 1.2s linear infinite;
+}
+
+.archivist-status-item.archivist-attention .svg-icon {
+	color: var(--color-red);
+}
+
+@keyframes archivist-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
