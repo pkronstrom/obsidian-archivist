@@ -1,4 +1,4 @@
-import { Notice, Plugin, TAbstractFile, debounce } from "obsidian";
+import { Notice, Plugin, TAbstractFile, debounce, setIcon } from "obsidian";
 import { Client } from "./client";
 import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
@@ -21,6 +21,7 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 
 	private status?: HTMLElement;
+	private statusText?: HTMLElement;
 	/**
 	 * The pending pairing question, once the user has said "not now".
 	 *
@@ -60,6 +61,9 @@ export default class ArchivistPlugin extends Plugin {
 		);
 
 		this.status = this.addStatusBarItem();
+		setIcon(this.status, "refresh-cw");
+		this.statusText = this.status.createSpan();
+		this.registerDomEvent(this.status, "click", () => this.openSettings());
 		this.setStatus("idle");
 
 		this.addSettingTab(new ArchivistSettingTab(this.app, this));
@@ -257,6 +261,21 @@ export default class ArchivistPlugin extends Plugin {
 		).open();
 	}
 
+	/**
+	 * Opens this plugin's own settings tab. `app.setting` is undocumented --
+	 * there is no public API for it -- but it is the standard way plugins do
+	 * this, and the same cast pattern already used below for `plugins.manifests`.
+	 */
+	private openSettings(): void {
+		const setting = (
+			this.app as unknown as {
+				setting: { open: () => void; openTabById: (id: string) => void };
+			}
+		).setting;
+		setting.open();
+		setting.openTabById(this.manifest.id);
+	}
+
 	private async resolvePairing(choice: PairingChoice): Promise<void> {
 		this.setStatus("syncing…");
 		try {
@@ -334,7 +353,7 @@ export default class ArchivistPlugin extends Plugin {
 	}
 
 	private setStatus(text: string): void {
-		this.status?.setText(`archivist: ${text}`);
+		this.statusText?.setText(text);
 	}
 
 	async loadSettings(): Promise<void> {
