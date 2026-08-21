@@ -556,15 +556,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// Subscribe BEFORE reading the head, same as wait does and for the same
+	// reason: reading first leaves a window where a commit lands after the
+	// read and before the subscription, and this consumer never hears about
+	// it -- it would orient itself on a head that is already stale and then
+	// wait for an event that has already been dropped.
+	ch, stop := inst.Reconciler.Subscribe()
+	defer stop()
+
 	// Send the current head immediately, so a consumer that just connected can
 	// orient itself without waiting for the next commit.
 	if head, err := inst.Repo.Head(); err == nil && head != "" {
 		writeEvent(w, map[string]any{"head": head, "count": 0, "changes": []any{}})
 	}
 	flusher.Flush()
-
-	ch, stop := inst.Reconciler.Subscribe()
-	defer stop()
 
 	// Idle connections get dropped by proxies; a comment line is a valid SSE
 	// keep-alive that consumers ignore.

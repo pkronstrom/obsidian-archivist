@@ -386,12 +386,15 @@ export class Sync {
 				// server's version lands at the real path, and nothing is lost.
 				const aside = conflictName(path, this.device());
 				await this.adapter.writeBinary(aside, await this.adapter.readBinary(path));
-				const asideStat = await this.adapter.stat(aside);
-				state.files[aside] = {
-					hash: cur.hash,
-					mtime: asideStat?.mtime ?? Date.now(),
-					size: asideStat?.size ?? cur.size,
-				};
+				// The aside copy is deliberately NOT recorded in state.files.
+				// Recorded with its own hash, the next diff saw it as unchanged
+				// and it never uploaded -- rescued content stayed on this device
+				// only, invisible to every other device and lost with this one.
+				// Left untracked, the next push sees a new file and uploads it.
+				// That is safe for the ASIDE path in a way it was not for the
+				// real path (the bug the comment above describes): the aside
+				// name is new and device-suffixed, so its put creates a path on
+				// the server rather than overwriting anything.
 				this.log(`no common ancestor for ${path}; kept ours as ${aside}`);
 				state.files[path] = await this.materialise(path, entry.hash, entry.size);
 				continue;

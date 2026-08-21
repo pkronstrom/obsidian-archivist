@@ -204,6 +204,14 @@ check("`.obsidian` does not reach the other device",
   const files = await fs.readdir(path.join(reboot.root, "notes"));
   check("and the local divergent copy was kept aside",
     files.some((f) => f.includes("conflict")), files.join(", "));
+  // Found by review: the aside copy was recorded in state.files with its own
+  // hash, so the next diff saw it as unchanged and never uploaded it. Rescued
+  // content stayed on the one device that rescued it.
+  const asideName = "notes/" + files.find((f) => f.includes("conflict-reboot"));
+  await reboot.sync.run();
+  await mac.sync.run();
+  const asideOnMac = await mac.app.vault.adapter.exists(asideName);
+  check("the rescued copy reached the other device", asideOnMac, asideName);
 }
 
 // --- pairing safety ---------------------------------------------------------
