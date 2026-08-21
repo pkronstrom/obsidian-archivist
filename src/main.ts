@@ -1,10 +1,11 @@
-import { Notice, Plugin, TAbstractFile, debounce, setIcon } from "obsidian";
+import { Notice, Plugin, TAbstractFile, setIcon } from "obsidian";
 import { Client } from "./client";
 import { Sync, skip } from "./sync";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
+import { createSyncScheduler } from "./sync-schedule";
 import { loadToken, migrateToken } from "./credentials";
 import { loadConfigSync } from "./config-sync";
 import {
@@ -36,7 +37,35 @@ export default class ArchivistPlugin extends Plugin {
 	private pairingDeferred = false;
 	private timer?: number;
 	private watcher?: Watcher;
-	private scheduleSync = debounce(() => void this.runSync(), 2000, true);
+	/**
+	 * How long typing must stop before a sync.
+	 *
+	 * The old value was 2 seconds, which fires mid-sentence: one 50-minute
+	 * drafting session produced 250 commits on the live vault. Long enough here
+	 * to cover thinking pauses, short enough that stepping away syncs promptly.
+	 */
+	private static readonly SYNC_QUIET_MS = 20_000;
+
+	/**
+	 * The longest an unbroken burst may defer a sync, from its first edit.
+	 *
+	 * Obsidian saves to local disk on its own schedule regardless, so nothing is
+	 * lost to a crash -- the exposure is only that the server has not seen it
+	 * yet, and that losing the device loses at most this much. It is also the
+	 * only real guarantee: blur can be skipped and quit is explicitly
+	 * best-effort.
+	 */
+	private static readonly SYNC_MAX_WAIT_MS = 180_000;
+
+	private syncScheduler = createSyncScheduler({
+		quietMs: ArchivistPlugin.SYNC_QUIET_MS,
+		maxWaitMs: ArchivistPlugin.SYNC_MAX_WAIT_MS,
+		run: () => this.runSync(),
+		setTimer: (fn, ms) => window.setTimeout(fn, ms),
+		clearTimer: (h) => window.clearTimeout(h as number),
+	});
+
+	private scheduleSync = (): void => this.syncScheduler.schedule();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -141,12 +170,32 @@ export default class ArchivistPlugin extends Plugin {
 		// keeps it current while you are looking at it.
 		this.registerDomEvent(window, "blur", () => {
 			this.watcher?.stop();
-			void this.runSync();
+			// A forced flush rather than runSync: it syncs pending edits
+			// immediately AND still pulls when nothing local is waiting, which
+			// is what the old unconditional runSync did. Calling both would
+			// queue two full cycles.
+			//
+			// This is also what actually protects the phone. Backgrounding
+			// fires blur; the quit event never fires there, because iOS
+			// suspends apps rather than quitting them.
+			void this.syncScheduler.flush({ force: true });
 		});
 		this.registerDomEvent(window, "focus", () => {
 			void this.runSync();
 			this.startWatching();
 		});
+
+		// Obsidian awaits work registered here, so returning the flush promise
+		// means a clean quit finishes the sync rather than abandoning it
+		// mid-flight. Its own API says this is "not guaranteed to actually
+		// run" -- a force quit, an OS kill or a crash skips it -- so it
+		// improves the common case and guarantees nothing. SYNC_MAX_WAIT_MS is
+		// the actual bound.
+		this.registerEvent(
+			this.app.workspace.on("quit", (tasks) => {
+				tasks.add(() => this.syncScheduler.flush());
+			}),
+		);
 
 		this.restartTimer();
 		this.startWatching();
@@ -155,6 +204,10 @@ export default class ArchivistPlugin extends Plugin {
 	onunload(): void {
 		if (this.timer !== undefined) window.clearInterval(this.timer);
 		this.watcher?.stop();
+		// Drops pending timers. A sync already running is left to finish --
+		// there is no way to abort one, and a half-applied sync would be worse
+		// than a completed one.
+		this.syncScheduler.cancel();
 	}
 
 	/**
