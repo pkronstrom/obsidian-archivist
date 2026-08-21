@@ -20,6 +20,7 @@ export { scanForSecrets } from "../src/secrets";
 
 export { plannedInstalls, installPlugins } from "../src/plugin-install";
 export { missingPluginScopes, scopeWarning, stepUpWarning } from "../src/scopes";
+export { createSyncScheduler } from "../src/sync-schedule";
 export { pairRenames } from "../src/scopes";
 
 export {
