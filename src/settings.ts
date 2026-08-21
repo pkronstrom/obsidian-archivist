@@ -380,7 +380,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					};
 					row(
 						"Automatic",
-						"syncs right after you edit; changes from other devices arrive within about a second.",
+						"syncs shortly after you stop editing; changes from other devices arrive within about a second.",
 					);
 					row("Periodic", "syncs on a fixed interval; no connection held open.");
 					row(
