@@ -5,7 +5,7 @@ import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings
 import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
-import { createSyncScheduler } from "./sync-schedule";
+import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
 import { loadToken, migrateToken } from "./credentials";
 import { loadConfigSync } from "./config-sync";
 import {
@@ -38,14 +38,6 @@ export default class ArchivistPlugin extends Plugin {
 	private timer?: number;
 	private watcher?: Watcher;
 	/**
-	 * How long typing must stop before a sync.
-	 *
-	 * The old value was 2 seconds, which fires mid-sentence: one 50-minute
-	 * drafting session produced 250 commits on the live vault. Long enough here
-	 * to cover thinking pauses, short enough that stepping away syncs promptly.
-	 */
-	private static readonly SYNC_QUIET_MS = 20_000;
-
 	/**
 	 * The longest an unbroken burst may defer a sync, from its first edit.
 	 *
@@ -57,13 +49,37 @@ export default class ArchivistPlugin extends Plugin {
 	 */
 	private static readonly SYNC_MAX_WAIT_MS = 180_000;
 
-	private syncScheduler = createSyncScheduler({
-		quietMs: ArchivistPlugin.SYNC_QUIET_MS,
-		maxWaitMs: ArchivistPlugin.SYNC_MAX_WAIT_MS,
-		run: () => this.runSync(),
-		setTimer: (fn, ms) => window.setTimeout(fn, ms),
-		clearTimer: (h) => window.clearTimeout(h as number),
-	});
+	private syncScheduler = this.makeSyncScheduler();
+
+	private makeSyncScheduler(): SyncScheduler {
+		// Clamped, because the settings field is not the only way in: a synced
+		// data.json from another device, or a hand-edit, can carry anything. A
+		// quiet period at or above the ceiling would make the quiet timer dead
+		// code and turn every sync into a fixed three-minute delay.
+		const quiet = Math.min(
+			Math.max(1, Math.floor(this.settings.syncQuietSeconds || DEFAULT_SETTINGS.syncQuietSeconds)),
+			ArchivistPlugin.SYNC_MAX_WAIT_MS / 1000 - 1,
+		);
+		return createSyncScheduler({
+			quietMs: quiet * 1000,
+			maxWaitMs: ArchivistPlugin.SYNC_MAX_WAIT_MS,
+			run: () => this.runSync(),
+			setTimer: (fn, ms) => window.setTimeout(fn, ms),
+			clearTimer: (h) => window.clearTimeout(h as number),
+		});
+	}
+
+	/**
+	 * Rebuild the scheduler after the quiet period changes.
+	 *
+	 * Mirrors restartTimer. Pending timers are cancelled rather than carried
+	 * over: they were scheduled against the old value, and honouring them would
+	 * make the new setting appear not to have taken effect.
+	 */
+	restartSyncScheduler(): void {
+		this.syncScheduler.cancel();
+		this.syncScheduler = this.makeSyncScheduler();
+	}
 
 	private scheduleSync = (): void => this.syncScheduler.schedule();
 
@@ -197,6 +213,9 @@ export default class ArchivistPlugin extends Plugin {
 			}),
 		);
 
+		// The field initialiser ran against DEFAULT_SETTINGS, before loadSettings
+		// replaced them. Rebuild so a stored quiet period actually applies.
+		this.restartSyncScheduler();
 		this.restartTimer();
 		this.startWatching();
 	}

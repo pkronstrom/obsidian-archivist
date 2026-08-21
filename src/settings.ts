@@ -42,6 +42,16 @@ export type Settings = {
 	syncOnChange: boolean;
 	/** Hold a long-poll open so remote changes arrive in about a second. */
 	watchRemote: boolean;
+	/**
+	 * How long typing must stop before a sync, in seconds.
+	 *
+	 * Configurable because how long you pause mid-sentence is personal, and it
+	 * is the number worth tuning after living with it. Too low and a drafting
+	 * session becomes hundreds of commits, which makes note_history useless for
+	 * the note you are working on; too high and a device you walk away from is
+	 * stale for longer. The ceiling in main.ts bounds the latter regardless.
+	 */
+	syncQuietSeconds: number;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -52,6 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	intervalSeconds: 300,
 	syncOnChange: true,
 	watchRemote: true,
+	syncQuietSeconds: 20,
 };
 
 export class ArchivistSettingTab extends PluginSettingTab {
@@ -396,6 +407,29 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						this.display();
 					}),
 			);
+
+		if (s.syncOnChange) {
+			new Setting(containerEl)
+				.setName("Wait after typing stops (seconds)")
+				.setDesc(
+					"How long editing must pause before syncing. Lower syncs sooner; higher " +
+						"keeps note history readable, because every sync is a commit. " +
+						"A long unbroken burst still syncs after three minutes.",
+				)
+				.addText((t) =>
+					t.setValue(String(s.syncQuietSeconds)).onChange(async (v) => {
+						const n = Number(v);
+						// Rejected rather than clamped, so a typo leaves the old
+						// value visible instead of silently becoming something
+						// else. The ceiling is 180s; a quiet period at or above
+						// it would make the quiet timer dead code.
+						if (!Number.isFinite(n) || n < 1 || n >= 180) return;
+						s.syncQuietSeconds = Math.floor(n);
+						await this.plugin.saveSettings();
+						this.plugin.restartSyncScheduler();
+					}),
+				);
+		}
 
 		if (mode === "periodic") {
 			new Setting(containerEl).setName("Sync interval (minutes)").addText((t) =>
