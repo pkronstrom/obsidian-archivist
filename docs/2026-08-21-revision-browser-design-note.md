@@ -51,10 +51,18 @@ treat pinned revs as roots, making "pinned" mean "never pruned" — a real resto
 point. Not needed on day one; recorded so the pin store is designed as something
 `reclaim` will read.
 
-**Materialised files sync.** `Note.rev-ae56b.md` is a real note: it reaches other
-devices, can be linked, copied from, and deleted normally. The alternative — a
-read-only preview modal — is tidier for casual browsing but loses all of that.
-Chosen: real file, accepted litter.
+**Materialised files are real but local-only until renamed.** `Note.rev-ae56b.md`
+is a genuine note — openable, editable, linkable — but its filename pattern is
+excluded from sync, so browsing revisions never litters other devices. Restoring
+is renaming: the file stops matching the pattern, looks like a new note, and
+syncs normally. This is a third state between the two obvious ones (sync
+everything / read-only preview), and it needs no new mechanism — the plugin's
+`skip()` and the server's `vault.Skip()` are exactly "do not sync this filename
+pattern", and the push path already refuses excluded paths per-file. The pattern
+goes in BOTH predicates so `.rev-*` is a reserved local-only namespace
+everywhere, including for a file an agent might create server-side. (Contrast:
+`.conflict-*` files deliberately DO sync — a conflict must be visible on every
+device; a browsed revision must not.)
 
 ## Surface inventory
 
@@ -81,5 +89,7 @@ exactly like notes; only the icon placement was ever note-centric).
 - Cluster gap: 30 min hardcoded first; a setting only if it ever annoys.
 - Name collisions on materialise (`Note.rev-ae56b.md` already exists): overwrite
   is wrong, suffixing is fine.
+- The exact reserved pattern, chosen so no real note ever matches it by accident
+  — and stated in the README, since files matching it silently stop syncing.
 - Whether `DELETE` on a pin that a future reclaim treats as a root needs to move
   to `ops:` before that reclaim change ships (it does).
