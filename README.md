@@ -704,6 +704,22 @@ archivist-server reclaim --prune --yes    # does it
 docker compose start archivist
 ```
 
+**Back up the repository directory before the `--yes` run.** Pruning repacks
+through go-git, and go-git deletes the reachable loose objects *before* the new
+packfile is installed — the pack is only moved into place when the writer is
+closed, which happens after the deletion. A crash, an OOM kill or a power cut in
+that window leaves HEAD pointing at objects that no longer exist anywhere, and
+nothing can repair it afterwards.
+
+The window is small and only open while a prune is actually running, which is
+why stopping the server is not enough on its own — it prevents concurrent
+access, not an ill-timed power cut. A copy of `$ROOT/.archivist/<vault>/` taken
+immediately beforehand costs seconds and makes the whole question moot:
+
+```bash
+cp -a "$ROOT/.archivist/personal" "$ROOT/.archivist/personal.pre-prune"
+```
+
 Selection is by deleted-at-HEAD, not by folder: an attachments directory is a
 convention that will drift, and the property that matters is large-and-gone
 wherever the file lives. Content still referenced by a live file is never
