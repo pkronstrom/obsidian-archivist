@@ -62,7 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	intervalSeconds: 300,
 	syncOnChange: true,
 	watchRemote: true,
-	syncQuietSeconds: 20,
+	syncQuietSeconds: 15,
 };
 
 export class ArchivistSettingTab extends PluginSettingTab {
@@ -414,16 +414,16 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				.setDesc(
 					"How long editing must pause before syncing. Lower syncs sooner; higher " +
 						"keeps note history readable, because every sync is a commit. " +
-						"A long unbroken burst still syncs after three minutes.",
+						"A long unbroken burst still syncs at least every 30 seconds.",
 				)
 				.addText((t) =>
 					t.setValue(String(s.syncQuietSeconds)).onChange(async (v) => {
 						const n = Number(v);
 						// Rejected rather than clamped, so a typo leaves the old
 						// value visible instead of silently becoming something
-						// else. The ceiling is 180s; a quiet period at or above
+						// else. The ceiling is 30s; a quiet period at or above
 						// it would make the quiet timer dead code.
-						if (!Number.isFinite(n) || n < 1 || n >= 180) return;
+						if (!Number.isFinite(n) || n < 1 || n >= 30) return;
 						s.syncQuietSeconds = Math.floor(n);
 						await this.plugin.saveSettings();
 						this.plugin.restartSyncScheduler();

@@ -41,13 +41,13 @@ export default class ArchivistPlugin extends Plugin {
 	/**
 	 * The longest an unbroken burst may defer a sync, from its first edit.
 	 *
-	 * Obsidian saves to local disk on its own schedule regardless, so nothing is
-	 * lost to a crash -- the exposure is only that the server has not seen it
-	 * yet, and that losing the device loses at most this much. It is also the
-	 * only real guarantee: blur can be skipped and quit is explicitly
-	 * best-effort.
+	 * Thirty seconds: continuous typing produces a commit at most this far
+	 * apart, so the server is never more than half a minute behind even
+	 * mid-flow. Obsidian saves to local disk on its own schedule regardless, so
+	 * nothing is lost to a crash. This is also the only real guarantee: blur
+	 * can be skipped and quit is explicitly best-effort.
 	 */
-	private static readonly SYNC_MAX_WAIT_MS = 180_000;
+	private static readonly SYNC_MAX_WAIT_MS = 30_000;
 
 	private syncScheduler = this.makeSyncScheduler();
 
