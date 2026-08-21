@@ -1,8 +1,9 @@
 # Revision Browser and Pins — Design Note
 
 **Status:** Designed, not scheduled. Reviewed adversarially (sol, 2026-08-21,
-15 findings); this revision folds them in. The largest one inverted a
-load-bearing decision — see "Pins must be prune roots from day one".
+15 findings), then the pin mechanism was replaced outright — pins are named
+empty commits, which dissolves the review's four largest findings instead of
+mitigating them. See "Pins are named empty commits".
 
 **Date:** 2026-08-21
 
@@ -16,13 +17,18 @@ commits, with the user's own **pins** interleaved. Clicking an entry
 materialises that version *beside* the original — `Note.rev-ae56b.md` — never
 overwriting anything.
 
-Two pin scopes, one store:
+Two pin scopes, one mechanism:
 
-- **File pin** — names one revision of one file ("draft-sent-to-anna"). Shown
-  in that file's modal.
-- **Vault-wide pin** (`path: "*"`) — a restore point for the whole vault, taken
-  before a reorganisation. NOT shown in the file modal — it is not about that
-  note. It lives in the settings tab's Maintenance section.
+- **File pin** — "pin this version" on the note you are looking at, named
+  ("draft-sent-to-anna"). Shown in that file's modal.
+- **Vault-wide pin** — a restore point for the whole vault, taken before a
+  reorganisation. NOT shown in the file modal — it is not about that note. It
+  lives in the settings tab's Maintenance section.
+
+Pins mark **now**. There is deliberately no way to pin a historical revision:
+no use case survived scrutiny (preserve an old version by materialising it —
+then it is current content you can pin), and retroactive pinning was both the
+worst UI in the design and the only fragile durability case.
 
 ## The decisions, and why
 
@@ -53,36 +59,51 @@ first (newest) revision of each cluster — and it must be the newest
 `/v1/at` necessarily 404s on them. Deletion rows render as events, not
 openable entries.
 
-**Pins must be prune roots from day one.** The first draft claimed pins
-survive pruning "for free" via `Repo.Resolve` and `pruneMap`. Both halves are
-false: `Resolve` never consults `pruneMap` (`history.go:114` — full hashes pass
-through unchecked), and prune's per-commit mapping is *explicitly discarded* —
-"only the head pair is durable" (`prune.go:76`). A pin pointing at any
-historical commit dies at the first prune. So protection cannot be deferred:
-`reclaim`/`Prune` must treat pinned revisions as roots (or atomically rewrite
-every pin through the full mapping before discarding it) in the same release
-that introduces pins. Pin creation resolves and stores the full 40-char hash,
-validated to contain the pinned path.
+**Pins are named empty commits.** A pin is a commit with the current tree and
+a `Pin:` trailer (go-git: `AllowEmptyCommits`), plus `Pin-Path:` for a file
+pin. This replaced a `pins.json` store after review, because identity-by-
+message dissolves the store's four worst findings at once:
 
-**Pin authorization must be decided before pins become roots.** Write scope is
-fine while a pin is annotation — a write token can already consume storage.
-The moment pins prevent reclamation, unlimited pin creation is permanent-
-retention authority, and a compromised write token could pin every commit and
-defeat reclaim. Since roots ship with pins (above), this decision is due at
-build time, not later: per-vault pin quotas at minimum, `ops:` gating or a
-dedicated capability if quotas feel wrong.
+- *Rewrite-proof.* The review's critical finding was that hash-referenced pins
+  die at the first prune — `Resolve` never consults `pruneMap`
+  (`history.go:114`) and prune explicitly discards its per-commit mapping,
+  keeping only the head pair (`prune.go:76`). A pin identified by its trailer
+  rides through any rewrite; there is no hash to translate.
+- *No store.* No `pins.json`, so no lost-update lock, no id scheme, no
+  POST/DELETE routes, no name-escaping. Creating a pin is a push, serialised
+  by the reconciler like every other commit; deleting one is out of scope for
+  v1 (an unpinning rewrite is prune-shaped work).
+- *Content-addressed durability for file pins.* The pinned version IS the pin
+  commit's own tree. Nothing points backwards.
+- *Chronology for free.* Pins interleave with sessions because they are
+  commits.
+
+Costs, accepted: each pin moves HEAD, so every device pulls one zero-change
+diff; and `/v1/history` filters by path-touching commits, so listing pins is a
+log scan for the trailer (a small `GET /v1/pins` doing that scan, read scope).
+
+What this does NOT do: protect pinned content from pruning. Prune drops old
+blobs of deleted paths regardless. Making "pinned" mean "never pruned" still
+requires prune to learn the trailer — but "keep paths live in trees of
+`Pin:`-trailed commits" is far simpler than the persistent hash-mapping the
+store design demanded, and it can now genuinely ship later, because pin
+IDENTITY no longer depends on it.
+
+**Pin authorization, revisited under this design.** Creating a pin is
+literally a commit, so write scope is exactly right by construction. The
+retention-authority concern (a compromised write token pinning everything to
+defeat reclaim) moves to the future prune-learns-pins change and is decided
+there — quotas or `ops:` gating on what prune respects, not on who may
+commit.
 
 ## Surface inventory
 
 Server:
-- Pin store: JSON in the vault state dir, **owned by a per-vault mutex on
-  `vaults.Instance`** — atomic rename alone (the `tokens.json` pattern) only
-  prevents torn reads; two devices pinning concurrently would silently lose
-  one update without the lock.
-- Pins carry an immutable random **id**; `POST /v1/pins` creates, `DELETE
-  /v1/pins/{id}` removes. Names are display text, not identity — two files may
-  both have a pin called "sent", and names in URLs invite escaping bugs.
-- `GET /{vault}/v1/pins?path=` — read scope.
+- `POST /{vault}/v1/pin` — write scope; `{name, path?}`. Commits an empty
+  commit with `Pin: <name>` (and `Pin-Path: <path>` for a file pin). Name
+  sanitised exactly like every other trailer value (`sanitiseTrailerValue`).
+- `GET /{vault}/v1/pins?path=` — read scope; scans the log for the trailer.
+- No delete in v1: unpinning is a history rewrite, prune-shaped work.
 - `/v1/history` gains bounded cursor pagination (`before=<commit>`, capped
   limit, `hasMore`) — today it defaults to 50 with no cursor and accepts an
   uncapped limit that walks the whole commit history. The modal clusters
@@ -126,8 +147,9 @@ Plugin:
   stated in the README — matching files silently stop syncing.
 - **Pins are pathname-scoped, decided.** Renaming `Draft.md` to `Final.md`
   orphans Draft's pins and history view — `History` filters by exact path and
-  does not follow renames, and server-side diffs expose del+put. Following
-  renames would need lineage metadata; out of scope, said out loud in the UI
-  ("pins stay with the old name").
+  does not follow renames. Following renames would need lineage metadata; out
+  of scope, said out loud in the UI ("pins stay with the old name").
+- The pin trailer scan's cost on a large history, and whether GET /v1/pins
+  wants a small cache invalidated on commit.
 - Whether `Revision` grows origin/operation metadata so the modal can label
   merges and conflicts, instead of inferring from commit messages.
