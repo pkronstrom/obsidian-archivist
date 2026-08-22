@@ -42,7 +42,7 @@ Precisely: **no `ops:` step-up** — on a protected vault the normal `vault:`
 gate still applies to every route here, exactly as it does to reading a note.
 
 **Materialised files are real but local-only until renamed.**
-`Note.rev-ae56b.archivist-local.md` is a genuine note — openable, editable, linkable — but its
+`Note.ae56b1c.local.md` is a genuine note — openable, editable, linkable — but its
 filename pattern is excluded from sync in BOTH skip predicates, so browsing
 never litters other devices. Restoring is renaming: the file stops matching,
 reads as a new note, and syncs normally. (Verified against the sync engine:
@@ -174,18 +174,22 @@ Single-user alpha: server and plugin deploy together, so protocol gating,
 capability publishing and version negotiation are all out of scope here. What
 survives that simplification is only what bites a SINGLE installation:
 
-- **The marker is `.archivist-local` immediately before the real extension** —
-  `Note.rev-ae56b.archivist-local.md`, `diagram.rev-8f1c2.archivist-local.png`.
-  The predicate matches the second-to-last dot-segment. Keeping the real
-  extension LAST is what makes the file a genuine note (Obsidian opens,
-  renders and links it) and makes attachments work identically. A namespaced
-  marker also means no pre-existing file can match by accident — with a
-  generic pattern like `.rev-*`, a matching path already in HEAD would strand
-  permanently, since `Commit` ignores an excluded path's DELETION too and
-  nothing could ever remove it. The release should still sweep for matches
-  before enabling the predicate, but it is now a formality rather than a real
-  hazard. Documented in the README regardless: files carrying the marker
-  silently stop syncing, and that must never be a surprise.
+- **The marker is `.<hash>.local` immediately before the real extension** —
+  `Note.ae56b1c.local.md`, `diagram.8f1c2ad.local.png`. The predicate requires
+  BOTH segments: a 7-8 hex-character revision hash followed by `local`. The
+  hash is part of the pattern, not decoration — matching a bare `*.local.*`
+  would silently stop syncing a future note called `Setup.local.md`, and that
+  failure is invisible. With the hash required, no plausible hand-written
+  filename can match. (Checked against the live vault, 2026-08-22: zero
+  existing `*.local.*` files, so nothing strands — `Commit` ignores an
+  excluded path's DELETION too, which would otherwise make a pre-existing
+  match unremovable forever.)
+- Keeping the real extension LAST is what makes the file a genuine note:
+  Obsidian opens, renders and links it, and attachments work identically.
+  The namespace is reusable — later local-only needs take the same
+  `.<hash>.local` shape rather than adding a second predicate.
+- Documented in the README regardless: files carrying the marker silently
+  stop syncing, and that must never be a surprise.
 - **Marked files are invisible to every diagnostic.** The watcher drops their
   events, `Commit` skips them, `Check` suppresses them from drift reporting —
   so one sitting in the vault on the server is untracked, uncounted and
