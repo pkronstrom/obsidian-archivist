@@ -114,10 +114,14 @@ that HEAD, appends, commits, notifies, and returns the new head. Mismatch is
 before surfacing an error. API code cannot reach the mutex directly, which is
 why this is a reconciler method rather than a handler.
 
-**Pin scopes.** File pins (`path` set) show in that note's modal. Vault-wide
-pins (`path` absent) are restore points for the whole vault and live in the
-settings Maintenance section — deliberately not interleaved into a note's
-modal, because they are not about that note.
+**Pin scopes — file pins first.** File pins (`path` set) show in that note's
+modal and are the primary feature: they are what the revision browser is for,
+and what gets built and shipped first. Vault-wide pins (`path` absent) are
+restore points for the whole vault, live in the settings Maintenance section,
+and are deliberately NOT interleaved into a note's modal because they are not
+about that note. Same route, same file, same id scheme — the scope is just
+whether `path` is set — so vault-wide pins are a small addition afterwards
+rather than a parallel design.
 
 **Pins mark now.** There is no way to pin a historical revision: no use case
 survived scrutiny (preserve an old version by materialising it, then pin the
@@ -187,4 +191,6 @@ every route here, exactly as it does to reading a note.
 1. `.local` predicate, both sides, with the rename-to-restore regression test.
 2. `/v1/history` pagination.
 3. `pins.jsonl`: `Reconciler.Pin`, the two routes, the id→commit scan + cache.
-4. Plugin: client methods, status-bar item, modal, settings copy.
+4. Plugin: client methods, status-bar item, modal (history + FILE pins).
+5. Vault-wide pins in the settings Maintenance section — last, and skippable
+   if the file-pin half proves enough in practice.
