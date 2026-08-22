@@ -92,14 +92,21 @@ format fixes both-append-at-EOF), which is why creation goes through
 `POST /v1/pin` with the SERVER appending under the reconciler lock: the format
 makes the file robust, the lock makes writes serial.
 
-**Placement.** Visible `pins.jsonl` at the vault root. `.obsidian` was
-considered and is ruled out on verified facts, not taste: config sync is an
-allowlist gated by the device's level, the DEFAULT level is `files` (syncs
-nothing under `.obsidian`), and archivist's own plugin directory is
-hard-excluded on both sides with no override (`internal/vault/config.go:85`,
-`ARCHIVIST_IDS` in `config-sync.ts`). Pins there would be silently device-local
-for every default install. The root file already behaves like a hidden-but-
-synced file in practice: Obsidian's explorer does not show `.jsonl` by default.
+**Placement: `.obsidian/plugins/obsidian-archivist/pins.jsonl`, via a carve-out
+in our own sync logic.** That directory is currently hard-excluded on both
+sides (`internal/vault/config.go:85`, `ARCHIVIST_IDS` in `config-sync.ts`) and
+the default config level (`files`) syncs nothing under `.obsidian` at all — so
+this needs a deliberate always-sync exception for this ONE path, matching in
+both predicates. That is a third kind of rule in the predicate (data that
+ignores the config gate, rather than config the gate governs), so it wants a
+comment saying why: the exclusion exists to stop archivist's own SETTINGS
+(device-specific, `data.json`) from syncing; pins are vault data that merely
+happen to live in the plugin's folder.
+
+Chosen over a vault-root file because pins are machinery, not notes, and the
+root is the user's own space. The root file's only real advantage — other
+tools like NoteDiscovery can see it — does not apply to something only this
+plugin writes.
 
 **Entries carry no commit hashes — load-bearing, not stylistic.** The line
 format (JSONL vs CSV vs anything) is cosmetic; the CONTENT rule is not. A
@@ -161,23 +168,22 @@ Plugin:
   while the modal is open.
 - Maintenance section: vault-wide pins.
 
-## Rollout hazards (found by review, easy to lose)
+## Rollout notes
+
+Single-user alpha: server and plugin deploy together, so protocol gating,
+capability publishing and version negotiation are all out of scope here. What
+survives that simplification is only what bites a SINGLE installation:
 
 - **Already-tracked `.rev-*` paths strand.** If a matching file was committed
   before the exclusion ships, `Commit` thereafter ignores its modifications
-  AND its deletion — HEAD keeps it forever and old clients keep syncing it.
-  The release that adds the pattern must first commit the removal of matching
-  tracked entries (working tree preserved), then enable the predicate. Needs
-  an upgrade test with a matching path already in HEAD.
-- **Predicate-version skew loops.** An old plugin pushing a `.rev-*` file to a
-  new server gets a per-path `refused` result; the client counts it as pushed
-  and rediscovers the same put every cycle, forever. The server must publish
-  its exclusion pattern (on `/v1`), and the client must treat "excluded from
-  sync" refusals as a terminal per-path state, not a retry.
+  AND its deletion — HEAD keeps it forever. Not a version problem; the vault
+  simply carries a file nothing can ever remove. The release must first commit
+  the removal of matching tracked entries (working tree preserved), then
+  enable the predicate.
 - **Server-side `.rev-*` files are invisible unmanaged files.** The watcher
-  drops them, `Check` suppresses them, nothing counts them; thousands of
-  agent-created ones would silently tax every status scan. Diagnostics gain a
-  local-only file count; cleanup semantics documented.
+  drops them, `Check` suppresses them, nothing counts them; agent-created ones
+  would silently accumulate and tax every status scan. Diagnostics gain a
+  local-only count.
 
 ## Open when built
 
