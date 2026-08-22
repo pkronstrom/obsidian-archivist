@@ -119,3 +119,31 @@ test("a session straddling a page boundary stays one session", () => {
 	const accumulated = [...all.slice(0, 4), ...all.slice(4)];
 	assert.equal(clusterRevisions(accumulated).length, 1);
 });
+
+// The setting's floor: 0 means "show every sync", so it must not group even
+// revisions that share a timestamp -- those are zero apart, and a plain
+// "gap > threshold" test would merge exactly the pair a user asking for full
+// detail most wants to see.
+test("a zero gap never groups, even for same-second revisions", () => {
+	const same = "2026-08-22T12:00:00Z";
+	const sessions = clusterRevisions(
+		[
+			{ ...rev(same), commit: "a" },
+			{ ...rev(same), commit: "b" },
+			{ ...rev("2026-08-22T11:59:00Z"), commit: "c" },
+		],
+		0,
+	);
+	assert.equal(sessions.length, 3, "every revision should stand alone at gap 0");
+});
+
+// And a large gap groups a whole day into one entry, which is the other end of
+// the same dial.
+test("a large gap groups distant edits", () => {
+	const sessions = clusterRevisions(
+		[rev("2026-08-22T18:00:00Z"), rev("2026-08-22T09:00:00Z")],
+		12 * 60 * 60 * 1000,
+	);
+	assert.equal(sessions.length, 1);
+	assert.equal(sessions[0].revisions.length, 2);
+});

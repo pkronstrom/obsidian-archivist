@@ -93,7 +93,13 @@ export function clusterRevisions(revisions: Revision[], gapMs = SESSION_GAP_MS):
 		const prev = new Date(current[current.length - 1].when).getTime();
 		const here = new Date(rev.when).getTime();
 		// Walking newest to oldest, so the gap is prev - here.
-		if (prev - here > gapMs) flush();
+		//
+		// A gap of zero means "never group", checked explicitly rather than
+		// left to the comparison: two commits inside the same second are zero
+		// apart, which is not greater than zero, so they would group -- and a
+		// setting that says "list every sync" must not quietly merge the two
+		// closest ones.
+		if (gapMs <= 0 || prev - here > gapMs) flush();
 		current.push(rev);
 	}
 	flush();

@@ -38,6 +38,7 @@ export class RevisionModal extends Modal {
 		private readonly client: () => Client | null,
 		private readonly head: () => string,
 		private readonly flush: () => Promise<void>,
+		private readonly gapMs: () => number,
 	) {
 		super(app);
 	}
@@ -109,7 +110,7 @@ export class RevisionModal extends Modal {
 			for (const rev of page.revisions) {
 				if (!known.has(rev.commit)) this.revisions.push(rev);
 			}
-			this.sessions = clusterRevisions(this.revisions);
+			this.sessions = clusterRevisions(this.revisions, this.gapMs());
 		} catch (e) {
 			new Notice(`Archivist: could not load history (${String(e)})`);
 		} finally {

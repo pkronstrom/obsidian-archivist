@@ -53,6 +53,9 @@ export type Settings = {
 	 * stale for longer. The ceiling in main.ts bounds the latter regardless.
 	 */
 	syncQuietSeconds: number;
+	/** Gap that separates two editing sessions in the revision browser, in
+	 *  minutes. 0 lists every commit separately. */
+	revisionGapMinutes: number;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -64,6 +67,7 @@ export const DEFAULT_SETTINGS: Settings = {
 	syncOnChange: true,
 	watchRemote: true,
 	syncQuietSeconds: 15,
+	revisionGapMinutes: 30,
 };
 
 export class ArchivistSettingTab extends PluginSettingTab {
@@ -469,6 +473,28 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	private renderMaintenance(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName("Maintenance").setHeading();
+
+		new Setting(containerEl)
+			.setName("Group revisions edited within (minutes)")
+			.setDesc(
+				"The revision browser groups a note's history into editing sessions: " +
+					"edits closer together than this become one entry, shown as the state " +
+					"the note was left in. Lower shows finer detail; 0 lists every " +
+					"individual sync. Purely a display choice \u2014 it changes nothing on " +
+					"the server and nothing about what is stored.",
+			)
+			.addText((t) =>
+				t
+					.setValue(String(this.plugin.settings.revisionGapMinutes))
+					.onChange(async (v) => {
+						const n = Number(v);
+						// Rejected rather than clamped: a typo should not silently
+						// become a number the user did not choose.
+						if (!Number.isFinite(n) || n < 0 || n > 1440) return;
+						this.plugin.settings.revisionGapMinutes = Math.floor(n);
+						await this.plugin.saveSettings();
+					}),
+			);
 
 		// Vault-wide pins live HERE and not in the note's revision modal. They
 		// are not about any one note, and interleaving them into a file's

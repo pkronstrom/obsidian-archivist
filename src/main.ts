@@ -580,6 +580,9 @@ export default class ArchivistPlugin extends Plugin {
 			() => this.clientOrNull(),
 			() => loadState(this.app).base,
 			() => this.syncScheduler.flush({ force: true }),
+			// 0 means "every commit": a gap of zero never groups, because two
+			// revisions are always at least zero apart.
+			() => this.settings.revisionGapMinutes * 60_000,
 		).open();
 	}
 
