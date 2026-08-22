@@ -203,6 +203,14 @@ type PushResponse struct {
 type HistoryResponse struct {
 	Path      string     `json:"path"`
 	Revisions []Revision `json:"revisions"`
+	// HasMore reports that older revisions exist beyond this page. Without it
+	// a caller cannot distinguish "that is all of them" from "the limit cut
+	// you off", which is the difference between a complete revision list and a
+	// silently truncated one.
+	HasMore bool `json:"hasMore"`
+	// Next is the cursor for the following page: pass it back as ?before=.
+	// Empty when HasMore is false.
+	Next string `json:"next,omitempty"`
 }
 
 type CheckResponse struct {

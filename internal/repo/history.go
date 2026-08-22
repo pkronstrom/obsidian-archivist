@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-git/go-git/v5"
@@ -16,40 +17,90 @@ type Revision = protocol.Revision
 // Only commits that actually touched the path are returned -- a vault commits
 // on every edit anywhere, so an unfiltered log would be almost entirely noise.
 func (r *Repo) History(path string, limit int) ([]protocol.Revision, error) {
+	revs, _, err := r.HistoryPage(path, limit, "")
+	return revs, err
+}
+
+// ErrUnknownCursor is returned when a history cursor names a commit that does
+// not appear in the path's history. Reporting it beats returning an empty page:
+// an empty page reads as "no more revisions" and would silently end a listing
+// that actually broke.
+var ErrUnknownCursor = errors.New("unknown history cursor")
+
+// MaxHistoryLimit caps one page. The log walk is over the WHOLE repository
+// history filtered by path, so an uncapped limit lets one request traverse
+// every commit in the vault.
+const MaxHistoryLimit = 200
+
+// HistoryPage lists one page of a path's revisions, newest first.
+//
+// before is an exclusive cursor: the page starts at the revision AFTER that
+// commit. Paging is by commit rather than by offset because the history grows
+// at the newest end -- an offset would shift under the caller between pages and
+// silently skip or repeat a revision.
+func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Revision, bool, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	if limit > MaxHistoryLimit {
+		limit = MaxHistoryLimit
+	}
 	iter, err := r.git.Log(&git.LogOptions{FileName: &path})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer iter.Close()
 
 	out := []protocol.Revision{}
+	seeking := before != ""
+	found := false
+	more := false
 	err = iter.ForEach(func(c *object.Commit) error {
+		if seeking {
+			if c.Hash.String() == before {
+				seeking, found = false, true
+			}
+			// Skip the cursor commit itself as well: the cursor is exclusive,
+			// so the caller already has it.
+			return nil
+		}
 		if len(out) >= limit {
+			// One past the page proves there is another page, without walking
+			// the rest of the history to count it.
+			more = true
 			return object.ErrCanceled
 		}
-		rev := protocol.Revision{
-			Commit:  c.Hash.String(),
-			Short:   c.Hash.String()[:8],
-			When:    c.Author.When,
-			Message: firstLine(c.Message),
-		}
-		if t, err := c.Tree(); err == nil {
-			if f, err := t.File(path); err == nil {
-				rev.Size, rev.Hash = f.Size, f.Hash.String()
-			} else {
-				rev.Deleted = true
-			}
-		}
-		out = append(out, rev)
+		out = append(out, revisionAt(c, path))
 		return nil
 	})
 	if err != nil && err != object.ErrCanceled {
-		return nil, err
+		return nil, false, err
 	}
-	return out, nil
+	if before != "" && !found {
+		return nil, false, fmt.Errorf("%w: %q", ErrUnknownCursor, before)
+	}
+	return out, more, nil
+}
+
+// revisionAt builds a Revision for one commit, marking it deleted when the
+// path is absent from that commit's tree. A deleted revision cannot be read
+// back through /v1/at, which is why callers that pick a representative for a
+// group must skip them.
+func revisionAt(c *object.Commit, path string) protocol.Revision {
+	rev := protocol.Revision{
+		Commit:  c.Hash.String(),
+		Short:   c.Hash.String()[:8],
+		When:    c.Author.When,
+		Message: firstLine(c.Message),
+	}
+	if t, err := c.Tree(); err == nil {
+		if f, err := t.File(path); err == nil {
+			rev.Size, rev.Hash = f.Size, f.Hash.String()
+		} else {
+			rev.Deleted = true
+		}
+	}
+	return rev
 }
 
 func firstLine(s string) string {

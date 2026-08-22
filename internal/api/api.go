@@ -728,12 +728,23 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request, inst *vaults.In
 			limit = n
 		}
 	}
-	revs, err := inst.Repo.History(path, limit)
+	before := r.URL.Query().Get("before")
+	revs, more, err := inst.Repo.HistoryPage(path, limit, before)
 	if err != nil {
+		// A bad cursor is the caller's mistake, not the server's. Returning it
+		// as a 500 would make a typo look like an outage.
+		if errors.Is(err, repo.ErrUnknownCursor) {
+			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+			return
+		}
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"path": path, "revisions": revs})
+	resp := protocol.HistoryResponse{Path: path, Revisions: revs, HasMore: more}
+	if more && len(revs) > 0 {
+		resp.Next = revs[len(revs)-1].Commit
+	}
+	writeJSON(w, resp)
 }
 
 // at reads a file as it was at a revision, WITHOUT touching the working tree.
