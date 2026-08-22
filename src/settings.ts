@@ -365,6 +365,21 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	private renderSyncBehavior(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName("Sync behavior").setHeading();
 
+		// This is the ONLY place a user learns why a file stopped syncing, so
+		// it is a visible setting row rather than a tooltip. A file that
+		// silently does not sync is only safe when the person chose the name
+		// that stopped it -- and that bargain depends entirely on the rule
+		// being written somewhere they will read it.
+		new Setting(containerEl)
+			.setName("Files that never sync")
+			.setDesc(
+				"Any file whose name ends \".local\" before its extension stays on this " +
+					"device and is never uploaded \u2014 for example Scratch.local.md. " +
+					"Rename it without the .local part to start syncing it. Revisions you " +
+					"open from the history browser are saved this way, so browsing an old " +
+					"version never touches your other devices.",
+			);
+
 		const s = this.plugin.settings;
 		const mode = deriveSyncMode(s);
 

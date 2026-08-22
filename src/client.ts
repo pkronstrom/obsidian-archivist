@@ -38,7 +38,37 @@ export const Code = {
 	NotFound: "not_found",
 	DuplicatePath: "duplicate_path",
 	Internal: "internal",
+	/** A precondition failure: the head named is no longer the tip. */
+	StaleHead: "stale_head",
 } as const;
+
+/** One point in a path's history, as /v1/history returns it. */
+export type Revision = {
+	commit: string;
+	short: string;
+	when: string;
+	message: string;
+	size: number;
+	hash: string;
+	/** The path was absent at this commit. Cannot be opened through /v1/at,
+	 *  so a session's representative must never be one of these. */
+	deleted?: boolean;
+};
+
+/** A named restore point. */
+export type Pin = {
+	id: string;
+	name: string;
+	/** Absent on a vault-wide pin. */
+	path?: string;
+	created: string;
+	/** The commit that introduced this pin: the tree it names. */
+	commit: string;
+	/** False when the snapshot no longer holds the path -- a prune can drop
+	 *  the blobs of a deleted path while the pin entry survives. Shown, but
+	 *  not openable. */
+	available: boolean;
+};
 
 /** An error carrying the server's stable code. */
 export class ServerError extends Error {
@@ -120,6 +150,64 @@ export class Client {
 			protectedVaults?: string[];
 			requiresStepUpAuth?: string[];
 		};
+	}
+
+	/**
+	 * history lists revisions that touched a path, newest first.
+	 *
+	 * `before` is an exclusive cursor from a previous page's `next`. Paging is
+	 * by commit rather than offset because history grows at the newest end: an
+	 * offset would shift between pages and skip or repeat a revision.
+	 */
+	async history(
+		path: string,
+		limit = 50,
+		before?: string,
+	): Promise<{ revisions: Revision[]; hasMore: boolean; next?: string }> {
+		let q = `/v1/history?path=${encodeURIComponent(path)}&limit=${limit}`;
+		if (before) q += `&before=${encodeURIComponent(before)}`;
+		const j = (await this.call("GET", q)).json;
+		return {
+			revisions: (j?.revisions ?? []) as Revision[],
+			hasMore: Boolean(j?.hasMore),
+			next: j?.next as string | undefined,
+		};
+	}
+
+	/**
+	 * readAt fetches a path as it was at a revision. Never touches the working
+	 * tree -- inspecting an old version is not a restore.
+	 *
+	 * The path is escaped SEGMENT BY SEGMENT: it sits in path position, where
+	 * encodeURIComponent would turn every separator into %2F, and a raw
+	 * interpolation would break on the "#" and "?" that ordinary note titles
+	 * contain.
+	 */
+	async readAt(rev: string, path: string): Promise<ArrayBuffer> {
+		const escaped = path.split("/").map(encodeURIComponent).join("/");
+		const res = await this.call("GET", `/v1/at/${encodeURIComponent(rev)}/${escaped}`);
+		return res.arrayBuffer;
+	}
+
+	/** pins lists named restore points. `path` filters to one file; "*" asks
+	 *  for vault-wide pins only; omitted returns every pin. */
+	async pins(path?: string): Promise<Pin[]> {
+		const q = path ? `/v1/pins?path=${encodeURIComponent(path)}` : "/v1/pins";
+		const j = (await this.call("GET", q)).json;
+		return (j?.pins ?? []) as Pin[];
+	}
+
+	/**
+	 * pin names a restore point at `expectedHead`.
+	 *
+	 * expectedHead is required by the server: a pin is a claim about a
+	 * specific tree, so pinning against a head that has moved would silently
+	 * name an older state than the note on screen. A StaleHead error means
+	 * flush and retry once.
+	 */
+	async pin(name: string, expectedHead: string, path?: string): Promise<{ id: string; head: string }> {
+		const j = (await this.call("POST", "/v1/pin", { name, path, expectedHead })).json;
+		return { id: j?.id as string, head: j?.head as string };
 	}
 
 	private async call(

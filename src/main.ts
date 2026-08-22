@@ -1,6 +1,7 @@
 import { Notice, Plugin, TAbstractFile, setIcon } from "obsidian";
 import { Client } from "./client";
-import { Sync, skip } from "./sync";
+import { Sync, skip, localOnly } from "./sync";
+import { RevisionModal, PinModal } from "./revision-modal";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
@@ -23,6 +24,7 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 
 	private status?: HTMLElement;
+	private revisions?: HTMLElement;
 	private statusText?: HTMLElement;
 	private lastCounts = "↓– ↑–";
 	/**
@@ -123,12 +125,57 @@ export default class ArchivistPlugin extends Plugin {
 		this.registerDomEvent(this.status, "click", () => this.openSettings());
 		this.setStatus("idle");
 
+		// A SEPARATE item from the sync indicator. Reusing that one would cost
+		// the settings affordance its click, and the two say different things:
+		// one is about the vault, this one is about the note in front of you.
+		this.revisions = this.addStatusBarItem();
+		this.revisions.addClasses(["mod-clickable", "archivist-revisions-item"]);
+		setIcon(this.revisions, "history");
+		this.registerDomEvent(this.revisions, "click", () => this.openRevisions());
+		this.updateRevisionsAffordance();
+		// The icon is scoped to the active note, so it has to follow the
+		// active leaf -- otherwise it silently keeps pointing at whatever was
+		// open when the plugin loaded.
+		this.registerEvent(
+			this.app.workspace.on("file-open", () => this.updateRevisionsAffordance()),
+		);
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", () => this.updateRevisionsAffordance()),
+		);
+
 		this.addSettingTab(new ArchivistSettingTab(this.app, this));
 
 		this.addCommand({
 			id: "sync-now",
 			name: "Sync now",
 			callback: () => void this.runSync(),
+		});
+		this.addCommand({
+			id: "revisions",
+			name: "Browse revisions of this note",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || !this.configured()) return false;
+				if (!checking) this.openRevisions();
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "pin-vault",
+			name: "Pin the whole vault",
+			checkCallback: (checking) => {
+				if (!this.configured()) return false;
+				if (!checking) {
+					new PinModal(
+						this.app,
+						undefined,
+						() => this.clientOrNull(),
+						() => loadState(this.app).base,
+						() => this.syncScheduler.flush({ force: true }),
+					).open();
+				}
+				return true;
+			},
 		});
 		this.addCommand({
 			id: "rebootstrap",
@@ -453,6 +500,42 @@ export default class ArchivistPlugin extends Plugin {
 	/** All three of URL, token and vault are needed before anything can sync. */
 	private configured(): boolean {
 		return Boolean(this.settings.serverUrl && loadToken(this.app) && this.settings.vault);
+	}
+
+	/** The client, or null when the plugin is not configured yet. */
+	private clientOrNull(): Client | null {
+		return this.configured()
+			? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
+			: null;
+	}
+
+	/**
+	 * Grey the revisions icon out when there is nothing it could show.
+	 *
+	 * A file that is itself local-only has no server history by definition --
+	 * offering to browse it would promise something that cannot exist.
+	 */
+	private updateRevisionsAffordance() {
+		if (!this.revisions) return;
+		const file = this.app.workspace.getActiveFile();
+		const usable = Boolean(file) && this.configured() && !localOnly(file?.path ?? "");
+		this.revisions.toggleClass("archivist-disabled", !usable);
+		this.revisions.setAttr(
+			"aria-label",
+			usable ? "Archivist: revisions of this note" : "Archivist: no revisions for this file",
+		);
+	}
+
+	private openRevisions() {
+		const file = this.app.workspace.getActiveFile();
+		if (!file || !this.configured() || localOnly(file.path)) return;
+		new RevisionModal(
+			this.app,
+			file.path,
+			() => this.clientOrNull(),
+			() => loadState(this.app).base,
+			() => this.syncScheduler.flush({ force: true }),
+		).open();
 	}
 
 	private setStatus(text: string): void {

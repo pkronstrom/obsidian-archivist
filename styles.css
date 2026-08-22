@@ -105,3 +105,54 @@
 	display: inline-block;
 	min-width: 5ch;
 }
+
+/* Revision browser -------------------------------------------------------- */
+
+.archivist-revisions-item.archivist-disabled .svg-icon {
+	opacity: 0.4;
+}
+
+.archivist-rev-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	margin-top: 0;
+}
+
+.archivist-rev-row {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+}
+
+.archivist-rev-row.mod-clickable:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* Unavailable rows stay visible: a pin whose content was pruned is still a
+ * record that something existed, and hiding it would look like data loss. */
+.archivist-rev-unavailable {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.archivist-rev-meta {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.archivist-rev-pinicon {
+	color: var(--text-accent);
+	display: inline-flex;
+}
+
+.archivist-rev-more,
+.archivist-rev-pinbtn {
+	margin-top: var(--size-4-2);
+}
+
+.archivist-pin-name {
+	width: 100%;
+	margin-bottom: var(--size-4-2);
+}

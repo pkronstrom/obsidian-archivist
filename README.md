@@ -624,6 +624,38 @@ Or over HTTP, for agents and other containers — `GET /v1` lists every endpoint
 with a one-line description, generated from the same table that builds the
 routes, so it cannot describe something that does not exist.
 
+### In Obsidian: the revision browser
+
+The status bar carries a history icon scoped to the note you are looking at.
+It groups the note's revisions into **editing sessions** rather than listing
+every commit — a vault commits whenever you pause, so one evening's drafting is
+twenty entries that all say the same thing.
+
+Clicking a session writes that version **beside** the note as
+`Note.ae56b1c.local.md` and opens it. Nothing is overwritten, and there is no
+"restore" button anywhere: to bring an old version back, rename the copy so it
+no longer says `.local`, and it syncs like any new note. That is the whole
+restore path, which is why browsing history cannot cost you anything.
+
+**Pins** name a version worth keeping — "draft sent to Anna", or a restore
+point before a big reorganisation. They are lines in `pins.jsonl` in your vault
+root, so they sync, merge and survive history rewrites like any other note. A
+pin always marks the current state; to keep an old version, open it first, then
+pin that.
+
+### Files that never sync
+
+**Any file whose name ends `.local` before its extension stays on the device
+that made it.** `Scratch.local.md`, `notes/Machine.local.md`,
+`diagram.8f1c2ad.local.png` — none of them are ever uploaded, by either side.
+
+Use it for scratch notes, machine-specific captures, or anything you do not
+want on your phone. Rename the file without the `.local` part and it starts
+syncing immediately, as a new note.
+
+This is also how the revision browser keeps browsing free of consequence: the
+copies it writes land in that namespace by construction.
+
 ## Write guards
 
 Git keeps every revision, and for binary content every revision is a full
