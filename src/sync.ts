@@ -70,10 +70,33 @@ export function conflictName(path: string, device: string): string {
 	return dot > slash ? path.slice(0, dot) + suffix + path.slice(dot) : path + suffix;
 }
 
+/**
+ * localOnly reports whether a path is in the user's never-sync namespace.
+ *
+ * Must stay byte-identical in meaning to vault.LocalOnly in Go. A file whose
+ * name ends ".local.<ext>" never syncs, for anyone, in either direction -- a
+ * feature the user opts into by naming a file, not an internal marker, so it
+ * is documented in settings and the README. The revision browser materialises
+ * Note.<hash>.local.md and lands here by construction; renaming the marker
+ * away is what "restores" it.
+ *
+ * Grammar: >=3 dot-separated segments in the BASENAME, second-to-last exactly
+ * "local", case-sensitive.
+ */
+export function localOnly(path: string): boolean {
+	const base = path.slice(path.lastIndexOf("/") + 1);
+	const seg = base.split(".");
+	return seg.length >= 3 && seg[seg.length - 2] === "local";
+}
+
 export function skip(
 	path: string,
 	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
 ): boolean {
+	// Before the dotfile rules, and never widened by the config allowlist: the
+	// user picked this name to stop the file syncing, so it outranks every
+	// other rule including the allowlist that lets some config paths through.
+	if (localOnly(path)) return true;
 	if (!path.split("/").some((seg) => seg.startsWith("."))) return false;
 	return !configSyncable(path, config);
 }

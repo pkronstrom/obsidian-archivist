@@ -211,12 +211,44 @@ func Skip(rel string) bool {
 	if isTemp(rel) {
 		return true
 	}
+	// Checked BEFORE the dotfile rules, and never widened by the config
+	// allowlist: .local is the one exclusion a person opts into by naming a
+	// file, so it has to beat every other rule including the allowlist that
+	// otherwise lets specific config paths through.
+	if LocalOnly(rel) {
+		return true
+	}
 	for _, seg := range strings.Split(rel, "/") {
 		if strings.HasPrefix(seg, ".") {
 			return !ConfigSyncable(rel)
 		}
 	}
 	return false
+}
+
+// LocalOnly reports whether a path is in the user's never-sync namespace.
+//
+// The rule is deliberately one line a person can hold in their head: a file
+// whose name ends ".local.<ext>" never syncs, for anyone, in either direction.
+// It is a FEATURE, not an internal marker -- naming a file Scratch.local.md is
+// how you keep it on one device -- which is why it must be documented in the
+// plugin settings and the README. A file that silently stops syncing is only
+// safe when the user chose the name that stopped it.
+//
+// The revision browser materialises Note.<hash>.local.md and so lands in this
+// namespace by construction; renaming the marker away is what "restores" it.
+//
+// Grammar: at least three dot-separated segments in the BASENAME, with the
+// second-to-last exactly "local", case-sensitive. So Note.local.md and
+// Note.ae56b1c.local.md are excluded; local.md, Note.local and
+// notes.local/x.md are not.
+func LocalOnly(rel string) bool {
+	base := rel
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	seg := strings.Split(base, ".")
+	return len(seg) >= 3 && seg[len(seg)-2] == "local"
 }
 
 // Hash is the content address used on the wire.
