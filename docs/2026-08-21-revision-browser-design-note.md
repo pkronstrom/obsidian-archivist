@@ -1,220 +1,190 @@
 # Revision Browser and Pins — Design Note
 
-**Status:** Designed, not scheduled. Reviewed twice: sol (2026-08-21, 15
-findings) against the original pins.json design, after which the pin mechanism
-was replaced with named empty commits; then terra (2026-08-22, 7 findings)
-against the replacement. The replacement's load-bearing claim held — prune
-copies `Message: c.Message` verbatim (`prune.go:99`), so trailers genuinely
-survive rewrites — and its remaining findings are folded in below.
+**Status:** Buildable spec. Reviewed three times (sol 2026-08-21; terra
+2026-08-22 twice). The pin mechanism was replaced twice in response — store →
+empty commits → tracked file — and the third review's "not buildable" findings
+are resolved below. Rewritten clean, because successive edits had left the
+note contradicting itself about paths and filenames.
 
-**Date:** 2026-08-21
+**Scope note:** alpha, one user, server and plugin ship together. Version
+skew, protocol negotiation and migrations are deliberately out of scope.
+Concurrency between the user's own devices is in scope.
+
+**Date:** 2026-08-21, rewritten 2026-08-22
 
 ---
 
 ## What it is
 
-A status-bar **revisions icon** in the plugin, scoped to the active note.
-Clicking it opens a modal listing that note's history as **sessions**, not
-commits, with the user's own **pins** interleaved. Clicking an entry
-materialises that version *beside* the original — `Note.rev-ae56b.md` — never
-overwriting anything.
+A status-bar **revisions icon** scoped to the active note. It opens a modal
+listing that note's history as **sessions**, with **pins** interleaved.
+Clicking an entry materialises that version *beside* the original as
+`Note.ae56b1c.local.md` — never overwriting anything.
 
-Two pin scopes, one mechanism:
+## 1. The `.local` namespace
 
-- **File pin** — "pin this version" on the note you are looking at, named
-  ("draft-sent-to-anna"). Shown in that file's modal.
-- **Vault-wide pin** — a restore point for the whole vault, taken before a
-  reorganisation. NOT shown in the file modal — it is not about that note. It
-  lives in the settings tab's Maintenance section.
+**Rule:** a file whose basename ends `.local.<ext>` is NEVER synced, by either
+side, for anyone. Grammar: at least three dot-separated segments, second-to-
+last exactly `local`, matched case-sensitively on the basename only.
 
-Pins mark **now**. There is deliberately no way to pin a historical revision:
-no use case survived scrutiny (preserve an old version by materialising it —
-then it is current content you can pin), and retroactive pinning was both the
-worst UI in the design and the only fragile durability case.
+This is a **user-facing feature**, not a private marker: mark any file
+`.local.md` yourself and it stays on that device. Scratch notes, machine-
+specific captures, drafts you do not want on the phone.
 
-## The decisions, and why
+- Evaluated **first** in both predicates, before dotfile and config rules.
+- The exempt pin file is matched by exact path, so `pins.local.jsonl` is NOT
+  exempt — the `.local` rule wins, always. Precedence is stated because the
+  two rules are otherwise symmetric-looking.
+- Implemented in BOTH `skip()` (`src/sync.ts`) and the Go predicate
+  (`internal/vault`). Neither currently excludes any non-dot file, so this is
+  new code on both sides, and it needs the same grammar in both.
+- **Discoverability is the safety mechanism.** A file that silently stops
+  syncing must be documented where it is read: a line in the plugin settings
+  sync section, and the README. Not a tooltip.
+- Checked against the live vault 2026-08-22: zero existing `*.local.*` files,
+  so nothing strands. (`Commit` ignores an excluded path's DELETION too, which
+  would make a pre-existing match unremovable.)
+- Server-side marked files are invisible to the watcher, `Commit` and `Check`.
+  Diagnostics gain a local-only file count so they cannot accumulate unseen.
 
-**Materialise-beside means nothing here needs `ops:` gating.** The feature
-began life as "restore an old revision", the flagship `ops:`/TOTP candidate.
-Writing the old version to a NEW file makes every operation a read (pin
-creation is an ordinary write); no in-place restore code path exists at all.
-Precisely: **no `ops:` step-up** — on a protected vault the normal `vault:`
-gate still applies to every route here, exactly as it does to reading a note.
+**Materialisation is the only writer of `.local` files**, and restoring is
+renaming the marker away: the file stops matching, reads as a new note, syncs
+normally. There is no in-place restore code path anywhere.
 
-**Materialised files are real but local-only until renamed.**
-`Note.ae56b1c.local.md` is a genuine note — openable, editable, linkable — but its
-filename pattern is excluded from sync in BOTH skip predicates, so browsing
-never litters other devices. Restoring is renaming: the file stops matching,
-reads as a new note, and syncs normally. (Verified against the sync engine:
-the excluded source is neither listed nor emitted as a deletion, so the rename
-arrives as one clean `put` — no `move` misfire. Needs a regression test for
-both the never-tracked source and a source lingering in pre-upgrade
-`state.files`.) Contrast: `.conflict-*` files deliberately DO sync — a conflict
-must be visible everywhere; a browsed revision must not.
+Collision algorithm (not "suffix, never overwrite" — that is not an
+algorithm): target is `<base>.<7-char hash>.local.<ext>`. If it exists and its
+content is byte-identical, open it and write nothing. Otherwise append `-2`,
+`-3`, … before `.local` until free.
 
-**Clustering is client-side, at render time.** `/v1/history` returns
-timestamps; "a burst with ≥30 min gap to the next is one session" is a fold in
-the modal. Two corrections from review: the list is **newest-first**, so the
-fold must be defined against descending order — the representative is the
-first (newest) revision of each cluster — and it must be the newest
-**non-deleted** revision, because `History` marks deletion revisions and
-`/v1/at` necessarily 404s on them. Deletion rows render as events, not
-openable entries.
+Rename-to-restore was traced through the sync engine and works: the excluded
+source is neither listed by `listAll` nor emitted as a deletion (skipped state
+entries are forgotten), so `pairRenames` sees one clean `put` and cannot
+misfire as a move. Needs a regression test asserting exactly one put, zero
+dels, zero moves.
 
-**Pins are lines in a tracked `pins.jsonl` in the vault.** A pin is one JSON
-object appended to a visible `pins.jsonl` at the vault root, committed through
-the ordinary push path. The pin's snapshot is simply the tree of the commit
-that added its line. Third design; each replaced its predecessor for cause:
+## 2. Pins
 
-- *pins.json in the state dir* (v1) died in review: hash-referenced pins do not
-  survive prune's rewrite — `Resolve` never consults `pruneMap`
-  (`history.go:114`) and the per-commit mapping is discarded (`prune.go:76`) —
-  and the store needed a lock, an id scheme, and routes of its own.
-- *Named empty commits* (v2) fixed identity — prune copies `Message` verbatim
-  (`prune.go:99`, verified) — but needed `AllowEmptyCommits`, a dedicated
-  `Reconciler.Pin`, trailer sanitisation (`Pin-Path` was an injection hole:
-  `ValidPath` is only `filepath.IsLocal` and accepts newlines), and listing by
-  decoding every commit object, cache required.
-- *Tracked file* (v3, this one) makes pins ordinary data. Push, three-way
-  merge, `/v1/history`, `/v1/at` and prune-liveness all apply with zero new
-  machinery. Listing is one file read at HEAD. Rewrite-proof by LIVENESS —
-  `pins.jsonl` is live at HEAD, prune never drops it — rather than by a
-  message-copying property that had to be verified. Self-healing: the pin file
-  has its own history, through the very feature it serves.
+**A pin is a line appended to `pins.jsonl` in the vault root.** An ordinary
+tracked file: push, three-way merge, `/v1/history`, `/v1/at` and prune
+liveness all apply with no new machinery, and listing is one read at HEAD.
 
-**JSONL, not a JSON array, deliberately.** An array append touches three lines
-(entry, previous comma, closing bracket), so even non-overlapping edits collide
-structurally. A JSONL append is one clean line: sequential pins from different
-devices merge trivially, each pin is a one-line diff — so the entry-to-commit
-mapping is literal in `history?path=pins.jsonl` — and a corrupt line is
-skippable on read. Truly simultaneous appends still conflict under diff3 (no
-format fixes both-append-at-EOF), which is why creation goes through
-`POST /v1/pin` with the SERVER appending under the reconciler lock: the format
-makes the file robust, the lock makes writes serial.
+Rejected placements and why (do not re-derive): a store in the vault state dir
+died because hash references do not survive prune — `Resolve` never consults
+`pruneMap` (`history.go:114`) and the per-commit mapping is discarded
+(`prune.go:76`). Named empty commits fixed identity but needed
+`AllowEmptyCommits`, trailer sanitisation (`Pin-Path` was an injection hole:
+`ValidPath` is only `filepath.IsLocal` and accepts newlines) and a cached
+full-log scan. `.obsidian/plugins/obsidian-archivist/pins.jsonl` was chosen
+briefly and rejected on review: `configSyncable` returns false at
+`level: "files"` before any path check (`config-sync.ts:72`) and `listAll`
+descends the config dir only via `mayHoldConfig` (`sync.ts:530`), so it needs
+three coordinated exemptions, and missing the descend one makes a pulled pins
+file read as a DELETION. The root file needs none of that, and is invisible in
+Obsidian's explorer anyway (`.jsonl` is not a recognised extension).
 
-**Placement: `.obsidian/plugins/obsidian-archivist/pins.jsonl`, via a carve-out
-in our own sync logic.** That directory is currently hard-excluded on both
-sides (`internal/vault/config.go:85`, `ARCHIVIST_IDS` in `config-sync.ts`) and
-the default config level (`files`) syncs nothing under `.obsidian` at all — so
-this needs a deliberate always-sync exception for this ONE path, matching in
-both predicates. That is a third kind of rule in the predicate (data that
-ignores the config gate, rather than config the gate governs), so it wants a
-comment saying why: the exclusion exists to stop archivist's own SETTINGS
-(device-specific, `data.json`) from syncing; pins are vault data that merely
-happen to live in the plugin's folder.
+**Entry shape:** `{id, name, path?, created}`. `id` is a server-generated
+opaque random string. **No commit hashes** — a stored hash resurrects the
+prune problem. JSONL rather than a JSON array because an array append touches
+three lines (entry, previous comma, closing bracket) and collides structurally
+even when edits do not overlap; a JSONL append is one clean line, and a corrupt
+line is skippable on read.
 
-Chosen over a vault-root file because pins are machinery, not notes, and the
-root is the user's own space. The root file's only real advantage — other
-tools like NoteDiscovery can see it — does not apply to something only this
-plugin writes.
+**Snapshot resolution.** A pin's snapshot is the tree of the commit that first
+introduced its `id`. The earlier note claimed this fell out of `/v1/history`
+for free; it does not — `History` returns commit metadata, not line diffs. So
+the server owns it: walk the pins-file history oldest-first, read the blob at
+each revision, and map each `id` to the first commit whose blob contains it.
+Many ids may map to one commit (a manual edit can add two lines at once), which
+is fine — the mapping is id→commit, never commit→id. Entries are immutable
+except removal, which is what makes first-appearance a stable identity. The
+scan sits behind a HEAD-keyed cache.
 
-**Entries carry no commit hashes — load-bearing, not stylistic.** The line
-format (JSONL vs CSV vs anything) is cosmetic; the CONTENT rule is not. A
-stored hash resurrects the v1 flaw: prune rewrites every hash and discards its
-mapping. An entry is `{name, path?, created}`, and its snapshot is derived —
-the commit that added the line, via the file's own history — so it survives
-rewrites by reconstruction rather than by reference. JSONL over CSV only
-because pin names are arbitrary text and JSON escaping is free.
+**All mutations go through the server; direct edits are unsupported.**
+`POST /v1/pin` appends under the reconciler lock. Hand-editing the file is not
+a documented path — it will not corrupt anything, but ids and history scanning
+are the server's business. Conflict copies (`pins.conflict-<device>-<hash>
+.jsonl`) sync normally like any root file, so a losing side is visible and
+recoverable by hand; this was a real hole in the `.obsidian` placement, where
+the conflict copy would have been excluded and lost.
 
-**"Pin this version" still flushes first** and sends `expectedHead`: with the
-15s debounce, a click could otherwise pin the server's older tree than the note
-on screen. Under this design the push path's own staleness handling does the
-rest.
+**Concurrency.** `expectedHead` is REQUIRED, not optional. `Reconciler.Pin`
+holds `rc.mu`, verifies HEAD matches, validates a file pin's path exists at
+that HEAD, appends, commits, notifies, and returns the new head. Mismatch is
+`409` with a stable code; the plugin flushes, refreshes head, and retries once
+before surfacing an error. API code cannot reach the mutex directly, which is
+why this is a reconciler method rather than a handler.
 
-**Pin authorization:** a pin is a put to one file; write scope is right by
-construction. The retention question (pins as prune roots) is unchanged: prune
-learns "keep paths live in the tree of each pin's commit" later, found via the
-pin file's own history, and the quota/gating decision lands with that change.
+**Pin scopes.** File pins (`path` set) show in that note's modal. Vault-wide
+pins (`path` absent) are restore points for the whole vault and live in the
+settings Maintenance section — deliberately not interleaved into a note's
+modal, because they are not about that note.
 
-## Surface inventory
+**Pins mark now.** There is no way to pin a historical revision: no use case
+survived scrutiny (preserve an old version by materialising it, then pin the
+result), and it was both the worst UI in the design and the only fragile
+durability case.
+
+**Pinning flushes first.** With the 15s debounce a click would otherwise pin
+the server's older tree than the note on screen.
+
+**Authorization:** a pin is a put to one file, so write scope is right by
+construction. The retention question — pins as prune roots, where unlimited
+pin creation becomes permanent-retention authority — lands with that future
+change, not here.
+
+## 3. History and clustering
+
+Clustering is client-side at render time: a burst with ≥30 min gap to the next
+is one session. The list is **newest-first**, so the fold runs against
+descending order and each cluster's representative is its **newest non-deleted**
+revision — `History` marks deletion revisions and `/v1/at` necessarily 404s on
+them, so a deleted representative would make the whole session unopenable.
+Deletion rows render as events, not openable entries.
+
+`/v1/history` needs bounded pagination before this ships: today it defaults to
+50, has no cursor, no `hasMore`, and accepts an uncapped limit that walks the
+entire commit history (`api.go:719`). Spec: `before=<commit>` exclusive,
+`limit` capped at 200, response `{revisions, hasMore, next}`. An unknown
+`before` is a 400, not an empty list. The modal clusters incrementally and
+keeps the boundary item across pages.
+
+**A pin whose content is gone.** Prune can drop the blobs of a deleted path
+while the pin entry survives. `GET /v1/pins` therefore returns `available` per
+pin (resolved snapshot exists and contains the path). Unavailable pins render
+greyed with their name and date, and are not clickable — the pin is a record
+that something existed, and saying so is better than a 404 on click.
+
+## 4. Surface inventory
 
 Server:
-- `POST /{vault}/v1/pin` — write scope; `{name, path?, expectedHead?}`. Appends
-  one line to `pins.jsonl` and commits, under the reconciler lock, through the
-  ordinary commit path — no empty-commit machinery, no trailers. Line content
-  is JSON, so name/path need only JSON encoding; the newline-injection concern
-  from the trailer design disappears (a newline in a JSON string is `\n`).
-- A file pin requires the path to exist at HEAD, checked under the lock —
-  otherwise the pin is born pointing at nothing.
-- `GET /{vault}/v1/pins?path=` — read scope; reads `pins.jsonl` at HEAD and
-  filters. One file read; skips unparseable lines rather than failing.
-- Mapping a pin to its snapshot commit: `/v1/history?path=pins.jsonl` — each
-  pin is exactly one added line in exactly one commit.
-- Deleting a pin in v1 is removing its line — an ordinary edit, even doable by
-  hand. (Unpinning only becomes prune-shaped work once pins are prune roots.)
-- `/v1/history` gains bounded cursor pagination (`before=<commit>`, capped
-  limit, `hasMore`) — today it defaults to 50 with no cursor and accepts an
-  uncapped limit that walks the whole commit history. The modal clusters
-  incrementally across pages.
+- `POST /{vault}/v1/pin` — write scope; `{name, path?, expectedHead}` → `{id,
+  head}`. 409 on head mismatch, 404 if a file pin's path is absent at HEAD.
+- `GET /{vault}/v1/pins?path=` — read scope; `{id, name, path, created, commit,
+  available}`. Cached by HEAD.
+- `/v1/history` pagination as above.
+- `Reconciler.Pin` as above.
+- `.local` exclusion in the Go predicate + a local-only count in diagnostics.
 
 Plugin:
-- `client.ts` gains `history()`, `readAt()` AND `pins()` — file pins never
-  appear in `/v1/history` (its `LogOptions.FileName` filter excludes a commit
-  that touches nothing), so the modal interleaves two sources by timestamp:
-  history clusters and the pin list. Without `pins()` the file modal cannot
-  see its own pins at all.
-- **Pinning flushes first.** "Pin this version" must flush and await sync
-  before POSTing, and send `expectedHead` for `Pin` to compare under the lock
-  — otherwise the debounce means a click can pin the server's OLDER tree, not
-  the note the user is looking at, silently.
-- Path escaping is a correctness
-  requirement, not a nicety: history paths go in query position, `/v1/at`
-  paths segment-by-segment — the Go client already demonstrates the split
-  (`client.go:415`). Materialise from the full hash; the 8-char form is only
-  for the filename.
+- `client.ts` gains `history()`, `readAt()`, `pins()`, `pin()`. Path escaping
+  is a correctness requirement: history paths in query position, `/v1/at`
+  paths segment-by-segment (the Go client shows the split, `client.go:415`).
+  Materialise from the full hash; the 7-char form is only for the filename.
+- `.local` exclusion in `skip()`, applied before existing rules.
 - A **separate** status-bar item (the existing one is the sync indicator and
-  opens settings), with `file-open`/active-leaf listeners so the modal tracks
-  the active note, and defined behaviour when that note is renamed or deleted
-  while the modal is open.
-- Maintenance section: vault-wide pins.
+  opens settings), with `file-open`/active-leaf listeners; defined behaviour
+  when the active note is renamed or deleted while the modal is open.
+- Settings: the `.local` rule stated in the sync section; vault-wide pins in
+  Maintenance.
 
-## Rollout notes
+Out of scope: in-place restore, diff view, historical-revision pinning, unpin
+(removing a line is a future route; hand-editing works meanwhile), `ops:`
+gating. On a protected vault the normal `vault:` step-up gate still applies to
+every route here, exactly as it does to reading a note.
 
-Single-user alpha: server and plugin deploy together, so protocol gating,
-capability publishing and version negotiation are all out of scope here. What
-survives that simplification is only what bites a SINGLE installation:
+## 5. Build order
 
-- **`.local` is a user-facing feature, not a private marker.** The rule is one
-  line: *any* file named `*.local.<ext>` is never synced, by either side, ever.
-  Mark a file yourself and it stays on that device — scratch notes, machine-
-  specific captures, anything you do not want on the phone. Revisions simply
-  USE that namespace: `Note.ae56b1c.local.md`, where the hash only keeps
-  multiple materialisations of one note apart.
-- This inverts the earlier objection rather than dodging it. A bare `*.local.*`
-  predicate was rejected while it was a hidden implementation detail, because
-  a future `Setup.local.md` would stop syncing silently. As a DOCUMENTED
-  feature that behaviour is correct — the user named it `.local` on purpose.
-  The cost is that it must be stated where it will actually be read: the
-  plugin settings tab (a line under the sync section, not buried in a
-  tooltip) and the README. Discoverability IS the safety mechanism here.
-- Keeping the real extension LAST is what makes a materialised revision a
-  genuine note: Obsidian opens, renders and links it, and attachments work
-  identically.
-- Checked against the live vault (2026-08-22): zero existing `*.local.*`
-  files, so nothing strands on rollout — `Commit` ignores an excluded path's
-  DELETION too, which would make a pre-existing match unremovable.
-- **Marked files are invisible to every diagnostic.** The watcher drops their
-  events, `Commit` skips them, `Check` suppresses them from drift reporting —
-  so one sitting in the vault on the server is untracked, uncounted and
-  unreported forever, while every future status scan pays to walk it. Agents
-  write into that vault; a loop could leave thousands with nothing mentioning
-  them. Diagnostics gain a local-only file count.
-
-## Open when built
-
-- Cluster gap: 30 min hardcoded first; a setting only if it annoys.
-- Materialise collisions: suffix, never overwrite.
-- The marker is a NAMESPACE, not a revision pattern: anything else that should
-  stay device-local later reuses it rather than adding a second predicate.
-- **Pins are pathname-scoped, decided.** Renaming `Draft.md` to `Final.md`
-  orphans Draft's pins and history view — `History` filters by exact path and
-  does not follow renames. Following renames would need lineage metadata; out
-  of scope, said out loud in the UI ("pins stay with the old name").
-- The pin trailer scan's cost on a large history, and whether GET /v1/pins
-  wants a small cache invalidated on commit.
-- Whether `Revision` grows origin/operation metadata so the modal can label
-  merges and conflicts, instead of inferring from commit messages.
-- Two prune/pin regression tests: trailer survives a rewrite of an unrelated
-  path; and pruning the PINNED path preserves pin identity while its content
-  becomes unavailable — that asymmetry should be documented behaviour, not a
-  surprise.
+1. `.local` predicate, both sides, with the rename-to-restore regression test.
+2. `/v1/history` pagination.
+3. `pins.jsonl`: `Reconciler.Pin`, the two routes, the id→commit scan + cache.
+4. Plugin: client methods, status-bar item, modal, settings copy.
