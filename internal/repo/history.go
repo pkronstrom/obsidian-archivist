@@ -3,6 +3,7 @@ package repo
 import (
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/go-git/go-git/v5/plumbing"
 
@@ -74,14 +75,17 @@ func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Re
 	more := false
 	err = iter.ForEach(func(c *object.Commit) error {
 		if seeking {
-			// The cursor is exclusive, so its own commit is skipped. It is
-			// also the first thing the walk yields when it touched the path;
-			// when it did not, the walk simply starts below it.
-			if c.Hash.String() == before {
-				seeking, found = false, true
-				return nil
+			// The cursor is exclusive, so its own commit is skipped -- and it
+			// must be the FIRST thing this filtered walk yields. A commit that
+			// exists but never touched this path is not a position in this
+			// path's history, and silently starting below it would hand back a
+			// page from the middle of a listing the caller never asked for.
+			seeking = false
+			if c.Hash.String() != before {
+				return object.ErrCanceled
 			}
-			seeking, found = false, true
+			found = true
+			return nil
 		}
 		if !unlimited && len(out) >= limit {
 			// One past the page proves there is another page, without walking
@@ -154,6 +158,20 @@ func (r *Repo) Check() (*protocol.CheckResponse, error) {
 	}
 	rep.Files = len(tracked)
 
+	// A path that is tracked in HEAD but excluded by today's rules is
+	// STRANDED: Commit ignores an excluded path in both directions, so its
+	// edits and even its deletion are refused, and it can never leave history
+	// through ordinary use. git status cannot reveal it -- an unmodified
+	// tracked file produces no status entry at all -- so it is computed from
+	// the snapshot instead. Zero on a healthy vault; anything else needs a
+	// deliberate removal commit.
+	for path := range tracked {
+		if !r.syncable(path) {
+			rep.Stranded = append(rep.Stranded, path)
+		}
+	}
+	sort.Strings(rep.Stranded)
+
 	wt, err := r.git.Worktree()
 	if err != nil {
 		return nil, err
@@ -183,7 +201,10 @@ func (r *Repo) Check() (*protocol.CheckResponse, error) {
 			rep.Differing = append(rep.Differing, path)
 		}
 	}
-	rep.OK = len(rep.Missing) == 0 && len(rep.Extra) == 0 && len(rep.Differing) == 0
+	// Stranded counts against OK: it is a real inconsistency between what
+	// history holds and what the rules allow, and it will not resolve itself.
+	rep.OK = len(rep.Missing) == 0 && len(rep.Extra) == 0 && len(rep.Differing) == 0 &&
+		len(rep.Stranded) == 0
 	return rep, nil
 }
 

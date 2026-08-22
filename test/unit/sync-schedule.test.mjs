@@ -173,3 +173,41 @@ test("a new burst after a sync starts a fresh ceiling", () => {
 	h.advance(21_000);
 	assert.equal(h.runs.length, 2);
 });
+
+// The race that made pinning name the wrong tree: Sync.run() coalesces a
+// concurrent call and returns AT ONCE, letting the active cycle launch the
+// follow-up itself. If the scheduler let that happen, a flush would resolve
+// while the edits it was flushing were still unsent.
+test("a flush during an in-flight sync waits for a cycle that starts after it", async () => {
+	const started = [];
+	let release;
+	const gate = new Promise((r) => (release = r));
+
+	const scheduler = createSyncScheduler({
+		quietMs: 20_000,
+		maxWaitMs: 60_000,
+		// The first run blocks until released; later ones resolve at once.
+		run: () => {
+			started.push(started.length);
+			return started.length === 1 ? gate : Promise.resolve();
+		},
+		setTimer: (fn, ms) => setTimeout(fn, ms),
+		clearTimer: (h) => clearTimeout(h),
+	});
+
+	const first = scheduler.flush({ force: true });
+	assert.equal(started.length, 1, "the first run starts immediately");
+
+	// A flush arriving mid-sync must NOT resolve against the running cycle.
+	let settled = false;
+	const second = scheduler.flush({ force: true }).then(() => (settled = true));
+	await Promise.resolve();
+	assert.equal(settled, false, "the second flush resolved while the first was still running");
+	assert.equal(started.length, 1, "run() must not be called concurrently");
+
+	release();
+	await first;
+	await second;
+	assert.equal(settled, true);
+	assert.equal(started.length, 2, "the queued flush ran its own cycle after the first finished");
+});

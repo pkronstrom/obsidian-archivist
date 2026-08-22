@@ -219,3 +219,29 @@ func TestDuplicateIDsAreMarkedNotResolved(t *testing.T) {
 		t.Errorf("a duplicate must not resolve to a snapshot: %+v", got[1])
 	}
 }
+
+// Duplicate detection runs over the whole file, before filtering. Deciding
+// inside the filtered loop misses the case that matters: the original line on
+// one note and the copy on another, where listing the second never sees the
+// first, so the copy looks canonical and opens the other note's snapshot.
+func TestDuplicateAcrossPathsIsStillMarked(t *testing.T) {
+	v, r, rv := fixture(t)
+	v.Write("Note.md", []byte("v1\n"))
+	v.Write("Other.md", []byte("x\n"))
+	r.Commit("first")
+	addPin(t, v, r, Entry{ID: "same", Name: "original", Path: "Other.md"})
+	v.Write("Note.md", []byte("v2\n"))
+	r.Commit("edit")
+	addPin(t, v, r, Entry{ID: "same", Name: "copy", Path: "Note.md"})
+
+	got, _, err := rv.List("Note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d", len(got))
+	}
+	if !got[0].Duplicate || got[0].Commit != "" {
+		t.Fatalf("the copy must be marked duplicate even though the original was filtered out: %+v", got[0])
+	}
+}

@@ -224,6 +224,10 @@ type CheckResponse struct {
 	Missing   []string `json:"missing,omitempty"`
 	Extra     []string `json:"extra,omitempty"`
 	Differing []string `json:"differing,omitempty"`
+	// Stranded lists paths tracked in HEAD that today's rules exclude. They
+	// cannot be edited or deleted through sync, so they need an explicit
+	// removal commit. Distinct from Extra, which is the harmless opposite.
+	Stranded []string `json:"stranded,omitempty"`
 	// LocalOnly counts files excluded by the .local rule. Not drift -- they
 	// are excluded on purpose -- but reported so they cannot pile up unseen.
 	LocalOnly int  `json:"localOnly,omitempty"`

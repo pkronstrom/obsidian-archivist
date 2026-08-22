@@ -67,13 +67,26 @@ export function createSyncScheduler(opts: SyncSchedulerOptions): SyncScheduler {
 		ceiling = null;
 	};
 
-	const fire = (): Promise<void> => {
-		clearTimers();
+	// Runs are serialised, but an idle scheduler still starts SYNCHRONOUSLY.
+	//
+	// Both properties are load-bearing. Synchronous start: a timer firing
+	// should begin the sync at that instant, and deferring it into a microtask
+	// makes the scheduler untestable against a fake clock, because the run has
+	// not happened by the time the tick returns.
+	//
+	// Serialisation: Sync.run() COALESCES a concurrent call -- it sets a
+	// queued flag, returns at once, and lets the active cycle launch the
+	// follow-up itself. That follow-up is invisible here, so a caller awaiting
+	// a flush would be told "done" while its edits were still unsent, which is
+	// exactly when pinning reads the head and names the wrong tree. Queueing
+	// the second call ourselves means run() is never called concurrently and
+	// its coalescing path is never taken.
+	let busy = false;
+	let queued: { promise: Promise<void>; resolve: () => void } | null = null;
 
-		// run() is called SYNCHRONOUSLY, not deferred into a microtask. A timer
-		// firing should start the sync at that instant; deferring it would also
-		// make the scheduler untestable against a fake clock, because the run
-		// would not have happened by the time the tick returns.
+	const start = (): Promise<void> => {
+		busy = true;
+
 		let result: Promise<void> | void;
 		try {
 			result = opts.run();
@@ -82,19 +95,58 @@ export function createSyncScheduler(opts: SyncSchedulerOptions): SyncScheduler {
 			result = undefined;
 		}
 
+		// A run that returned no promise is ALREADY done. Clearing busy in a
+		// microtask instead would leave the scheduler looking occupied for the
+		// rest of the tick, so the next timer in the same tick would queue
+		// behind a run that had already finished -- and against a fake clock,
+		// where nothing awaits between ticks, it would never run at all.
+		if (typeof (result as Promise<void> | undefined)?.then !== "function") {
+			busy = false;
+			const immediate = queued;
+			queued = null;
+			if (immediate) {
+				start().then(immediate.resolve, immediate.resolve);
+			}
+			inFlight = null;
+			return Promise.resolve();
+		}
+
 		// A rejection must not surface as an unhandled promise, and must not
-		// leave inFlight stuck forever. runSync reports failures to the user
-		// itself; this only has to leave the scheduler usable.
-		const tracked: Promise<void> = Promise.resolve(result)
+		// leave the scheduler wedged as permanently busy.
+		const done: Promise<void> = Promise.resolve(result)
 			.then(
 				() => undefined,
 				() => undefined,
 			)
 			.then(() => {
-				if (inFlight === tracked) inFlight = null;
+				busy = false;
+				const next = queued;
+				queued = null;
+				if (next) {
+					// Hand the queued waiters the result of the run they
+					// actually asked for, not of the one that just finished.
+					start().then(next.resolve, next.resolve);
+					return;
+				}
+				if (inFlight === done) inFlight = null;
 			});
-		inFlight = tracked;
-		return tracked;
+		inFlight = done;
+		return done;
+	};
+
+	const fire = (): Promise<void> => {
+		clearTimers();
+		if (!busy) return start();
+
+		// One follow-up is enough: several edits arriving mid-sync all want
+		// the same thing, which is "a cycle that starts after this one ends".
+		if (!queued) {
+			let resolve!: () => void;
+			const promise = new Promise<void>((r) => (resolve = r));
+			queued = { promise, resolve };
+		}
+		inFlight = queued.promise;
+		return queued.promise;
 	};
 
 	return {
@@ -113,20 +165,12 @@ export function createSyncScheduler(opts: SyncSchedulerOptions): SyncScheduler {
 		flush(flushOpts) {
 			const pending = quiet !== null || ceiling !== null;
 			if (!pending && !flushOpts?.force) {
+				// Nothing waiting: the honest answer is whatever is already
+				// running, which may be nothing at all.
 				return inFlight ?? Promise.resolve();
 			}
-			// Chain onto work already running rather than starting a second
-			// cycle beside it. Sync.run() COALESCES a concurrent call and
-			// returns at once, so firing during an in-flight run would resolve
-			// this flush while the real work was still going -- and a caller
-			// that flushes in order to act on a fresh head (pinning) would
-			// then act on the stale one.
-			const running = inFlight;
-			if (running) {
-				const chained = running.then(() => fire()).then(() => undefined);
-				inFlight = chained;
-				return chained;
-			}
+			// fire() queues behind any running cycle, so the returned promise
+			// always covers a sync that STARTED after this call.
 			return fire();
 		},
 

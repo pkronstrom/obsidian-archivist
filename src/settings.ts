@@ -545,7 +545,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"restoring this vault from a backup, editing files outside of sync, or " +
 					"a sync that got stuck. It makes the plugin forget what it last saw " +
 					"here and re-derive that from what the server has now. Deletes " +
-					"nothing — local-only files are pushed on the next sync. It is also " +
+					"nothing — files only this device has are pushed on the next sync (except "
+					+ "anything marked .local, which never syncs by design). It is also " +
 					"the escape hatch for pointing this device at a different vault on " +
 					"purpose. It's marked red because discarding correct history " +
 					"unnecessarily can cause a burst of re-push/re-pull churn — only use " +

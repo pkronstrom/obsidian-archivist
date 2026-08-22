@@ -4,7 +4,6 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/pkronstrom/obsidian-archivist/protocol"
@@ -23,9 +22,12 @@ type Source interface {
 // one means missing objects, and reporting the second as the first shows data
 // loss as "you have no restore points".
 func IsNotFound(err error) bool {
+	// Deliberately NOT plumbing.ErrObjectNotFound: that means a tree or blob
+	// object is missing from the store, which is damage, not absence. Treating
+	// it as "no pins" would report a broken repository as an empty one -- the
+	// single answer indistinguishable from data loss.
 	return errors.Is(err, object.ErrFileNotFound) ||
-		errors.Is(err, object.ErrEntryNotFound) ||
-		errors.Is(err, plumbing.ErrObjectNotFound)
+		errors.Is(err, object.ErrEntryNotFound)
 }
 
 // Resolved is an entry plus what could be worked out about it.
@@ -70,6 +72,10 @@ func (rv *Resolver) List(path string) ([]Resolved, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if head == "" {
+		// An empty repository: no commits, so no pins, and no read to attempt.
+		return []Resolved{}, head, nil
+	}
 	content, err := rv.src.ReadAt(head, File)
 	if err != nil {
 		// Only "the file is not in this tree" means an unpinned vault. Any
@@ -88,14 +94,24 @@ func (rv *Resolver) List(path string) ([]Resolved, string, error) {
 
 	entries := Parse(content)
 
-	// A duplicated id -- a hand copy-paste of a line -- would otherwise show
-	// two pins that both resolve to the FIRST one's commit, so the copy opens
-	// an unrelated snapshot while looking perfectly ordinary. Keep the first
-	// and mark the rest, rather than inventing a meaning for the ambiguity.
-	seen := map[string]bool{}
+	// Duplicate ids are decided over the WHOLE file, before any filtering.
+	// Deciding inside the filtered loop would miss the case that matters: if
+	// the original line belongs to Other.md and the copy to Note.md, listing
+	// Note.md never sees the original, so the copy looks canonical and
+	// silently resolves to the other note's commit.
+	//
+	// A duplicated id -- a hand copy-paste of a line -- cannot be resolved at
+	// all: first appearance identifies exactly one line. Keep the first and
+	// mark the rest rather than inventing a meaning for the ambiguity.
+	canonical := map[string]int{}
+	for i, e := range entries {
+		if _, seen := canonical[e.ID]; !seen {
+			canonical[e.ID] = i
+		}
+	}
 
 	out := []Resolved{}
-	for _, e := range entries {
+	for i, e := range entries {
 		switch {
 		case path == "*" && e.Path != "":
 			continue
@@ -103,11 +119,10 @@ func (rv *Resolver) List(path string) ([]Resolved, string, error) {
 			continue
 		}
 		r := Resolved{Entry: e, Commit: index[e.ID]}
-		if seen[e.ID] {
+		if canonical[e.ID] != i {
 			r.Duplicate = true
 			r.Commit = ""
 		}
-		seen[e.ID] = true
 		if r.Commit != "" {
 			if e.Path == "" {
 				// A vault-wide pin needs only its snapshot to exist.
