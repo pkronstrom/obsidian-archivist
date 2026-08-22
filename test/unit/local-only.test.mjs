@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localOnly, skip, skipDir } from "../../dist-test/entry.mjs";
+import { localOnly, localOnlyDir, skip, skipDir } from "../../dist-test/entry.mjs";
 import { DEFAULT_CONFIG_SYNC } from "../../dist-test/entry.mjs";
 
 const plugins = { ...DEFAULT_CONFIG_SYNC, level: "plugins" };
@@ -15,9 +15,15 @@ test("localOnly matches the documented grammar", () => {
 		["Note.ae56b1c.local.md", true],
 		["attachments/diagram.8f1c2ad.local.png", true],
 		["local.md", false],
-		["Note.local", false],
-		["Notes/plan.local", false],
-		["notes.local/inside.md", false],
+		// A name ending in .local is the folder spelling of the same rule, and
+		// applies to an extensionless file too.
+		["Note.local", true],
+		["Notes/plan.local", true],
+		// A folder marked .local takes its subtree with it.
+		["Scratch.local/inside.md", true],
+		["Scratch.local/deep/nested.md", true],
+		// A folder that merely matches the FILE grammar is ordinary.
+		["project.local.assets/Note.md", false],
 		["Note.Local.md", false],
 		["Report.LOCAL.md", false],
 		["Daily/2026-08-22.md", false],
@@ -40,9 +46,20 @@ test("skip applies .local before the dotfile and config rules", () => {
 // A DIRECTORY satisfying the .local grammar must not be excluded. Treating it
 // as local-only would stop every note inside it from syncing -- a whole tree
 // lost to a naming coincidence, reported nowhere.
-test("a .local-shaped directory is still descended into", () => {
+test("a folder matching only the FILE grammar is still descended into", () => {
 	assert.equal(localOnly("project.local.assets"), true, "the name does match the file grammar");
 	assert.equal(skipDir("project.local.assets"), false, "but a directory must not be skipped for it");
-	// And a note inside it syncs normally.
 	assert.equal(skip("project.local.assets/Note.md"), false);
+});
+
+// The deliberate directory feature: mark a folder .local and nothing inside it
+// ever leaves the device.
+test("a folder ending in .local is skipped whole", () => {
+	assert.equal(localOnlyDir("Scratch.local"), true);
+	assert.equal(skipDir("Scratch.local"), true);
+	assert.equal(skip("Scratch.local/note.md"), true);
+	assert.equal(skip("Scratch.local/deep/nested.md"), true);
+	// ".local" alone is not a marked folder -- it is a dotfile, handled by the
+	// existing rules, and treating it as the marker would be surprising.
+	assert.equal(localOnlyDir(".local"), false);
 });

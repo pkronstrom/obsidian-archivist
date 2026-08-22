@@ -73,20 +73,33 @@ export function conflictName(path: string, device: string): string {
 /**
  * localOnly reports whether a path is in the user's never-sync namespace.
  *
- * Must stay byte-identical in meaning to vault.LocalOnly in Go. A file whose
- * name ends ".local.<ext>" never syncs, for anyone, in either direction -- a
- * feature the user opts into by naming a file, not an internal marker, so it
- * is documented in settings and the README. The revision browser materialises
- * Note.<hash>.local.md and lands here by construction; renaming the marker
- * away is what "restores" it.
+ * Must stay identical in meaning to vault.LocalOnly in Go. One rule, two
+ * shapes: Scratch.local.md (a file, marked before its extension) and
+ * Scratch.local/ (a folder -- nothing inside it ever syncs). A folder has to
+ * END in .local rather than use the file spelling, because a directory called
+ * "project.local.assets" would match the file grammar by coincidence and
+ * strand every note inside a tree nobody meant to hide.
  *
- * Grammar: >=3 dot-separated segments in the BASENAME, second-to-last exactly
- * "local", case-sensitive.
+ * The revision browser materialises Note.<hash>.local.md and lands here by
+ * construction; renaming the marker away is what "restores" it.
  */
 export function localOnly(path: string): boolean {
-	const base = path.slice(path.lastIndexOf("/") + 1);
-	const seg = base.split(".");
-	return seg.length >= 3 && seg[seg.length - 2] === "local";
+	const seg = path.split("/");
+	// Any ancestor marked .local takes its whole subtree with it.
+	if (seg.some((s) => s.endsWith(".local") && s.length > ".local".length)) return true;
+	const base = seg[seg.length - 1].split(".");
+	return base.length >= 3 && base[base.length - 2] === "local";
+}
+
+/**
+ * localOnlyDir is localOnly for a DIRECTORY, without the file grammar.
+ *
+ * Traversal uses this: an ordinary folder that happens to match the file
+ * spelling must still be descended into, or a naming coincidence silently
+ * stops a whole tree from syncing.
+ */
+export function localOnlyDir(path: string): boolean {
+	return path.split("/").some((s) => s.endsWith(".local") && s.length > ".local".length);
 }
 
 export function skip(
@@ -114,6 +127,9 @@ export function skipDir(
 	path: string,
 	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
 ): boolean {
+	// A folder deliberately marked .local is skipped whole -- that IS the
+	// feature. Only the accidental file-grammar match is exempted here.
+	if (localOnlyDir(path)) return true;
 	if (!path.split("/").some((seg) => seg.startsWith("."))) return false;
 	return !configSyncable(path, config);
 }

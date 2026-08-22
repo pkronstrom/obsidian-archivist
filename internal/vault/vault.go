@@ -228,27 +228,51 @@ func Skip(rel string) bool {
 
 // LocalOnly reports whether a path is in the user's never-sync namespace.
 //
-// The rule is deliberately one line a person can hold in their head: a file
-// whose name ends ".local.<ext>" never syncs, for anyone, in either direction.
-// It is a FEATURE, not an internal marker -- naming a file Scratch.local.md is
-// how you keep it on one device -- which is why it must be documented in the
-// plugin settings and the README. A file that silently stops syncing is only
-// safe when the user chose the name that stopped it.
+// One rule, in two shapes a person can hold in their head:
+//
+//	Scratch.local.md   a file, marked before its extension
+//	Scratch.local/     a folder -- nothing inside it ever syncs
+//	Notes/Plan.local   a file with no extension, same idea
+//
+// It is a FEATURE, not an internal marker: naming something .local is how you
+// keep it on one device, which is why it must be documented in the plugin
+// settings and the README. A file that silently stops syncing is only safe
+// when the user chose the name that stopped it.
+//
+// The two shapes exist because a folder cannot use the file spelling: a
+// directory called "project.local.assets" would match "marked before the
+// extension" purely by coincidence, and excluding it would strand every note
+// inside a tree nobody meant to hide. Requiring a directory to END in .local
+// makes the deliberate case unambiguous and the accidental case impossible.
 //
 // The revision browser materialises Note.<hash>.local.md and so lands in this
 // namespace by construction; renaming the marker away is what "restores" it.
-//
-// Grammar: at least three dot-separated segments in the BASENAME, with the
-// second-to-last exactly "local", case-sensitive. So Note.local.md and
-// Note.ae56b1c.local.md are excluded; local.md, Note.local and
-// notes.local/x.md are not.
 func LocalOnly(rel string) bool {
-	base := rel
-	if i := strings.LastIndex(base, "/"); i >= 0 {
-		base = base[i+1:]
+	seg := strings.Split(rel, "/")
+	for _, s := range seg {
+		// Any ancestor marked .local takes its whole subtree with it.
+		if strings.HasSuffix(s, ".local") && len(s) > len(".local") {
+			return true
+		}
 	}
-	seg := strings.Split(base, ".")
-	return len(seg) >= 3 && seg[len(seg)-2] == "local"
+	base := strings.Split(seg[len(seg)-1], ".")
+	return len(base) >= 3 && base[len(base)-2] == "local"
+}
+
+// LocalOnlyDir is LocalOnly for a DIRECTORY name, without the file grammar.
+//
+// Traversal must use this rather than LocalOnly: "project.local.assets" is a
+// perfectly ordinary folder that happens to match the file spelling, and
+// refusing to descend into it would silently stop everything inside it from
+// syncing -- inconsistently, too, since a startup walk that only skips
+// dot-directories would descend into it anyway.
+func LocalOnlyDir(rel string) bool {
+	for _, s := range strings.Split(rel, "/") {
+		if strings.HasSuffix(s, ".local") && len(s) > len(".local") {
+			return true
+		}
+	}
+	return false
 }
 
 // Hash is the content address used on the wire.

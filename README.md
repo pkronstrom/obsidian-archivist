@@ -645,13 +645,22 @@ pin that.
 
 ### Files that never sync
 
-**Any file whose name ends `.local` before its extension stays on the device
-that made it.** `Scratch.local.md`, `notes/Machine.local.md`,
-`diagram.8f1c2ad.local.png` — none of them are ever uploaded, by either side.
+**Anything marked `.local` stays on the device that made it** — never
+uploaded, by either side:
 
-Use it for scratch notes, machine-specific captures, or anything you do not
-want on your phone. Rename the file without the `.local` part and it starts
-syncing immediately, as a new note.
+| | |
+|---|---|
+| `Scratch.local.md` | a file, marked before its extension |
+| `Journal.local/` | a **folder** — nothing inside it ever syncs |
+| `Notes/Plan.local` | a file with no extension, same idea |
+
+Use it for scratch notes, machine-specific captures, a whole working folder, or
+anything you do not want on your phone. Rename without the `.local` part and it
+starts syncing immediately, as new notes.
+
+A folder has to *end* in `.local` to count. That is deliberate: a folder called
+`project.local.assets` is an ordinary folder, and everything in it syncs
+normally — otherwise a naming coincidence could hide a whole tree.
 
 This is also how the revision browser keeps browsing free of consequence: the
 copies it writes land in that namespace by construction.

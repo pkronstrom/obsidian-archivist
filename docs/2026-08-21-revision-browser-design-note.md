@@ -23,9 +23,20 @@ Clicking an entry materialises that version *beside* the original as
 
 ## 1. The `.local` namespace
 
-**Rule:** a file whose basename ends `.local.<ext>` is NEVER synced, by either
-side, for anyone. Grammar: at least three dot-separated segments, second-to-
-last exactly `local`, matched case-sensitively on the basename only.
+**Rule:** anything marked `.local` is NEVER synced, by either side, for anyone.
+Two shapes, one idea:
+
+- **File:** basename with ≥3 dot-separated segments and `local` second-to-last
+  (`Scratch.local.md`), case-sensitive.
+- **Directory, or an extensionless file:** any path segment ENDING in `.local`
+  (`Journal.local/`), which takes the whole subtree with it.
+
+A folder must end in `.local` rather than use the file spelling because
+`project.local.assets` matches the file grammar by coincidence. Excluding that
+would strand every note inside a tree nobody meant to hide — and inconsistently,
+since a startup walk that only skips dot-directories descends into it anyway.
+Traversal therefore uses the directory rule alone (`LocalOnlyDir`/`localOnlyDir`),
+never the file grammar.
 
 This is a **user-facing feature**, not a private marker: mark any file
 `.local.md` yourself and it stays on that device. Scratch notes, machine-

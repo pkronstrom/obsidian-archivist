@@ -20,13 +20,19 @@ func TestLocalOnly(t *testing.T) {
 		// Not the namespace: nothing before "local", so this is just a note
 		// someone called "local".
 		{"local.md", false},
-		// "local" must be the second-to-last segment, not the last.
-		{"Note.local", false},
-		{"Notes/plan.local", false},
-		// A DIRECTORY called local does not make its contents local-only; the
-		// rule is about the basename, so a person cannot exclude a whole tree
-		// by accident.
-		{"notes.local/inside.md", false},
+		// A name ENDING in .local is the folder spelling of the same rule, and
+		// it applies to a file with no extension too -- which is what anyone
+		// naming a file that would expect.
+		{"Note.local", true},
+		{"Notes/plan.local", true},
+		// A folder marked .local takes its whole subtree with it. This is the
+		// deliberate directory feature.
+		{"Scratch.local/inside.md", true},
+		{"Scratch.local/deep/nested.md", true},
+		// But a folder that merely matches the FILE grammar is ordinary: it
+		// does not end in .local, so nothing inside it is hidden. Excluding it
+		// would strand a whole tree on a naming coincidence.
+		{"project.local.assets/Note.md", false},
 		// Case-sensitive, so a title-cased word in a filename is safe.
 		{"Note.Local.md", false},
 		{"Report.LOCAL.md", false},
@@ -54,5 +60,18 @@ func TestSkipAppliesLocalOnlyBeforeConfigAllowlist(t *testing.T) {
 	}
 	if Skip("Note.md") {
 		t.Error("Skip excluded an ordinary note")
+	}
+	// The deliberate folder feature, and the coincidence that must not fire.
+	if !Skip("Scratch.local/note.md") {
+		t.Error("Skip did not exclude a note inside a .local folder")
+	}
+	if Skip("project.local.assets/note.md") {
+		t.Error("Skip excluded a note inside an ordinary folder that merely matches the file grammar")
+	}
+	if LocalOnlyDir("project.local.assets") {
+		t.Error("traversal must descend into a folder that only matches the file grammar")
+	}
+	if !LocalOnlyDir("Scratch.local") {
+		t.Error("traversal must skip a folder deliberately marked .local")
 	}
 }

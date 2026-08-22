@@ -191,6 +191,12 @@ func (w *Watcher) addTree(dir string) error {
 		if p != dir && strings.HasPrefix(d.Name(), ".") && !w.watchableConfigDir(p) {
 			return filepath.SkipDir
 		}
+		// A folder marked .local never syncs, so watching it would only
+		// produce events that Commit refuses -- and on a big scratch folder,
+		// a steady stream of them.
+		if vault.LocalOnlyDir(d.Name()) {
+			return filepath.SkipDir
+		}
 		return w.fsw.Add(p)
 	})
 }
@@ -245,6 +251,9 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 	// disagree.
 	if ev.Has(fsnotify.Create) {
 		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
+			if vault.LocalOnlyDir(rel) {
+				return
+			}
 			if err := w.addTree(ev.Name); err != nil {
 				w.log.Error("failed to watch new directory", "dir", ev.Name, "err", err)
 			}

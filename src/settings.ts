@@ -374,11 +374,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Files that never sync")
 			.setDesc(
-				"Any file whose name ends \".local\" before its extension stays on this " +
-					"device and is never uploaded \u2014 for example Scratch.local.md. " +
-					"Rename it without the .local part to start syncing it. Revisions you " +
-					"open from the history browser are saved this way, so browsing an old " +
-					"version never touches your other devices.",
+				"Anything marked .local stays on this device and is never uploaded: a " +
+					"file like Scratch.local.md, or a whole folder like Journal.local/. " +
+					"Rename it without the .local part to start syncing it. A folder must " +
+					"END in .local to count, so an ordinary folder such as " +
+					"project.local.assets keeps syncing normally. Revisions you open from " +
+					"the history browser are saved this way, so browsing an old version " +
+					"never touches your other devices.",
 			);
 
 		const s = this.plugin.settings;
