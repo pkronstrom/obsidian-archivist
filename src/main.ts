@@ -502,6 +502,12 @@ export default class ArchivistPlugin extends Plugin {
 		return Boolean(this.settings.serverUrl && loadToken(this.app) && this.settings.vault);
 	}
 
+	/** Force a sync and wait for it. The settings tab needs this before
+	 *  pinning, so a pin names the state the user is actually looking at. */
+	flushSync(): Promise<void> {
+		return this.syncScheduler.flush({ force: true });
+	}
+
 	/** The client, or null when the plugin is not configured yet. */
 	private clientOrNull(): Client | null {
 		return this.configured()

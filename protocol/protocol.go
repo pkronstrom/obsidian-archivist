@@ -224,7 +224,10 @@ type CheckResponse struct {
 	Missing   []string `json:"missing,omitempty"`
 	Extra     []string `json:"extra,omitempty"`
 	Differing []string `json:"differing,omitempty"`
-	OK        bool     `json:"ok"`
+	// LocalOnly counts files excluded by the .local rule. Not drift -- they
+	// are excluded on purpose -- but reported so they cannot pile up unseen.
+	LocalOnly int  `json:"localOnly,omitempty"`
+	OK        bool `json:"ok"`
 }
 
 type IndexResponse struct {

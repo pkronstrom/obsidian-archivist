@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -144,7 +145,15 @@ func (r *Repo) Check() (*protocol.CheckResponse, error) {
 	}
 	for path, st := range status {
 		if !r.syncable(path) {
-			continue // excluded by design; not drift
+			// Excluded by design, so not drift -- but counted, not ignored.
+			// Local-only files are invisible to the watcher, to Commit and to
+			// every other report, so without this a loop that materialises
+			// revisions server-side could leave thousands of files that
+			// nothing mentions while every status scan pays to walk them.
+			if vault.LocalOnly(path) {
+				rep.LocalOnly++
+			}
+			continue
 		}
 		switch {
 		case st.Worktree == git.Deleted:
