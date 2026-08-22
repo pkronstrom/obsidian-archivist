@@ -197,6 +197,48 @@ Out of scope: in-place restore, diff view, historical-revision pinning, unpin
 gating. On a protected vault the normal `vault:` step-up gate still applies to
 every route here, exactly as it does to reading a note.
 
+## Later: the time scrubber
+
+**Idea, not scheduled.** A second view on the same data: fetch every revision
+of one markdown note, put a slider under it, and let a person drag through the
+note's history — text appearing, changing and vanishing as they scrub — then
+pick a point and materialise it. The list answers "when did I touch this"; the
+scrubber answers "how did this note become what it is", which the list cannot
+show at all.
+
+What it reuses, unchanged: `/v1/history` for the revision list, `/v1/at` for
+each version, and materialise-beside for the "keep this one" gesture. No new
+server surface, no new failure modes — it is a rendering of things that already
+work.
+
+What will actually be hard, recorded so it is not rediscovered:
+
+- **N round trips.** The list needs one `/v1/at` per revision — 200 revisions
+  is 200 fetches, and they are cheap individually but not together. Wants
+  prefetching in the background with the scrubber usable before it finishes,
+  and a cache keyed by commit (contents are immutable, so it never invalidates).
+  A batch endpoint is the obvious optimisation and deliberately not required
+  first.
+- **Markdown only, and size-capped.** A binary or a 2 MB note is not scrubbable;
+  the affordance should be absent rather than slow. The server's own diff cap
+  (1 MiB, `maxDiffBytes`) is the natural line to reuse.
+- **The slider's axis is a real choice.** Even spacing per revision makes a busy
+  evening the same width as a quiet month; spacing by TIME makes the interesting
+  parts unusably narrow. Probably even-per-revision with the timestamp shown,
+  but worth trying both before committing — this is the decision the whole feel
+  of it hangs on.
+- **Animating a diff is not the same as showing one.** Consecutive revisions are
+  often a one-character edit, so naive per-revision re-rendering will flicker.
+  Wants word-level diff between the current and next revision, with insertions
+  and deletions marked in place rather than the text being replaced wholesale.
+- **Sessions apply here too.** Scrubbing 250 commits of a drafting session is
+  noise; the scrubber should probably respect the same grouping setting, with a
+  modifier to step commit-by-commit.
+
+Restoring stays exactly as it is elsewhere: the chosen version is written beside
+the note as a `.local` copy, and renaming it is what brings it back. No new
+destructive path, which is why this can stay a pure UI project.
+
 ## 5. Build order
 
 1. `.local` predicate, both sides, with the rename-to-restore regression test.
