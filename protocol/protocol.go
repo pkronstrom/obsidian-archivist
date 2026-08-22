@@ -165,6 +165,20 @@ type Revision struct {
 	Size    int64     `json:"size"`
 	Hash    string    `json:"hash"`
 	Deleted bool      `json:"deleted,omitempty"`
+	// Device is who made the change, as the commit recorded it: a device name
+	// for a client push, "server" for an edit made in the vault directory.
+	// Empty when the message predates the convention.
+	Device string `json:"device,omitempty"`
+	// Via names the intermediary when one was involved -- the relay, an agent.
+	// Absent for an ordinary device push.
+	Via string `json:"via,omitempty"`
+	// Added and Removed count lines against the previous revision of this path.
+	// Both zero for a binary file, a file too large to diff, or a first
+	// revision, which is why Created distinguishes "nothing changed" from
+	// "nothing to compare".
+	Added   int  `json:"added,omitempty"`
+	Removed int  `json:"removed,omitempty"`
+	Created bool `json:"created,omitempty"`
 }
 
 // ---- requests and responses ------------------------------------------------

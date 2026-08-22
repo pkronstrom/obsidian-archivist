@@ -53,6 +53,18 @@ export type Revision = {
 	/** The path was absent at this commit. Cannot be opened through /v1/at,
 	 *  so a session's representative must never be one of these. */
 	deleted?: boolean;
+	/** Who made the change: a device name, or "server" for a vault-side edit.
+	 *  Absent on commits predating the convention. */
+	device?: string;
+	/** The intermediary, when there was one — the relay, an agent. */
+	via?: string;
+	/** Lines against the previous revision. Both absent for a binary or
+	 *  oversized file; see `created`, which distinguishes "nothing to compare"
+	 *  from "nothing changed". */
+	added?: number;
+	removed?: number;
+	/** This revision introduced the file. */
+	created?: boolean;
 };
 
 /** A named restore point. */
@@ -68,6 +80,9 @@ export type Pin = {
 	 *  the blobs of a deleted path while the pin entry survives. Shown, but
 	 *  not openable. */
 	available: boolean;
+	/** The id appears more than once in the pin file, so which revision it
+	 *  names is ambiguous. Shown, never opened. */
+	duplicate?: boolean;
 };
 
 /** An error carrying the server's stable code. */

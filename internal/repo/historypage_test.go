@@ -152,3 +152,43 @@ func TestHistoryPageRejectsCursorFromAnotherPath(t *testing.T) {
 		t.Fatalf("got %v, want ErrUnknownCursor", err)
 	}
 }
+
+// The revision list is the only place a person sees WHO changed a note and by
+// how much, so these two fields carry the whole answer to "what happened here".
+func TestRevisionCarriesOriginAndLineDelta(t *testing.T) {
+	r, v, _ := newRepo(t)
+	v.Write("Note.md", []byte("one\ntwo\nthree\n"))
+	if _, err := r.Commit("sync from work-mac\n\nVia: relay\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Remove a line, add two.
+	v.Write("Note.md", []byte("one\nthree\nfour\nfive\n"))
+	if _, err := r.Commit("sync from iPhone"); err != nil {
+		t.Fatal(err)
+	}
+
+	revs, err := r.History("Note.md", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revs) != 2 {
+		t.Fatalf("got %d revisions", len(revs))
+	}
+
+	newest, oldest := revs[0], revs[1]
+	if newest.Device != "iPhone" {
+		t.Errorf("newest device = %q, want iPhone", newest.Device)
+	}
+	if oldest.Device != "work-mac" || oldest.Via != "relay" {
+		t.Errorf("oldest origin = %q via %q, want work-mac via relay", oldest.Device, oldest.Via)
+	}
+	if !oldest.Created {
+		t.Error("the first revision of a path must report Created, or the UI shows +0 -0 for a file that was just made")
+	}
+	if newest.Added == 0 || newest.Removed == 0 {
+		t.Errorf("expected both additions and removals, got +%d -%d", newest.Added, newest.Removed)
+	}
+	if newest.Created {
+		t.Error("a later revision must not claim to have created the file")
+	}
+}

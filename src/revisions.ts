@@ -30,6 +30,15 @@ export type Session = {
 	/** When the session ended (newest revision) and began (oldest). */
 	endedAt: Date;
 	startedAt: Date;
+	/** Every device that contributed, in first-seen order. Usually one; two
+	 *  means the note was edited from two places inside one window, which is
+	 *  worth seeing rather than averaging away. */
+	devices: string[];
+	/** Lines added and removed across the whole session. */
+	added: number;
+	removed: number;
+	/** The session created the file. */
+	created: boolean;
 };
 
 /** Default gap that separates two sessions. */
@@ -50,8 +59,22 @@ export function clusterRevisions(revisions: Revision[], gapMs = SESSION_GAP_MS):
 	const flush = () => {
 		if (current.length === 0) return;
 		const times = current.map((r) => new Date(r.when).getTime());
+		const devices: string[] = [];
+		let added = 0;
+		let removed = 0;
+		let created = false;
+		for (const r of current) {
+			if (r.device && !devices.includes(r.device)) devices.push(r.device);
+			added += r.added ?? 0;
+			removed += r.removed ?? 0;
+			created = created || Boolean(r.created);
+		}
 		out.push({
 			revisions: current,
+			devices,
+			added,
+			removed,
+			created,
 			// First non-deleted in a newest-first list is the newest openable
 			// one. A deleted representative would make the whole session
 			// unopenable even though earlier content exists.

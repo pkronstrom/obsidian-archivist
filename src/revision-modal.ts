@@ -26,6 +26,7 @@ export class RevisionModal extends Modal {
 	 */
 	private revisions: Revision[] = [];
 	private sessions: Session[] = [];
+	private listEl?: HTMLElement;
 	private pins: Pin[] = [];
 	private next?: string;
 	private hasMore = false;
@@ -43,6 +44,7 @@ export class RevisionModal extends Modal {
 
 	async onOpen() {
 		this.titleEl.setText(this.path.split("/").pop() ?? this.path);
+		this.contentEl.addClass("archivist-rev-modal");
 		this.contentEl.createEl("p", {
 			cls: "archivist-rev-hint",
 			text: "Opening a version writes a copy beside the note. Copies stay on this device until you rename them.",
@@ -58,7 +60,23 @@ export class RevisionModal extends Modal {
 			this.close();
 			new PinModal(this.app, this.path, this.client, this.head, this.flush).open();
 		};
+		// The list gets its own container, created up front, so the first
+		// render replaces a spinner rather than appending under the button --
+		// and so nothing else in the modal moves when the data lands.
+		this.listEl = this.contentEl.createDiv({ cls: "archivist-rev-list" });
 		await this.load();
+	}
+
+	/** A spinner while the round trip is in flight. History is a network call
+	 *  against a server that may be asleep or far away, and a modal that opens
+	 *  empty reads as "no history" rather than "not yet". */
+	private showLoading(more = false) {
+		if (!this.listEl) return;
+		const box = this.listEl.createDiv({
+			cls: more ? "archivist-rev-loading archivist-rev-loading-more" : "archivist-rev-loading",
+		});
+		box.createDiv({ cls: "archivist-rev-spinner" });
+		box.createSpan({ text: more ? "Loading older…" : "Loading history…" });
 	}
 
 	private async load() {
@@ -68,6 +86,12 @@ export class RevisionModal extends Modal {
 			return;
 		}
 		this.loading = true;
+		if (this.listEl) {
+			// A follow-up page keeps what is already on screen and appends a
+			// spinner; the first load owns the whole area.
+			if (!this.next) this.listEl.empty();
+			this.showLoading(Boolean(this.next));
+		}
 		try {
 			const [page, pins] = await Promise.all([
 				client.history(this.path, PAGE, this.next),
@@ -95,9 +119,9 @@ export class RevisionModal extends Modal {
 	}
 
 	private render() {
-		const body = this.contentEl.querySelector(".archivist-rev-list");
-		if (body) body.remove();
-		const list = this.contentEl.createDiv({ cls: "archivist-rev-list" });
+		const list = this.listEl ?? this.contentEl.createDiv({ cls: "archivist-rev-list" });
+		this.listEl = list;
+		list.empty();
 
 		if (this.sessions.length === 0) {
 			list.createEl("p", { text: "No history for this note yet." });
@@ -129,23 +153,41 @@ export class RevisionModal extends Modal {
 
 	private drawSession(list: HTMLElement, s: Session) {
 		const row = list.createDiv({ cls: "archivist-rev-row" });
-		const when = s.endedAt;
-		const count = s.revisions.length;
-		row.createSpan({
+		const main = row.createDiv({ cls: "archivist-rev-main" });
+
+		main.createSpan({
 			cls: "archivist-rev-when",
-			text: when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
-		});
-		row.createSpan({
-			cls: "archivist-rev-meta",
-			text: count === 1 ? "1 change" : `${count} changes`,
+			text: s.endedAt.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
 		});
 
+		const meta = row.createDiv({ cls: "archivist-rev-metaline" });
+
+		// Who, before how much: on a synced vault the interesting question is
+		// usually which device did this, not the size of the edit.
+		if (s.devices.length > 0) {
+			meta.createSpan({ cls: "archivist-rev-device", text: s.devices.join(", ") });
+		}
+
+		if (s.created) {
+			// +0 -0 on a file's first revision would be false; it did not
+			// change nothing, it came into existence.
+			meta.createSpan({ cls: "archivist-rev-created", text: "created" });
+		} else if (s.added > 0 || s.removed > 0) {
+			const stat = meta.createSpan({ cls: "archivist-rev-stat" });
+			if (s.added > 0) stat.createSpan({ cls: "archivist-rev-plus", text: `+${s.added}` });
+			if (s.removed > 0) stat.createSpan({ cls: "archivist-rev-minus", text: `−${s.removed}` });
+		}
+
+		const count = s.revisions.length;
+		if (count > 1) {
+			// Only worth saying when it is more than one: "1 change" on every
+			// row is noise that pushes the useful numbers rightwards.
+			meta.createSpan({ cls: "archivist-rev-meta", text: `${count} edits` });
+		}
+
 		if (!s.representative) {
-			// A session whose only entry is a deletion: /v1/at cannot serve a
-			// path absent from the tree, so this is an event, not something to
-			// open.
 			row.addClass("archivist-rev-unavailable");
-			row.createSpan({ cls: "archivist-rev-meta", text: "deleted" });
+			meta.createSpan({ cls: "archivist-rev-meta", text: "deleted" });
 			return;
 		}
 		row.addClass("mod-clickable");
@@ -154,23 +196,32 @@ export class RevisionModal extends Modal {
 
 	private drawPin(list: HTMLElement, p: Pin) {
 		const row = list.createDiv({ cls: "archivist-rev-row archivist-rev-pin" });
-		const icon = row.createSpan({ cls: "archivist-rev-pinicon" });
+		const main = row.createDiv({ cls: "archivist-rev-main" });
+		const icon = main.createSpan({ cls: "archivist-rev-pinicon" });
 		setIcon(icon, "pin");
-		row.createSpan({ cls: "archivist-rev-when", text: p.name });
-		row.createSpan({
+		main.createSpan({ cls: "archivist-rev-when", text: p.name });
+
+		const meta = row.createDiv({ cls: "archivist-rev-metaline" });
+		meta.createSpan({
 			cls: "archivist-rev-meta",
-			text: new Date(p.created).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+			text: new Date(p.created).toLocaleString(undefined, {
+				dateStyle: "medium",
+				timeStyle: "short",
+			}),
 		});
-		if (!p.available) {
-			// The entry outlived its content: a prune can drop the blobs of a
-			// deleted path. Saying so beats a 404 when they click.
+
+		if (p.duplicate) {
 			row.addClass("archivist-rev-unavailable");
-			row.createSpan({ cls: "archivist-rev-meta", text: "content no longer stored" });
+			meta.createSpan({ cls: "archivist-rev-meta", text: "duplicate id — cannot be resolved" });
+			return;
+		}
+		if (!p.available) {
+			row.addClass("archivist-rev-unavailable");
+			meta.createSpan({ cls: "archivist-rev-meta", text: "content no longer stored" });
 			return;
 		}
 		row.addClass("mod-clickable");
-		row.onclick = () =>
-			void this.materialiseAt(p.commit, `pin "${p.name}"`);
+		row.onclick = () => void this.materialiseAt(p.commit, `pin "${p.name}"`);
 	}
 
 	private materialise(rev: Revision) {

@@ -70,6 +70,11 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	/** Filled in by "Test connection"; shown in the Status card once known. */
 	private vaultStats?: { files: number; bytes: number };
 
+	/** Bumped on every display(). An async render compares it before touching
+	 *  the DOM, so a scan that finishes after a re-render throws its results
+	 *  away instead of appending them to a pane it no longer owns. */
+	private renderGeneration = 0;
+
 	constructor(app: App, private plugin: ArchivistPlugin) {
 		super(app, plugin);
 	}
@@ -611,7 +616,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				"or rewritten, so you never get a settings file with a hole in it.",
 		);
 
-		void this.renderPluginOptIns(containerEl, config);
+		// Its own container, filled asynchronously. display() can run again
+		// before the previous scan finishes -- changing the sync mode
+		// re-renders, and every toggle here calls saveSettings -- and the
+		// pending render holds a reference to the element it was given. Without
+		// a target of its own plus the generation guard below, the late render
+		// appends a SECOND copy of every plugin row into the freshly rebuilt
+		// pane.
+		const optIns = containerEl.createDiv();
+		void this.renderPluginOptIns(optIns, config, ++this.renderGeneration);
 	}
 
 	/**
@@ -622,13 +635,19 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	private async renderPluginOptIns(
 		containerEl: HTMLElement,
 		config: ConfigSyncSettings,
+		generation: number,
 	): Promise<void> {
 		const adapter = this.app.vault.adapter;
 		const dir = `${CONFIG_DIR}/plugins`;
 		if (!(await adapter.exists(dir))) return;
+		if (generation !== this.renderGeneration) return;
 
 		const { folders } = await adapter.list(dir);
+		if (generation !== this.renderGeneration) return;
 		for (const folder of folders.sort()) {
+			// Re-checked each iteration: the scan reads and parses a data.json
+			// per plugin, so a re-render can easily land mid-loop.
+			if (generation !== this.renderGeneration) return;
 			const id = folder.slice(dir.length + 1);
 			if (id.toLowerCase() === "archivist" || id.toLowerCase() === "obsidian-archivist") continue;
 

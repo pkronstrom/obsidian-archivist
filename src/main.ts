@@ -194,6 +194,12 @@ export default class ArchivistPlugin extends Plugin {
 		// manifest name; this one is ours to get right.
 		this.addRibbonIcon("refresh-cw", "Archivist: Sync now", () => void this.forceSync());
 
+		// The status-bar item does not exist on mobile -- there is no status
+		// bar -- so the ribbon is the only place a phone can reach this. Same
+		// title case as "Sync now" above, because both land in the mobile
+		// quick-action menu beside Obsidian's own entries.
+		this.addRibbonIcon("history", "Archivist: Show versions", () => this.openRevisions());
+
 		// Vault events fire for EVERY existing file when the vault loads, which
 		// the API documents and recommends handling by registering inside
 		// onLayoutReady. Outside it, the plugin would treat the whole vault as
@@ -553,7 +559,21 @@ export default class ArchivistPlugin extends Plugin {
 
 	private openRevisions() {
 		const file = this.app.workspace.getActiveFile();
-		if (!file || !this.configured() || localOnly(file.path)) return;
+		// Reachable from the ribbon and the command palette, not only the
+		// greyed-out status item, so refusing has to SAY something. A tap that
+		// silently does nothing reads as a broken plugin.
+		if (!file) {
+			new Notice("archivist: open a note first");
+			return;
+		}
+		if (!this.configured()) {
+			new Notice("archivist: not configured yet");
+			return;
+		}
+		if (localOnly(file.path)) {
+			new Notice("archivist: .local files never sync, so they have no history");
+			return;
+		}
 		new RevisionModal(
 			this.app,
 			file.path,

@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"sort"
 
+	"strings"
+
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/utils/diff"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 // Revision is one point in a file's history.
@@ -116,14 +120,120 @@ func revisionAt(c *object.Commit, path string) protocol.Revision {
 		When:    c.Author.When,
 		Message: firstLine(c.Message),
 	}
-	if t, err := c.Tree(); err == nil {
-		if f, err := t.File(path); err == nil {
-			rev.Size, rev.Hash = f.Size, f.Hash.String()
-		} else {
-			rev.Deleted = true
+	rev.Device, rev.Via = originOf(c.Message)
+
+	t, err := c.Tree()
+	if err != nil {
+		return rev
+	}
+	f, err := t.File(path)
+	if err != nil {
+		rev.Deleted = true
+		return rev
+	}
+	rev.Size, rev.Hash = f.Size, f.Hash.String()
+	rev.Added, rev.Removed, rev.Created = lineDelta(c, f, path)
+	return rev
+}
+
+// maxDiffBytes bounds what gets line-counted. A revision list is a browsing
+// aid, not a diff viewer, and reading two multi-megabyte blobs per row to
+// render "+3 -1" is a bad trade -- so past this size the counts are simply
+// absent rather than slow.
+const maxDiffBytes = 1 << 20
+
+// lineDelta counts lines added and removed against the previous revision of
+// this path, and reports whether this revision created it.
+//
+// Zero/zero is ambiguous on its own -- it means "no textual change", "binary",
+// "too large" and "first revision" alike -- which is why created is returned
+// separately. A caller showing "+0 -0" on a file's first commit would be
+// stating something false.
+func lineDelta(c *object.Commit, f *object.File, path string) (added, removed int, created bool) {
+	if f.Size > maxDiffBytes {
+		return 0, 0, false
+	}
+	parent, err := c.Parent(0)
+	if err != nil {
+		// No parent at all: this commit created the file.
+		return 0, 0, true
+	}
+	pt, err := parent.Tree()
+	if err != nil {
+		return 0, 0, false
+	}
+	pf, err := pt.File(path)
+	if err != nil {
+		// Absent from the parent, so this revision introduced it.
+		return 0, 0, true
+	}
+	if pf.Hash == f.Hash {
+		// Committed alongside other paths without changing this one.
+		return 0, 0, false
+	}
+	if pf.Size > maxDiffBytes {
+		return 0, 0, false
+	}
+
+	before, err := pf.Contents()
+	if err != nil {
+		return 0, 0, false
+	}
+	after, err := f.Contents()
+	if err != nil {
+		return 0, 0, false
+	}
+	if isBinary([]byte(before)) || isBinary([]byte(after)) {
+		return 0, 0, false
+	}
+
+	for _, d := range diff.Do(before, after) {
+		switch d.Type {
+		case diffmatchpatch.DiffInsert:
+			added += countLines(d.Text)
+		case diffmatchpatch.DiffDelete:
+			removed += countLines(d.Text)
 		}
 	}
-	return rev
+	return added, removed, false
+}
+
+// countLines counts the lines a diff chunk spans. A chunk that changes part of
+// one line still touched a line, so an empty count would under-report every
+// small edit -- which is the most common kind.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
+}
+
+// originOf reads who made a change out of a commit message.
+//
+// The first line carries the device ("sync from work-mac"), and a Via trailer
+// names an intermediary when one was involved. Both are best-effort: messages
+// written before the convention simply yield nothing, which is why the fields
+// are omitempty rather than defaulted to a guess.
+func originOf(msg string) (device, via string) {
+	first := firstLine(msg)
+	switch {
+	case strings.HasPrefix(first, "sync from "):
+		device = strings.TrimSpace(strings.TrimPrefix(first, "sync from "))
+	case strings.HasPrefix(first, "local edit"), strings.HasPrefix(first, "startup scan"),
+		strings.HasPrefix(first, "pin:"):
+		// Made in the vault directory rather than pushed by a client.
+		device = "server"
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Via: "); ok {
+			via = strings.TrimSpace(v)
+		}
+	}
+	return device, via
 }
 
 func firstLine(s string) string {

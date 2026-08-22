@@ -106,7 +106,7 @@
 	min-width: 5ch;
 }
 
-/* Revision browser -------------------------------------------------------- */
+/* Revision browser ---------------------------------------------------------- */
 
 .archivist-revisions-item.archivist-disabled .svg-icon {
 	opacity: 0.4;
@@ -115,19 +115,82 @@
 .archivist-rev-hint {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
-	margin-top: 0;
+	margin: 0 0 var(--size-4-3) 0;
 }
 
+/* The button needs air on BOTH sides. Butted straight against the first row it
+ * reads as part of the list rather than an action on the note, and the eye has
+ * nothing telling it where the list begins. */
+.archivist-rev-pinbtn {
+	margin-bottom: var(--size-4-3);
+}
+
+.archivist-rev-list {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: var(--size-4-2);
+	max-height: 50vh;
+	overflow-y: auto;
+}
+
+/* Two lines per entry: what it is, then what it cost. Cramming device, counts
+ * and edit count onto the timestamp line made every row a wall of small grey
+ * text with no shape. */
 .archivist-rev-row {
 	display: flex;
-	align-items: baseline;
-	gap: var(--size-4-2);
-	padding: var(--size-4-1) var(--size-4-2);
+	flex-direction: column;
+	gap: 2px;
+	padding: var(--size-4-2);
 	border-radius: var(--radius-s);
+}
+
+.archivist-rev-row + .archivist-rev-row {
+	margin-top: 2px;
 }
 
 .archivist-rev-row.mod-clickable:hover {
 	background-color: var(--background-modifier-hover);
+}
+
+.archivist-rev-main {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.archivist-rev-when {
+	font-weight: var(--font-medium);
+}
+
+.archivist-rev-metaline {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+/* The device is the answer to "who did this", so it gets weight the counts do
+ * not. */
+.archivist-rev-device {
+	color: var(--text-normal);
+}
+
+.archivist-rev-stat {
+	display: inline-flex;
+	gap: var(--size-4-1);
+	font-variant-numeric: tabular-nums;
+}
+
+.archivist-rev-plus {
+	color: var(--color-green);
+}
+
+.archivist-rev-minus {
+	color: var(--color-red);
+}
+
+.archivist-rev-created {
+	color: var(--color-green);
 }
 
 /* Unavailable rows stay visible: a pin whose content was pruned is still a
@@ -137,19 +200,51 @@
 	cursor: default;
 }
 
-.archivist-rev-meta {
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-}
-
 .archivist-rev-pinicon {
 	color: var(--text-accent);
 	display: inline-flex;
 }
 
-.archivist-rev-more,
-.archivist-rev-pinbtn {
+.archivist-rev-pin .archivist-rev-metaline {
+	padding-left: calc(var(--size-4-4) + var(--size-4-1));
+}
+
+.archivist-rev-more {
 	margin-top: var(--size-4-2);
+}
+
+/* History is a network call against a server that may be asleep or far away.
+ * An empty modal reads as "no history"; a spinner reads as "not yet". */
+.archivist-rev-loading {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-3) var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.archivist-rev-spinner {
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--background-modifier-border);
+	border-top-color: var(--text-accent);
+	border-radius: 50%;
+	animation: archivist-spin 0.7s linear infinite;
+}
+
+@keyframes archivist-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* Respect the system setting: a perpetual spinner is exactly the kind of
+ * motion that triggers vestibular symptoms. */
+@media (prefers-reduced-motion: reduce) {
+	.archivist-rev-spinner {
+		animation-duration: 2.5s;
+	}
 }
 
 .archivist-pin-name {
