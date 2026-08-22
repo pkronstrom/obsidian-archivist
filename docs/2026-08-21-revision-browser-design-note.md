@@ -92,10 +92,22 @@ format fixes both-append-at-EOF), which is why creation goes through
 `POST /v1/pin` with the SERVER appending under the reconciler lock: the format
 makes the file robust, the lock makes writes serial.
 
-**Placement.** Visible `pins.jsonl` at the vault root — it cannot be a dotfile
-(the server excludes dotfiles from sync), and Obsidian's explorer hides `.json*`
-by default, so it is invisible in daily use while remaining plain data a person
-can read and even repair.
+**Placement.** Visible `pins.jsonl` at the vault root. `.obsidian` was
+considered and is ruled out on verified facts, not taste: config sync is an
+allowlist gated by the device's level, the DEFAULT level is `files` (syncs
+nothing under `.obsidian`), and archivist's own plugin directory is
+hard-excluded on both sides with no override (`internal/vault/config.go:85`,
+`ARCHIVIST_IDS` in `config-sync.ts`). Pins there would be silently device-local
+for every default install. The root file already behaves like a hidden-but-
+synced file in practice: Obsidian's explorer does not show `.jsonl` by default.
+
+**Entries carry no commit hashes — load-bearing, not stylistic.** The line
+format (JSONL vs CSV vs anything) is cosmetic; the CONTENT rule is not. A
+stored hash resurrects the v1 flaw: prune rewrites every hash and discards its
+mapping. An entry is `{name, path?, created}`, and its snapshot is derived —
+the commit that added the line, via the file's own history — so it survives
+rewrites by reconstruction rather than by reference. JSONL over CSV only
+because pin names are arbitrary text and JSON escaping is free.
 
 **"Pin this version" still flushes first** and sends `expectedHead`: with the
 15s debounce, a click could otherwise pin the server's older tree than the note
