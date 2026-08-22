@@ -211,3 +211,35 @@ test("a flush during an in-flight sync waits for a cycle that starts after it", 
 	assert.equal(settled, true);
 	assert.equal(started.length, 2, "the queued flush ran its own cycle after the first finished");
 });
+
+// The synchronous-run path has its own completion branch, and it must agree
+// with the async one about a queued follow-up: whoever starts the follow-up
+// must not then advertise the scheduler as idle while it runs. Unreachable in
+// production today -- runSync is async -- but the two branches handling the
+// same situation differently is how the next change breaks it.
+test("a synchronous run with a queued follow-up still runs the follow-up", () => {
+	const runs = [];
+	let reenter = null;
+	const scheduler = createSyncScheduler({
+		quietMs: 20_000,
+		maxWaitMs: 60_000,
+		// Returns no promise: a run that is already complete on return.
+		run: () => {
+			runs.push(runs.length);
+			// Queue a follow-up from inside the run itself, which is the only
+			// way to reach the "synchronous completion with something queued"
+			// branch.
+			if (reenter) {
+				const fn = reenter;
+				reenter = null;
+				fn();
+			}
+		},
+		setTimer: (fn, ms) => setTimeout(fn, ms),
+		clearTimer: (h) => clearTimeout(h),
+	});
+
+	reenter = () => void scheduler.flush({ force: true });
+	scheduler.flush({ force: true });
+	assert.equal(runs.length, 2, "the follow-up queued during a synchronous run never ran");
+});

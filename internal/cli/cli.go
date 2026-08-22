@@ -161,6 +161,11 @@ func check(r *repo.Repo, env Env) error {
 		report(env.Out, "in git but missing from the vault", rep.Missing)
 		report(env.Out, "in the vault but not yet committed", rep.Extra)
 		report(env.Out, "modified since the last commit", rep.Differing)
+		// Named explicitly, because this one is not self-correcting: sync
+		// refuses an excluded path's edits AND its deletion, so nothing the
+		// user does in Obsidian will ever clear it. Reporting only the exit
+		// code would leave the operator with a failure and no path to act on.
+		report(env.Out, "tracked in git but excluded from sync (needs an explicit removal commit)", rep.Stranded)
 		if rep.OK {
 			fmt.Fprintln(env.Out, "OK")
 		}

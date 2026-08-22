@@ -105,7 +105,15 @@ export function createSyncScheduler(opts: SyncSchedulerOptions): SyncScheduler {
 			const immediate = queued;
 			queued = null;
 			if (immediate) {
-				start().then(immediate.resolve, immediate.resolve);
+				// Return here rather than falling through: start() has just
+				// set inFlight to the follow-up's promise, and clearing it
+				// below would tell every later caller the scheduler is idle
+				// while a sync is genuinely running. The async branch avoids
+				// this by returning; this one must match, or the two paths
+				// disagree about the same situation.
+				const followUp = start();
+				followUp.then(immediate.resolve, immediate.resolve);
+				return followUp;
 			}
 			inFlight = null;
 			return Promise.resolve();

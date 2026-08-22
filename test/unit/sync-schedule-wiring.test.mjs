@@ -59,3 +59,30 @@ test("unload cancels pending timers", () => {
 	const unload = main.slice(main.indexOf("onunload()"));
 	assert.match(unload, /syncScheduler\.cancel\(\)/, "onunload leaves timers pending");
 });
+
+// Serialising inside the scheduler is worthless if callers reach Sync.run()
+// around it. Sync.run() coalesces a concurrent call and returns at once, so a
+// trigger outside the scheduler leaves it believing it is idle -- the next
+// forced flush starts a second cycle, takes the coalesced early return, and
+// resolves before the queued work finishes. Pinning reads the head right after
+// flushing, so that resolves into a pin naming a tree the user never saw.
+//
+// A behavioural test cannot catch this: the scheduler is correct in isolation,
+// and the hole is in who calls what. So this reads the source, like the checks
+// above it.
+test("every sync trigger goes through the scheduler, not runSync directly", () => {
+	// The scheduler's own run callback is the ONE legitimate caller.
+	const legitimate = /run:\s*\(\)\s*=>\s*this\.runSync\(\)/;
+	assert.match(main, legitimate, "the scheduler no longer drives runSync");
+
+	const calls = [...main.matchAll(/this\.runSync\(\)/g)];
+	const strays = calls.filter((m) => {
+		const around = main.slice(Math.max(0, m.index - 40), m.index + 20);
+		return !legitimate.test(around);
+	});
+	assert.equal(
+		strays.length,
+		0,
+		`${strays.length} caller(s) invoke runSync outside the scheduler; route them through forceSync()`,
+	);
+});

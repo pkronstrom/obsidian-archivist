@@ -105,7 +105,7 @@ export default class ArchivistPlugin extends Plugin {
 					? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
 					: null,
 			() => loadState(this.app).base,
-			() => this.runSync(),
+			() => this.forceSync(),
 			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
 		);
 
@@ -148,7 +148,7 @@ export default class ArchivistPlugin extends Plugin {
 		this.addCommand({
 			id: "sync-now",
 			name: "Sync now",
-			callback: () => void this.runSync(),
+			callback: () => void this.forceSync(),
 		});
 		this.addCommand({
 			id: "revisions",
@@ -192,7 +192,7 @@ export default class ArchivistPlugin extends Plugin {
 		// -- so it has to read like those, not like the "archivist: …" prefix
 		// the Notices use. Obsidian titles the real command itself from the
 		// manifest name; this one is ours to get right.
-		this.addRibbonIcon("refresh-cw", "Archivist: Sync now", () => void this.runSync());
+		this.addRibbonIcon("refresh-cw", "Archivist: Sync now", () => void this.forceSync());
 
 		// Vault events fire for EVERY existing file when the vault loads, which
 		// the API documents and recommends handling by registering inside
@@ -218,7 +218,7 @@ export default class ArchivistPlugin extends Plugin {
 			// than once per contained file.
 			this.registerEvent(this.app.vault.on("rename", (f) => touched(f)));
 
-			void this.runSync();
+			void this.forceSync();
 		});
 
 		// The mobile lifecycle. iOS suspends the app aggressively, so a push
@@ -244,7 +244,7 @@ export default class ArchivistPlugin extends Plugin {
 			void this.syncScheduler.flush({ force: true });
 		});
 		this.registerDomEvent(window, "focus", () => {
-			void this.runSync();
+			void this.forceSync();
 			this.startWatching();
 		});
 
@@ -296,7 +296,7 @@ export default class ArchivistPlugin extends Plugin {
 		if (this.timer !== undefined) window.clearInterval(this.timer);
 		const secs = this.settings.intervalSeconds;
 		if (secs > 0) {
-			this.timer = window.setInterval(() => void this.runSync(), secs * 1000);
+			this.timer = window.setInterval(() => void this.forceSync(), secs * 1000);
 			this.registerInterval(this.timer);
 		}
 	}
@@ -342,6 +342,25 @@ export default class ArchivistPlugin extends Plugin {
 			// Notice here. The sync that follows reports the real failure.
 			return false;
 		}
+	}
+
+	/**
+	 * Sync now, through the scheduler.
+	 *
+	 * EVERY trigger goes through here -- interval, watcher, ribbon, command,
+	 * focus, startup -- and not through runSync directly. Sync.run() coalesces
+	 * a concurrent call and returns at once, so a caller that reached it
+	 * outside the scheduler would let the scheduler believe it was idle: the
+	 * next forced flush would start a second cycle, get the coalesced early
+	 * return, and resolve before the queued work finished. Pinning reads the
+	 * head immediately after flushing, so that resolves into a pin naming a
+	 * tree the user never saw.
+	 *
+	 * The scheduler's own `run` option is the one caller of runSync, by
+	 * definition -- routing it through here would recurse.
+	 */
+	private forceSync(): Promise<void> {
+		return this.syncScheduler.flush({ force: true });
 	}
 
 	private async runSync(): Promise<void> {
