@@ -97,6 +97,23 @@ export function skip(
 	// user picked this name to stop the file syncing, so it outranks every
 	// other rule including the allowlist that lets some config paths through.
 	if (localOnly(path)) return true;
+	return skipDir(path, config);
+}
+
+/**
+ * skipDir is skip WITHOUT the .local rule, for deciding whether to descend
+ * into a directory.
+ *
+ * A folder named "project.local.assets" satisfies the .local grammar, and
+ * treating it as excluded would silently stop every note inside it from
+ * syncing -- a whole tree lost to a naming coincidence, reported nowhere.
+ * .local marks FILES the user wants kept local; it was never meant to hide
+ * directories.
+ */
+export function skipDir(
+	path: string,
+	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
+): boolean {
 	if (!path.split("/").some((seg) => seg.startsWith("."))) return false;
 	return !configSyncable(path, config);
 }
@@ -550,7 +567,7 @@ export class Sync {
 			// sync. skip() answers that for a FILE path; for a directory the
 			// config directory is the one case where the directory itself is
 			// excluded and its contents are not.
-			if (skip(d, this.config()) && !this.mayHoldConfig(d)) continue;
+			if (skipDir(d, this.config()) && !this.mayHoldConfig(d)) continue;
 			out.push(...(await this.listAll(d)));
 		}
 		return out;

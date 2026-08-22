@@ -115,6 +115,18 @@ export function createSyncScheduler(opts: SyncSchedulerOptions): SyncScheduler {
 			if (!pending && !flushOpts?.force) {
 				return inFlight ?? Promise.resolve();
 			}
+			// Chain onto work already running rather than starting a second
+			// cycle beside it. Sync.run() COALESCES a concurrent call and
+			// returns at once, so firing during an in-flight run would resolve
+			// this flush while the real work was still going -- and a caller
+			// that flushes in order to act on a fresh head (pinning) would
+			// then act on the stale one.
+			const running = inFlight;
+			if (running) {
+				const chained = running.then(() => fire()).then(() => undefined);
+				inFlight = chained;
+				return chained;
+			}
 			return fire();
 		},
 

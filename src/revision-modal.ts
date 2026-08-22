@@ -9,12 +9,22 @@
  * knows.
  */
 import { App, Modal, Notice, TFile, setIcon } from "obsidian";
+import { Code, ServerError } from "./client";
 import type { Client, Pin, Revision } from "./client";
 import { clusterRevisions, materialisedName, uniqueName, type Session } from "./revisions";
 
 const PAGE = 100;
 
 export class RevisionModal extends Modal {
+	/**
+	 * Every revision fetched so far, newest first.
+	 *
+	 * Kept raw and RE-CLUSTERED after each page rather than clustering each
+	 * page and concatenating: a session that straddles a page boundary would
+	 * otherwise be split in two, so one long editing burst of 101 revisions
+	 * would show as two sessions purely because of the page size.
+	 */
+	private revisions: Revision[] = [];
 	private sessions: Session[] = [];
 	private pins: Pin[] = [];
 	private next?: string;
@@ -69,7 +79,13 @@ export class RevisionModal extends Modal {
 			this.pins = pins;
 			this.hasMore = page.hasMore;
 			this.next = page.next;
-			this.sessions = this.sessions.concat(clusterRevisions(page.revisions));
+			// Deduplicate by commit: a cursor page can repeat its boundary if
+			// the history moved between requests.
+			const known = new Set(this.revisions.map((r) => r.commit));
+			for (const rev of page.revisions) {
+				if (!known.has(rev.commit)) this.revisions.push(rev);
+			}
+			this.sessions = clusterRevisions(this.revisions);
 		} catch (e) {
 			new Notice(`Archivist: could not load history (${String(e)})`);
 		} finally {
@@ -225,7 +241,7 @@ export class PinModal extends Modal {
 				// One retry on a stale head -- the flush may have landed a
 				// commit of its own, which is the common case rather than an
 				// error.
-				if ((e as { code?: string }).code !== "stale_head") throw e;
+				if (!(e instanceof ServerError) || e.code !== Code.StaleHead) throw e;
 				await this.flush();
 				await client.pin(this.value.trim(), this.head(), this.path);
 			}

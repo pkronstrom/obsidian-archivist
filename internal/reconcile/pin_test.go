@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/pins"
@@ -101,3 +102,22 @@ func TestPinAccumulates(t *testing.T) {
 		t.Fatalf("want both pins in order, got %+v", got)
 	}
 }
+
+// A name past the cap would be committed verbatim and, past the parser's
+// scanner limit, become unreadable -- so the API would report success for a
+// pin that no listing can ever show.
+func TestPinRejectsOversizeAndEmptyNames(t *testing.T) {
+	rc, _, r := newPinFixture(t)
+	head, _ := r.Head()
+
+	for _, name := range []string{"", "   ", strings.Repeat("x", MaxPinName+1)} {
+		if _, _, err := rc.Pin(head, name, ""); !errors.Is(err, ErrPinName) {
+			t.Errorf("Pin(%d bytes) = %v, want ErrPinName", len(name), err)
+		}
+	}
+	if _, err := v0Read(rc); err == nil {
+		t.Error("a rejected pin still created the pins file")
+	}
+}
+
+func v0Read(rc *Reconciler) ([]byte, error) { return rc.v.Read(pins.File) }

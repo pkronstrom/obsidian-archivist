@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-git/go-git/v5/plumbing"
+
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
@@ -45,7 +47,22 @@ func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Re
 	// limit <= 0 means every revision. The route never passes that; it applies
 	// its own default and cap before calling.
 	unlimited := limit <= 0
-	iter, err := r.git.Log(&git.LogOptions{FileName: &path})
+	// Start the walk AT the cursor rather than at HEAD. Re-seeking from HEAD
+	// on every page makes a full listing quadratic in the number of commits,
+	// which on a drafting-heavy vault is the difference between paging and
+	// hanging.
+	opts := &git.LogOptions{FileName: &path}
+	if before != "" {
+		h := plumbing.NewHash(before)
+		if h.IsZero() {
+			return nil, false, fmt.Errorf("%w: %q", ErrUnknownCursor, before)
+		}
+		if _, err := r.git.CommitObject(h); err != nil {
+			return nil, false, fmt.Errorf("%w: %q", ErrUnknownCursor, before)
+		}
+		opts.From = h
+	}
+	iter, err := r.git.Log(opts)
 	if err != nil {
 		return nil, false, err
 	}
@@ -53,16 +70,18 @@ func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Re
 
 	out := []protocol.Revision{}
 	seeking := before != ""
-	found := false
+	found := before == ""
 	more := false
 	err = iter.ForEach(func(c *object.Commit) error {
 		if seeking {
+			// The cursor is exclusive, so its own commit is skipped. It is
+			// also the first thing the walk yields when it touched the path;
+			// when it did not, the walk simply starts below it.
 			if c.Hash.String() == before {
 				seeking, found = false, true
+				return nil
 			}
-			// Skip the cursor commit itself as well: the cursor is exclusive,
-			// so the caller already has it.
-			return nil
+			seeking, found = false, true
 		}
 		if !unlimited && len(out) >= limit {
 			// One past the page proves there is another page, without walking
@@ -76,7 +95,7 @@ func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Re
 	if err != nil && err != object.ErrCanceled {
 		return nil, false, err
 	}
-	if before != "" && !found {
+	if !found {
 		return nil, false, fmt.Errorf("%w: %q", ErrUnknownCursor, before)
 	}
 	return out, more, nil

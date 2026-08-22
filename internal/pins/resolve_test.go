@@ -189,3 +189,33 @@ func TestNoPinsFileIsEmptyNotAnError(t *testing.T) {
 		t.Fatalf("got %d pins at head %q", len(got), head)
 	}
 }
+
+// A duplicated id -- a hand copy-paste of a line -- must not silently resolve
+// to the first line's commit. The copy would look like an ordinary pin while
+// opening an unrelated snapshot.
+func TestDuplicateIDsAreMarkedNotResolved(t *testing.T) {
+	v, r, rv := fixture(t)
+	v.Write("Note.md", []byte("v1\n"))
+	r.Commit("first")
+	addPin(t, v, r, Entry{ID: "same", Name: "original", Path: "Note.md"})
+	v.Write("Note.md", []byte("v2\n"))
+	r.Commit("edit")
+	addPin(t, v, r, Entry{ID: "same", Name: "copy-paste", Path: "Note.md"})
+
+	got, _, err := rv.List("Note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d", len(got))
+	}
+	if got[0].Duplicate {
+		t.Error("the first occurrence is the canonical one")
+	}
+	if !got[1].Duplicate {
+		t.Error("the second occurrence of an id must be marked as a duplicate")
+	}
+	if got[1].Commit != "" || got[1].Available {
+		t.Errorf("a duplicate must not resolve to a snapshot: %+v", got[1])
+	}
+}

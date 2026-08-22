@@ -768,7 +768,13 @@ func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.
 		Path         string `json:"path"`
 		ExpectedHead string `json:"expectedHead"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// A pin body is three short strings. Without a bound, a write token could
+	// force a large allocation and commit an enormous line -- and a name past
+	// the parser's scanner limit becomes unreadable, so the pin would be
+	// reported as created and then never appear in any listing.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body")
 		return
 	}
@@ -792,6 +798,9 @@ func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.
 
 	entry, head, err := inst.Reconciler.Pin(req.ExpectedHead, req.Name, req.Path)
 	switch {
+	case errors.Is(err, reconcile.ErrPinName):
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
 	case errors.Is(err, reconcile.ErrPinHeadMismatch):
 		// 409 with the current head, so the client can flush and retry once
 		// rather than guess what it collided with.

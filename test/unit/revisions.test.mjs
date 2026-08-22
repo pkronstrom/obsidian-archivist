@@ -98,3 +98,24 @@ test("collisions suffix rather than overwrite", () => {
 test("suffixed collisions stay local-only", () => {
 	assert.equal(localOnly("Plan.ae56b1c-3.local.md"), true);
 });
+
+// Clustering each page and concatenating splits a session that straddles a
+// page boundary: one long burst would read as two sessions purely because of
+// the page size. Re-clustering the accumulated list is what fixes it.
+test("a session straddling a page boundary stays one session", () => {
+	const all = [];
+	// 8 revisions, 5 minutes apart -- one continuous session.
+	for (let i = 7; i >= 0; i--) {
+		all.push(rev(new Date(Date.UTC(2026, 7, 22, 12, i * 5)).toISOString()));
+	}
+	const whole = clusterRevisions(all);
+	assert.equal(whole.length, 1);
+
+	// Paged 4 at a time, clustered per page and concatenated: the bug.
+	const naive = clusterRevisions(all.slice(0, 4)).concat(clusterRevisions(all.slice(4)));
+	assert.equal(naive.length, 2, "per-page clustering does split it");
+
+	// Accumulating raw revisions and re-clustering does not.
+	const accumulated = [...all.slice(0, 4), ...all.slice(4)];
+	assert.equal(clusterRevisions(accumulated).length, 1);
+});

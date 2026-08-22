@@ -233,13 +233,16 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 	//
 	// Letting a refused config path through costs at most one no-op commit
 	// attempt: Repo.Commit consults syncable and will not stage it.
-	if vault.Skip(rel) && !w.watchableConfigRel(rel) {
-		return
-	}
-
 	// A new directory needs its own watch, and then an immediate scan of it:
 	// files can be created inside between the mkdir and the watch being
 	// registered. Moving a populated tree in hits that race every time.
+	//
+	// Judged BEFORE vault.Skip, because Skip carries file rules that a
+	// directory must not inherit. A folder called "project.local.assets"
+	// satisfies the .local grammar, and refusing to watch it would silently
+	// stop every note inside it from syncing -- while the startup walk, which
+	// only skips dot-directories, descends into it happily. The two must not
+	// disagree.
 	if ev.Has(fsnotify.Create) {
 		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
 			if err := w.addTree(ev.Name); err != nil {
@@ -248,6 +251,10 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 			w.queue(rel)
 			return
 		}
+	}
+
+	if vault.Skip(rel) && !w.watchableConfigRel(rel) {
+		return
 	}
 
 	// Echo suppression: if this is exactly what we just wrote, it is our own
