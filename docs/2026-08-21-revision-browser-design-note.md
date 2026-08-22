@@ -1,9 +1,11 @@
 # Revision Browser and Pins — Design Note
 
-**Status:** Designed, not scheduled. Reviewed adversarially (sol, 2026-08-21,
-15 findings), then the pin mechanism was replaced outright — pins are named
-empty commits, which dissolves the review's four largest findings instead of
-mitigating them. See "Pins are named empty commits".
+**Status:** Designed, not scheduled. Reviewed twice: sol (2026-08-21, 15
+findings) against the original pins.json design, after which the pin mechanism
+was replaced with named empty commits; then terra (2026-08-22, 7 findings)
+against the replacement. The replacement's load-bearing claim held — prune
+copies `Message: c.Message` verbatim (`prune.go:99`), so trailers genuinely
+survive rewrites — and its remaining findings are folded in below.
 
 **Date:** 2026-08-21
 
@@ -64,11 +66,14 @@ a `Pin:` trailer (go-git: `AllowEmptyCommits`), plus `Pin-Path:` for a file
 pin. This replaced a `pins.json` store after review, because identity-by-
 message dissolves the store's four worst findings at once:
 
-- *Rewrite-proof.* The review's critical finding was that hash-referenced pins
-  die at the first prune — `Resolve` never consults `pruneMap`
-  (`history.go:114`) and prune explicitly discards its per-commit mapping,
-  keeping only the head pair (`prune.go:76`). A pin identified by its trailer
-  rides through any rewrite; there is no hash to translate.
+- *Rewrite-proof — verified, not assumed.* The first review's critical finding
+  was that hash-referenced pins die at the first prune: `Resolve` never
+  consults `pruneMap` (`history.go:114`) and prune discards its per-commit
+  mapping, keeping only the head pair (`prune.go:76`). A trailer-identified pin
+  has no hash to translate, and the second review confirmed prune's rewrite
+  copies `Message: c.Message` verbatim (`prune.go:99`) — trailers ride through.
+  No test asserts it yet; the build must add one (pin, prune an unrelated path,
+  pin still listed).
 - *No store.* No `pins.json`, so no lost-update lock, no id scheme, no
   POST/DELETE routes, no name-escaping. Creating a pin is a push, serialised
   by the reconciler like every other commit; deleting one is out of scope for
@@ -99,10 +104,25 @@ commit.
 ## Surface inventory
 
 Server:
-- `POST /{vault}/v1/pin` — write scope; `{name, path?}`. Commits an empty
-  commit with `Pin: <name>` (and `Pin-Path: <path>` for a file pin). Name
-  sanitised exactly like every other trailer value (`sanitiseTrailerValue`).
-- `GET /{vault}/v1/pins?path=` — read scope; scans the log for the trailer.
+- `POST /{vault}/v1/pin` — write scope; `{name, path?, expectedHead?}`.
+- The commit is created by a new `Reconciler.Pin`, NOT by `Repo.Commit` —
+  which short-circuits and returns `Head()` when nothing is staged
+  (`repo.go:209`), so the existing path cannot produce an empty commit, and
+  calling the repo directly would race the reconciler's lock. `Pin` holds
+  `rc.mu`, commits with `AllowEmptyCommits`, verifies the tree equals the
+  parent's, and fires `notify(old, pinHead)` so waiters wake.
+- **Both trailer values are sanitised.** `name` through
+  `sanitiseTrailerValue`, and `path` must additionally reject CR/LF outright:
+  `ValidPath` is only `filepath.IsLocal` (`vault.go:67`), which accepts
+  newline-bearing filenames, so a raw path interpolated into `Pin-Path:` would
+  forge a trailer. Verified against the code. Empty name after sanitising is a
+  400. Listing parses trailers positionally, not by substring.
+- A file pin requires the path to exist in the parent HEAD tree, checked under
+  the lock — otherwise the pin is born pointing at nothing and `ReadAt` 404s
+  forever.
+- `GET /{vault}/v1/pins?path=` — read scope. A log scan decodes every commit
+  object (25k commits on a drafting-heavy vault), so it sits behind a
+  HEAD-keyed in-memory cache invalidated on commit; needs a cost test.
 - No delete in v1: unpinning is a history rewrite, prune-shaped work.
 - `/v1/history` gains bounded cursor pagination (`before=<commit>`, capped
   limit, `hasMore`) — today it defaults to 50 with no cursor and accepts an
@@ -110,7 +130,16 @@ Server:
   incrementally across pages.
 
 Plugin:
-- `client.ts` gains `history()` and `readAt()`. Path escaping is a correctness
+- `client.ts` gains `history()`, `readAt()` AND `pins()` — file pins never
+  appear in `/v1/history` (its `LogOptions.FileName` filter excludes a commit
+  that touches nothing), so the modal interleaves two sources by timestamp:
+  history clusters and the pin list. Without `pins()` the file modal cannot
+  see its own pins at all.
+- **Pinning flushes first.** "Pin this version" must flush and await sync
+  before POSTing, and send `expectedHead` for `Pin` to compare under the lock
+  — otherwise the debounce means a click can pin the server's OLDER tree, not
+  the note the user is looking at, silently.
+- Path escaping is a correctness
   requirement, not a nicety: history paths go in query position, `/v1/at`
   paths segment-by-segment — the Go client already demonstrates the split
   (`client.go:415`). Materialise from the full hash; the 8-char form is only
@@ -153,3 +182,7 @@ Plugin:
   wants a small cache invalidated on commit.
 - Whether `Revision` grows origin/operation metadata so the modal can label
   merges and conflicts, instead of inferring from commit messages.
+- Two prune/pin regression tests: trailer survives a rewrite of an unrelated
+  path; and pruning the PINNED path preserves pin identity while its content
+  becomes unavailable — that asymmetry should be documented behaviour, not a
+  surprise.
