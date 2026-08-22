@@ -42,7 +42,7 @@ Precisely: **no `ops:` step-up** — on a protected vault the normal `vault:`
 gate still applies to every route here, exactly as it does to reading a note.
 
 **Materialised files are real but local-only until renamed.**
-`Note.rev-ae56b.md` is a genuine note — openable, editable, linkable — but its
+`Note.rev-ae56b.archivist-local.md` is a genuine note — openable, editable, linkable — but its
 filename pattern is excluded from sync in BOTH skip predicates, so browsing
 never litters other devices. Restoring is renaming: the file stops matching,
 reads as a new note, and syncs normally. (Verified against the sync engine:
@@ -174,23 +174,31 @@ Single-user alpha: server and plugin deploy together, so protocol gating,
 capability publishing and version negotiation are all out of scope here. What
 survives that simplification is only what bites a SINGLE installation:
 
-- **Already-tracked `.rev-*` paths strand.** If a matching file was committed
-  before the exclusion ships, `Commit` thereafter ignores its modifications
-  AND its deletion — HEAD keeps it forever. Not a version problem; the vault
-  simply carries a file nothing can ever remove. The release must first commit
-  the removal of matching tracked entries (working tree preserved), then
-  enable the predicate.
-- **Server-side `.rev-*` files are invisible unmanaged files.** The watcher
-  drops them, `Check` suppresses them, nothing counts them; agent-created ones
-  would silently accumulate and tax every status scan. Diagnostics gain a
-  local-only count.
+- **The marker is `.archivist-local` immediately before the real extension** —
+  `Note.rev-ae56b.archivist-local.md`, `diagram.rev-8f1c2.archivist-local.png`.
+  The predicate matches the second-to-last dot-segment. Keeping the real
+  extension LAST is what makes the file a genuine note (Obsidian opens,
+  renders and links it) and makes attachments work identically. A namespaced
+  marker also means no pre-existing file can match by accident — with a
+  generic pattern like `.rev-*`, a matching path already in HEAD would strand
+  permanently, since `Commit` ignores an excluded path's DELETION too and
+  nothing could ever remove it. The release should still sweep for matches
+  before enabling the predicate, but it is now a formality rather than a real
+  hazard. Documented in the README regardless: files carrying the marker
+  silently stop syncing, and that must never be a surprise.
+- **Marked files are invisible to every diagnostic.** The watcher drops their
+  events, `Commit` skips them, `Check` suppresses them from drift reporting —
+  so one sitting in the vault on the server is untracked, uncounted and
+  unreported forever, while every future status scan pays to walk it. Agents
+  write into that vault; a loop could leave thousands with nothing mentioning
+  them. Diagnostics gain a local-only file count.
 
 ## Open when built
 
 - Cluster gap: 30 min hardcoded first; a setting only if it annoys.
 - Materialise collisions: suffix, never overwrite.
-- The exact reserved pattern, chosen so no real note matches by accident, and
-  stated in the README — matching files silently stop syncing.
+- The marker is a NAMESPACE, not a revision pattern: anything else that should
+  stay device-local later reuses it rather than adding a second predicate.
 - **Pins are pathname-scoped, decided.** Renaming `Draft.md` to `Final.md`
   orphans Draft's pins and history view — `History` filters by exact path and
   does not follow renames. Following renames would need lineage metadata; out
