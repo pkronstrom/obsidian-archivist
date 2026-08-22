@@ -174,22 +174,25 @@ Single-user alpha: server and plugin deploy together, so protocol gating,
 capability publishing and version negotiation are all out of scope here. What
 survives that simplification is only what bites a SINGLE installation:
 
-- **The marker is `.<hash>.local` immediately before the real extension** —
-  `Note.ae56b1c.local.md`, `diagram.8f1c2ad.local.png`. The predicate requires
-  BOTH segments: a 7-8 hex-character revision hash followed by `local`. The
-  hash is part of the pattern, not decoration — matching a bare `*.local.*`
-  would silently stop syncing a future note called `Setup.local.md`, and that
-  failure is invisible. With the hash required, no plausible hand-written
-  filename can match. (Checked against the live vault, 2026-08-22: zero
-  existing `*.local.*` files, so nothing strands — `Commit` ignores an
-  excluded path's DELETION too, which would otherwise make a pre-existing
-  match unremovable forever.)
-- Keeping the real extension LAST is what makes the file a genuine note:
-  Obsidian opens, renders and links it, and attachments work identically.
-  The namespace is reusable — later local-only needs take the same
-  `.<hash>.local` shape rather than adding a second predicate.
-- Documented in the README regardless: files carrying the marker silently
-  stop syncing, and that must never be a surprise.
+- **`.local` is a user-facing feature, not a private marker.** The rule is one
+  line: *any* file named `*.local.<ext>` is never synced, by either side, ever.
+  Mark a file yourself and it stays on that device — scratch notes, machine-
+  specific captures, anything you do not want on the phone. Revisions simply
+  USE that namespace: `Note.ae56b1c.local.md`, where the hash only keeps
+  multiple materialisations of one note apart.
+- This inverts the earlier objection rather than dodging it. A bare `*.local.*`
+  predicate was rejected while it was a hidden implementation detail, because
+  a future `Setup.local.md` would stop syncing silently. As a DOCUMENTED
+  feature that behaviour is correct — the user named it `.local` on purpose.
+  The cost is that it must be stated where it will actually be read: the
+  plugin settings tab (a line under the sync section, not buried in a
+  tooltip) and the README. Discoverability IS the safety mechanism here.
+- Keeping the real extension LAST is what makes a materialised revision a
+  genuine note: Obsidian opens, renders and links it, and attachments work
+  identically.
+- Checked against the live vault (2026-08-22): zero existing `*.local.*`
+  files, so nothing strands on rollout — `Commit` ignores an excluded path's
+  DELETION too, which would make a pre-existing match unremovable.
 - **Marked files are invisible to every diagnostic.** The watcher drops their
   events, `Commit` skips them, `Check` suppresses them from drift reporting —
   so one sitting in the vault on the server is untracked, uncounted and
