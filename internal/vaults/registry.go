@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/guard"
+	"github.com/pkronstrom/obsidian-archivist/internal/pins"
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
@@ -35,6 +36,9 @@ type Instance struct {
 	Repo       *repo.Repo
 	Reconciler *reconcile.Reconciler
 	Guard      *guard.Guard
+	// Pins resolves pin ids to the commits that introduced them. Kept on the
+	// instance because its cache is per-vault and per-head.
+	Pins *pins.Resolver
 
 	watcher *watcher.Watcher
 }
@@ -244,7 +248,7 @@ func (r *Registry) openLocked(name string) (*Instance, error) {
 		})
 	}
 
-	inst := &Instance{Name: name, Vault: v, Repo: rp, Reconciler: rc, Guard: g}
+	inst := &Instance{Name: name, Vault: v, Repo: rp, Reconciler: rc, Guard: g, Pins: pins.NewResolver(rp)}
 	r.open[name] = inst
 
 	// A vault opened after StartWatchers -- discovered at runtime or just

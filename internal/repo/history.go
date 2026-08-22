@@ -27,9 +27,11 @@ func (r *Repo) History(path string, limit int) ([]protocol.Revision, error) {
 // that actually broke.
 var ErrUnknownCursor = errors.New("unknown history cursor")
 
-// MaxHistoryLimit caps one page. The log walk is over the WHOLE repository
-// history filtered by path, so an uncapped limit lets one request traverse
-// every commit in the vault.
+// MaxHistoryLimit caps one page at the HTTP boundary. The log walk is over the
+// WHOLE repository history filtered by path, so an uncapped limit lets one
+// request traverse every commit in the vault. In-process callers are trusted
+// and may ask for everything -- the pin resolver must, since it has to see the
+// first appearance of every id, and a cap would silently lose the oldest pins.
 const MaxHistoryLimit = 200
 
 // HistoryPage lists one page of a path's revisions, newest first.
@@ -39,12 +41,9 @@ const MaxHistoryLimit = 200
 // at the newest end -- an offset would shift under the caller between pages and
 // silently skip or repeat a revision.
 func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Revision, bool, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > MaxHistoryLimit {
-		limit = MaxHistoryLimit
-	}
+	// limit <= 0 means every revision. The route never passes that; it applies
+	// its own default and cap before calling.
+	unlimited := limit <= 0
 	iter, err := r.git.Log(&git.LogOptions{FileName: &path})
 	if err != nil {
 		return nil, false, err
@@ -64,7 +63,7 @@ func (r *Repo) HistoryPage(path string, limit int, before string) ([]protocol.Re
 			// so the caller already has it.
 			return nil
 		}
-		if len(out) >= limit {
+		if !unlimited && len(out) >= limit {
 			// One past the page proves there is another page, without walking
 			// the rest of the history to count it.
 			more = true

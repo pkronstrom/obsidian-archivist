@@ -728,6 +728,12 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request, inst *vaults.In
 			limit = n
 		}
 	}
+	// Capped here rather than in the repo: an in-process caller may legitimately
+	// want the whole history, but a request must not be able to walk every
+	// commit in the vault.
+	if limit > repo.MaxHistoryLimit {
+		limit = repo.MaxHistoryLimit
+	}
 	before := r.URL.Query().Get("before")
 	revs, more, err := inst.Repo.HistoryPage(path, limit, before)
 	if err != nil {
@@ -745,6 +751,60 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request, inst *vaults.In
 		resp.Next = revs[len(revs)-1].Commit
 	}
 	writeJSON(w, resp)
+}
+
+func (s *Server) listPins(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	list, head, err := inst.Pins.List(r.URL.Query().Get("path"))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"head": head, "pins": list})
+}
+
+func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	var req struct {
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		ExpectedHead string `json:"expectedHead"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body")
+		return
+	}
+	if req.Name == "" {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "name is required")
+		return
+	}
+	if req.ExpectedHead == "" {
+		// Required, not optional: a pin is a claim about a specific tree, and
+		// without the check a client whose sync had not flushed would silently
+		// pin an older state than the note on the user's screen.
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "expectedHead is required")
+		return
+	}
+	if req.Path != "" {
+		if err := vault.ValidPath(req.Path); err != nil {
+			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+			return
+		}
+	}
+
+	entry, head, err := inst.Reconciler.Pin(req.ExpectedHead, req.Name, req.Path)
+	switch {
+	case errors.Is(err, reconcile.ErrPinHeadMismatch):
+		// 409 with the current head, so the client can flush and retry once
+		// rather than guess what it collided with.
+		fail(w, http.StatusConflict, protocol.CodeStaleHead, err.Error())
+		return
+	case errors.Is(err, reconcile.ErrPinPathMissing):
+		fail(w, http.StatusNotFound, protocol.CodeNotFound, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"id": entry.ID, "head": head, "created": entry.Created})
 }
 
 // at reads a file as it was at a revision, WITHOUT touching the working tree.
@@ -849,6 +909,10 @@ func (s *Server) routes() []route {
 		{Method: "GET", Path: "/v1/events", Does: "SSE:one per commit with changed paths, kind, size", Scope: auth.ScopeRead, handle: s.events},
 		{Method: "GET", Path: "/v1/wait", Does: "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", Scope: auth.ScopeRead, handle: s.wait},
 		{Method: "GET", Path: "/v1/history", Does: "?path=&limit= revisions that touched a path", Scope: auth.ScopeRead, handle: s.history},
+		// Pins are ordinary vault data, so their scopes are the ordinary ones:
+		// creating a pin is a put to one tracked file, nothing more.
+		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins},
+		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin},
 		{Method: "GET", Path: "/v1/at/{rev}/{path...}", Does: "a file as it was at a revision; does not restore", Scope: auth.ScopeRead, handle: s.at},
 		{Method: "GET", Path: "/v1/check", Does: "working tree versus head", Scope: auth.ScopeRead, handle: s.check},
 		{Method: "GET", Path: "/v1/export", Does: "consistent archive of history; ?gzip=1 to compress", Scope: auth.ScopeRead, handle: s.export},

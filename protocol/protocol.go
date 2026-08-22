@@ -85,6 +85,11 @@ const (
 	CodeQuarantined    = "path_quarantined" // repeated writes to one path
 	CodeThrottled      = "throttled"        // vault-wide write rate exceeded
 	CodeDiskLow        = "disk_low"         // free disk below the floor
+	// CodeStaleHead is a precondition failure: the caller named a head that is
+	// no longer the tip. Distinct from a conflict inside a push, because the
+	// fix is different -- flush, re-read head, retry once -- and a client that
+	// cannot tell them apart cannot recover automatically.
+	CodeStaleHead = "stale_head"
 	// CodeStepUpRequired is a valid token that must present a one-time code
 	// first. Distinct from forbidden so a client can turn it into a request for
 	// a code rather than reporting a permanent refusal.
