@@ -61,69 +61,68 @@ first (newest) revision of each cluster — and it must be the newest
 `/v1/at` necessarily 404s on them. Deletion rows render as events, not
 openable entries.
 
-**Pins are named empty commits.** A pin is a commit with the current tree and
-a `Pin:` trailer (go-git: `AllowEmptyCommits`), plus `Pin-Path:` for a file
-pin. This replaced a `pins.json` store after review, because identity-by-
-message dissolves the store's four worst findings at once:
+**Pins are lines in a tracked `pins.jsonl` in the vault.** A pin is one JSON
+object appended to a visible `pins.jsonl` at the vault root, committed through
+the ordinary push path. The pin's snapshot is simply the tree of the commit
+that added its line. Third design; each replaced its predecessor for cause:
 
-- *Rewrite-proof — verified, not assumed.* The first review's critical finding
-  was that hash-referenced pins die at the first prune: `Resolve` never
-  consults `pruneMap` (`history.go:114`) and prune discards its per-commit
-  mapping, keeping only the head pair (`prune.go:76`). A trailer-identified pin
-  has no hash to translate, and the second review confirmed prune's rewrite
-  copies `Message: c.Message` verbatim (`prune.go:99`) — trailers ride through.
-  No test asserts it yet; the build must add one (pin, prune an unrelated path,
-  pin still listed).
-- *No store.* No `pins.json`, so no lost-update lock, no id scheme, no
-  POST/DELETE routes, no name-escaping. Creating a pin is a push, serialised
-  by the reconciler like every other commit; deleting one is out of scope for
-  v1 (an unpinning rewrite is prune-shaped work).
-- *Content-addressed durability for file pins.* The pinned version IS the pin
-  commit's own tree. Nothing points backwards.
-- *Chronology for free.* Pins interleave with sessions because they are
-  commits.
+- *pins.json in the state dir* (v1) died in review: hash-referenced pins do not
+  survive prune's rewrite — `Resolve` never consults `pruneMap`
+  (`history.go:114`) and the per-commit mapping is discarded (`prune.go:76`) —
+  and the store needed a lock, an id scheme, and routes of its own.
+- *Named empty commits* (v2) fixed identity — prune copies `Message` verbatim
+  (`prune.go:99`, verified) — but needed `AllowEmptyCommits`, a dedicated
+  `Reconciler.Pin`, trailer sanitisation (`Pin-Path` was an injection hole:
+  `ValidPath` is only `filepath.IsLocal` and accepts newlines), and listing by
+  decoding every commit object, cache required.
+- *Tracked file* (v3, this one) makes pins ordinary data. Push, three-way
+  merge, `/v1/history`, `/v1/at` and prune-liveness all apply with zero new
+  machinery. Listing is one file read at HEAD. Rewrite-proof by LIVENESS —
+  `pins.jsonl` is live at HEAD, prune never drops it — rather than by a
+  message-copying property that had to be verified. Self-healing: the pin file
+  has its own history, through the very feature it serves.
 
-Costs, accepted: each pin moves HEAD, so every device pulls one zero-change
-diff; and `/v1/history` filters by path-touching commits, so listing pins is a
-log scan for the trailer (a small `GET /v1/pins` doing that scan, read scope).
+**JSONL, not a JSON array, deliberately.** An array append touches three lines
+(entry, previous comma, closing bracket), so even non-overlapping edits collide
+structurally. A JSONL append is one clean line: sequential pins from different
+devices merge trivially, each pin is a one-line diff — so the entry-to-commit
+mapping is literal in `history?path=pins.jsonl` — and a corrupt line is
+skippable on read. Truly simultaneous appends still conflict under diff3 (no
+format fixes both-append-at-EOF), which is why creation goes through
+`POST /v1/pin` with the SERVER appending under the reconciler lock: the format
+makes the file robust, the lock makes writes serial.
 
-What this does NOT do: protect pinned content from pruning. Prune drops old
-blobs of deleted paths regardless. Making "pinned" mean "never pruned" still
-requires prune to learn the trailer — but "keep paths live in trees of
-`Pin:`-trailed commits" is far simpler than the persistent hash-mapping the
-store design demanded, and it can now genuinely ship later, because pin
-IDENTITY no longer depends on it.
+**Placement.** Visible `pins.jsonl` at the vault root — it cannot be a dotfile
+(the server excludes dotfiles from sync), and Obsidian's explorer hides `.json*`
+by default, so it is invisible in daily use while remaining plain data a person
+can read and even repair.
 
-**Pin authorization, revisited under this design.** Creating a pin is
-literally a commit, so write scope is exactly right by construction. The
-retention-authority concern (a compromised write token pinning everything to
-defeat reclaim) moves to the future prune-learns-pins change and is decided
-there — quotas or `ops:` gating on what prune respects, not on who may
-commit.
+**"Pin this version" still flushes first** and sends `expectedHead`: with the
+15s debounce, a click could otherwise pin the server's older tree than the note
+on screen. Under this design the push path's own staleness handling does the
+rest.
+
+**Pin authorization:** a pin is a put to one file; write scope is right by
+construction. The retention question (pins as prune roots) is unchanged: prune
+learns "keep paths live in the tree of each pin's commit" later, found via the
+pin file's own history, and the quota/gating decision lands with that change.
 
 ## Surface inventory
 
 Server:
-- `POST /{vault}/v1/pin` — write scope; `{name, path?, expectedHead?}`.
-- The commit is created by a new `Reconciler.Pin`, NOT by `Repo.Commit` —
-  which short-circuits and returns `Head()` when nothing is staged
-  (`repo.go:209`), so the existing path cannot produce an empty commit, and
-  calling the repo directly would race the reconciler's lock. `Pin` holds
-  `rc.mu`, commits with `AllowEmptyCommits`, verifies the tree equals the
-  parent's, and fires `notify(old, pinHead)` so waiters wake.
-- **Both trailer values are sanitised.** `name` through
-  `sanitiseTrailerValue`, and `path` must additionally reject CR/LF outright:
-  `ValidPath` is only `filepath.IsLocal` (`vault.go:67`), which accepts
-  newline-bearing filenames, so a raw path interpolated into `Pin-Path:` would
-  forge a trailer. Verified against the code. Empty name after sanitising is a
-  400. Listing parses trailers positionally, not by substring.
-- A file pin requires the path to exist in the parent HEAD tree, checked under
-  the lock — otherwise the pin is born pointing at nothing and `ReadAt` 404s
-  forever.
-- `GET /{vault}/v1/pins?path=` — read scope. A log scan decodes every commit
-  object (25k commits on a drafting-heavy vault), so it sits behind a
-  HEAD-keyed in-memory cache invalidated on commit; needs a cost test.
-- No delete in v1: unpinning is a history rewrite, prune-shaped work.
+- `POST /{vault}/v1/pin` — write scope; `{name, path?, expectedHead?}`. Appends
+  one line to `pins.jsonl` and commits, under the reconciler lock, through the
+  ordinary commit path — no empty-commit machinery, no trailers. Line content
+  is JSON, so name/path need only JSON encoding; the newline-injection concern
+  from the trailer design disappears (a newline in a JSON string is `\n`).
+- A file pin requires the path to exist at HEAD, checked under the lock —
+  otherwise the pin is born pointing at nothing.
+- `GET /{vault}/v1/pins?path=` — read scope; reads `pins.jsonl` at HEAD and
+  filters. One file read; skips unparseable lines rather than failing.
+- Mapping a pin to its snapshot commit: `/v1/history?path=pins.jsonl` — each
+  pin is exactly one added line in exactly one commit.
+- Deleting a pin in v1 is removing its line — an ordinary edit, even doable by
+  hand. (Unpinning only becomes prune-shaped work once pins are prune roots.)
 - `/v1/history` gains bounded cursor pagination (`before=<commit>`, capped
   limit, `hasMore`) — today it defaults to 50 with no cursor and accepts an
   uncapped limit that walks the whole commit history. The modal clusters
