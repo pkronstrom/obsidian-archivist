@@ -143,16 +143,29 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// once, while "is it working", sync tuning and recovery are what
 		// someone comes back for. First-run stays linear anyway, because an
 		// unconfigured Status card points straight at Server.
+		// Above the sections, deliberately. It is a rule about the VAULT rather
+		// than a sync setting, and it is the only place anyone learns why a
+		// file stopped syncing -- so it must not be reachable only by expanding
+		// something. Everything below can collapse; this cannot.
+		new Setting(containerEl)
+			.setName("Files that never sync")
+			.setDesc(
+				"Files with .local before the extension stay on this device, as do " +
+					"folders ending in .local: Scratch.local.md, Journal.local/. Remove " +
+					"the .local to start syncing one. A folder like project.local.assets/ " +
+					"is unaffected.",
+			);
+
 		this.renderStatus(containerEl);
 
 		// Server opens itself while there is nothing to connect with: a
 		// collapsed block on first run would hide the only rows that do
-		// anything. Sync behavior stays open because it is the section people
-		// actually tune, and because the .local rule lives there -- a file that
-		// silently stops syncing is only safe while the rule is easy to find.
+		// anything. Everything else collapses, sync included -- its defaults
+		// are sane, so an open block was scrolling on every visit for a
+		// setting most people never touch.
 		const unconfigured = !this.plugin.settings.serverUrl || !loadToken(this.app);
 		this.renderServer(this.section(containerEl, "Server", unconfigured));
-		this.renderSyncBehavior(this.section(containerEl, "Sync behavior", true));
+		this.renderSyncBehavior(this.section(containerEl, "Sync behavior"));
 		this.renderConfigSync(this.section(containerEl, "Obsidian config"));
 		this.renderHistoryAndRecovery(this.section(containerEl, "History and recovery"));
 		this.renderTroubleshooting(this.section(containerEl, "Troubleshooting"));
@@ -458,20 +471,6 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	 * what it already had); the dropdown writes presets back onto them.
 	 */
 	private renderSyncBehavior(containerEl: HTMLElement): void {
-
-		// This is the ONLY place a user learns why a file stopped syncing, so
-		// it is a visible setting row rather than a tooltip. A file that
-		// silently does not sync is only safe when the person chose the name
-		// that stopped it -- and that bargain depends entirely on the rule
-		// being written somewhere they will read it.
-		new Setting(containerEl)
-			.setName("Files that never sync")
-			.setDesc(
-				"Files with .local before the extension stay on this device, as do " +
-					"folders ending in .local: Scratch.local.md, Journal.local/. Remove " +
-					"the .local to start syncing one. A folder like project.local.assets/ " +
-					"is unaffected.",
-			);
 
 		const s = this.plugin.settings;
 		const mode = deriveSyncMode(s);
