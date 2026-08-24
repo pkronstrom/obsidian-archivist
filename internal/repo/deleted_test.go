@@ -117,3 +117,61 @@ func TestDeletedOnEmptyRepo(t *testing.T) {
 		t.Fatalf("got %d", len(gone))
 	}
 }
+
+// A move is recorded as a delete plus a put, so without rename detection it
+// looks exactly like a deletion -- and "restoring" it would write a SECOND
+// copy of a note that already exists under its new name.
+func TestDeletedIgnoresMoves(t *testing.T) {
+	r, v, _ := newRepo(t)
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+
+	body := []byte("A note with enough content that a similarity check has something to work with.\nSecond line.\nThird line.\n")
+	v.Write("Inbox/Draft.md", body)
+	if _, err := r.Commit("sync from work-mac"); err != nil {
+		t.Fatal(err)
+	}
+	// The move, exactly as the server records one.
+	v.Remove("Inbox/Draft.md")
+	v.Write("Archive/Draft.md", body)
+	if _, err := r.Commit("sync from work-mac"); err != nil {
+		t.Fatal(err)
+	}
+
+	gone, err := r.Deleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range gone {
+		if d.Path == "Inbox/Draft.md" {
+			t.Fatalf("a moved note must not be offered for restore: %+v (restoring would duplicate Archive/Draft.md)", d)
+		}
+	}
+}
+
+// The other half of the same rule: a genuine deletion must still be found when
+// an unrelated file was added in the same commit, which is the shape rename
+// detection could plausibly mistake for a move.
+func TestDeletedStillFindsRealDeletionsBesideUnrelatedAdds(t *testing.T) {
+	r, v, _ := newRepo(t)
+	r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+
+	v.Write("Lost.md", []byte("the note that really went away\n"))
+	r.Commit("first")
+	v.Remove("Lost.md")
+	v.Write("Unrelated.md", []byte("something else entirely, sharing no text at all\n"))
+	r.Commit("sync from iphone")
+
+	gone, err := r.Deleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range gone {
+		if d.Path == "Lost.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a real deletion was hidden by rename detection: %+v", gone)
+	}
+}
