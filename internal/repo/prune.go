@@ -77,6 +77,17 @@ func (r *Repo) Prune(paths []string) (*PruneResult, error) {
 	// commit's parents can be re-pointed as the walk moves forward. It is
 	// discarded afterwards -- only the head pair is durable, in prune-map.
 	mapped := map[plumbing.Hash]plumbing.Hash{}
+	// safe carries the subset of mapped that is sound to TRANSLATE, which is
+	// not the same set. Translating old->new is only correct when the two have
+	// identical trees: a client whose base moved to a commit with different
+	// content would diff against a tree it never had, and silently push back
+	// whatever the rewrite removed.
+	//
+	// Prune only alters the tree of a commit that actually contained dropped
+	// content. Every other rewritten commit is a pure re-parenting with a
+	// byte-identical tree -- which is exactly the property the head pair has
+	// always relied on, just checked per commit instead of assumed for one.
+	safe := map[plumbing.Hash]plumbing.Hash{}
 	var newHead plumbing.Hash
 
 	for _, c := range commits {
@@ -112,6 +123,9 @@ func (r *Repo) Prune(paths []string) (*PruneResult, error) {
 			return nil, err
 		}
 		mapped[c.Hash] = h
+		if treeHash == c.TreeHash {
+			safe[c.Hash] = h
+		}
 		newHead = h
 	}
 
@@ -129,7 +143,7 @@ func (r *Repo) Prune(paths []string) (*PruneResult, error) {
 	// missed both prunes to a commit that no longer exists -- which is worse
 	// than not translating at all, because it looks like it worked. Rewriting
 	// the targets keeps every entry one hop from something live.
-	if err := r.updatePruneMap(oldHead, newHead.String(), mapped); err != nil {
+	if err := r.updatePruneMap(oldHead, newHead.String(), mapped, safe); err != nil {
 		return nil, err
 	}
 
@@ -381,18 +395,26 @@ func (r *Repo) looseSize() (int64, error) {
 
 // updatePruneMap re-points every existing entry through this rewrite and adds
 // the new head pair.
-func (r *Repo) updatePruneMap(oldHead, newHead string, mapped map[plumbing.Hash]plumbing.Hash) error {
+func (r *Repo) updatePruneMap(oldHead, newHead string, mapped, safe map[plumbing.Hash]plumbing.Hash) error {
 	existing, err := ReadPruneMap(r.gitDir)
 	if err != nil {
 		return err
 	}
-	out := make(map[string]string, len(existing)+1)
+	out := make(map[string]string, len(existing)+len(safe)+1)
 	for from, to := range existing {
 		if next, ok := mapped[plumbing.NewHash(to)]; ok {
 			out[from] = next.String()
 			continue
 		}
 		out[from] = to
+	}
+	// Every commit whose tree survived the rewrite untouched, not just the
+	// head. This is what spares a device that was BEHIND when the prune ran:
+	// its base is not the old head, so a head-only map leaves it with an
+	// unknown base and a full re-bootstrap, even though its exact content is
+	// still reachable under a new hash.
+	for from, to := range safe {
+		out[from.String()] = to.String()
 	}
 	out[oldHead] = newHead
 	return WritePruneMap(r.gitDir, out)

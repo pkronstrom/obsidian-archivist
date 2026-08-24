@@ -655,9 +655,19 @@ with who deleted each and when. Restoring writes the file back where it was and
 it syncs like any new note. On the server, `archivist-server deleted` prints the
 same list along with the exact `restore` command for each row.
 
+Entries are grouped by the folder they were deleted from — usually how you
+remember what you lost ("the thing in Inbox") rather than by filename.
+
+**Look before committing.** Tick *Open a local-only copy instead of restoring*
+and the note is written as a `.local` file at the vault root instead: you can
+read it, and it never syncs anywhere. The root rather than the original folder
+is deliberate — that folder is often gone too, and rebuilding a directory tree
+to hold a copy you may discard would recreate the structure you deleted.
+
 Restoring never overwrites: if something now lives at that path, the note was
 re-created since and the restore is refused rather than destroying the newer
-version to recover the older one.
+version to recover the older one. Moves are filtered out, since a moved note
+was never lost and "restoring" it would leave you with two copies.
 
 If you want something *actually* gone, this is not the feature — that needs
 `reclaim`, which rewrites history and drops the objects.

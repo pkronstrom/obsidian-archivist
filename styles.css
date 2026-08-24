@@ -257,3 +257,40 @@
 .archivist-rev-restore {
 	margin-left: auto;
 }
+
+/* Deleted-note browser --------------------------------------------------- */
+
+.archivist-del-options {
+	margin-bottom: var(--size-4-2);
+}
+
+.archivist-del-check {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.archivist-del-folderhead {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+}
+
+.archivist-del-folderhead:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.archivist-del-chevron {
+	display: inline-flex;
+	color: var(--text-muted);
+}
+
+/* Indented so the folder reads as the parent of what is under it. */
+.archivist-del-items {
+	padding-left: var(--size-4-4);
+}

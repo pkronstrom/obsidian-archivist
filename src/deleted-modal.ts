@@ -13,12 +13,17 @@
  * note protects nothing here, and a `.local` copy the user then has to rename
  * would be ceremony for its own sake.
  */
-import { App, Modal, Notice, TFile } from "obsidian";
+import { App, Modal, Notice, TFile, setIcon } from "obsidian";
 import type { Client, DeletedPath } from "./client";
 
 export class DeletedModal extends Modal {
 	private listEl?: HTMLElement;
 	private items: DeletedPath[] = [];
+	/** Look without committing: restore as a .local copy, which never syncs.
+	 *  Deleting is usually deliberate, so "let me see what this was" should not
+	 *  push a note back to every device before the user has decided. */
+	private localOnly = false;
+	private open2 = new Set<string>();
 
 	constructor(
 		app: App,
@@ -36,6 +41,16 @@ export class DeletedModal extends Modal {
 				"Notes the server still has but this vault no longer shows. Restoring writes the " +
 				"file back where it was, and it syncs to your other devices like any new note.",
 		});
+		const opts = this.contentEl.createDiv({ cls: "archivist-del-options" });
+		const label = opts.createEl("label", { cls: "archivist-del-check" });
+		const box = label.createEl("input", { type: "checkbox" });
+		box.checked = this.localOnly;
+		label.createSpan({ text: "Open a local-only copy instead of restoring" });
+		box.onchange = () => {
+			this.localOnly = box.checked;
+			this.render();
+		};
+
 		this.listEl = this.contentEl.createDiv({ cls: "archivist-rev-list" });
 		await this.load();
 	}
@@ -68,29 +83,70 @@ export class DeletedModal extends Modal {
 			return;
 		}
 
+		// Grouped by the folder each note was deleted FROM. A flat list is
+		// fine at thirty entries and unreadable at three hundred, and the
+		// folder is usually how a person remembers what they lost -- "the
+		// thing in Inbox" rather than its filename.
+		const byFolder = new Map<string, DeletedPath[]>();
 		for (const item of this.items) {
-			const row = list.createDiv({ cls: "archivist-rev-row" });
-			const main = row.createDiv({ cls: "archivist-rev-main" });
-			main.createSpan({ cls: "archivist-rev-when", text: item.path });
-
-			const meta = row.createDiv({ cls: "archivist-rev-metaline" });
-			meta.createSpan({
-				cls: "archivist-rev-meta",
-				text: new Date(item.when).toLocaleString(undefined, {
-					dateStyle: "medium",
-					timeStyle: "short",
-				}),
-			});
-			if (item.device) {
-				meta.createSpan({ cls: "archivist-rev-device", text: `deleted by ${item.device}` });
-			}
-
-			const restore = main.createEl("button", {
-				text: "Restore",
-				cls: "archivist-rev-restore",
-			});
-			restore.onclick = () => void this.restore(item, row);
+			const slash = item.path.lastIndexOf("/");
+			const folder = slash > 0 ? item.path.slice(0, slash) : "/";
+			const group = byFolder.get(folder);
+			if (group) group.push(item);
+			else byFolder.set(folder, [item]);
 		}
+
+		for (const [folder, items] of [...byFolder.entries()].sort()) {
+			const section = list.createDiv({ cls: "archivist-del-folder" });
+			const header = section.createDiv({ cls: "archivist-del-folderhead mod-clickable" });
+			const chevron = header.createSpan({ cls: "archivist-del-chevron" });
+			const expanded = this.open2.has(folder);
+			setIcon(chevron, expanded ? "chevron-down" : "chevron-right");
+			header.createSpan({
+				cls: "archivist-rev-when",
+				text: folder === "/" ? "(vault root)" : folder,
+			});
+			header.createSpan({ cls: "archivist-rev-meta", text: `${items.length}` });
+
+			const body = section.createDiv({ cls: "archivist-del-items" });
+			if (!expanded) body.hide();
+			header.onclick = () => {
+				if (this.open2.has(folder)) this.open2.delete(folder);
+				else this.open2.add(folder);
+				this.render();
+			};
+
+			for (const item of items) {
+				this.drawItem(body, item);
+			}
+		}
+	}
+
+	private drawItem(body: HTMLElement, item: DeletedPath) {
+		const row = body.createDiv({ cls: "archivist-rev-row" });
+		const main = row.createDiv({ cls: "archivist-rev-main" });
+		main.createSpan({
+			cls: "archivist-rev-when",
+			text: item.path.slice(item.path.lastIndexOf("/") + 1),
+		});
+
+		const meta = row.createDiv({ cls: "archivist-rev-metaline" });
+		meta.createSpan({
+			cls: "archivist-rev-meta",
+			text: new Date(item.when).toLocaleString(undefined, {
+				dateStyle: "medium",
+				timeStyle: "short",
+			}),
+		});
+		if (item.device) {
+			meta.createSpan({ cls: "archivist-rev-device", text: `deleted by ${item.device}` });
+		}
+
+		const action = main.createEl("button", {
+			text: this.localOnly ? "Open copy" : "Restore",
+			cls: "archivist-rev-restore",
+		});
+		action.onclick = () => void this.restore(item, row);
 	}
 
 	private async restore(item: DeletedPath, row: HTMLElement) {
@@ -100,32 +156,60 @@ export class DeletedModal extends Modal {
 			// The PARENT of the deletion holds the content; the deleting commit
 			// is exactly where the path stopped existing.
 			const buf = await client.readAt(item.revision, item.path);
+			const target = this.localOnly ? this.localCopyPath(item) : item.path;
 
-			// Never clobber: if something now lives at that path, the file was
-			// re-created since and restoring over it would destroy the newer
-			// note to recover the older one.
-			if (this.app.vault.getAbstractFileByPath(item.path)) {
-				new Notice(`archivist: ${item.path} exists again — not overwriting it`);
+			// Never clobber. For a real restore this means the note was
+			// re-created since; for a local copy it means a previous look is
+			// still open. Either way the existing file wins.
+			if (this.app.vault.getAbstractFileByPath(target)) {
+				new Notice(`archivist: ${target} already exists — not overwriting it`);
 				return;
 			}
 
-			const slash = item.path.lastIndexOf("/");
-			if (slash > 0) {
-				const dir = item.path.slice(0, slash);
-				if (!this.app.vault.getAbstractFileByPath(dir)) {
-					await this.app.vault.createFolder(dir).catch(() => undefined);
+			if (!this.localOnly) {
+				// A real restore recreates the folders it needs, because the
+				// path is where the note belongs.
+				const slash = target.lastIndexOf("/");
+				if (slash > 0) {
+					const dir = target.slice(0, slash);
+					if (!this.app.vault.getAbstractFileByPath(dir)) {
+						await this.app.vault.createFolder(dir).catch(() => undefined);
+					}
 				}
 			}
 
-			const file = await this.app.vault.createBinary(item.path, buf);
-			row.remove();
-			this.items = this.items.filter((i) => i.path !== item.path);
-			new Notice(`archivist: restored ${item.path}`);
+			const file = await this.app.vault.createBinary(target, buf);
+			if (!this.localOnly) {
+				row.remove();
+				this.items = this.items.filter((i) => i.path !== item.path);
+			}
+			new Notice(
+				this.localOnly
+					? `archivist: opened a local-only copy as ${target}`
+					: `archivist: restored ${target}`,
+			);
 			if (file instanceof TFile) {
 				await this.app.workspace.getLeaf(true).openFile(file);
 			}
 		} catch (e) {
-			new Notice(`archivist: could not restore (${String(e)})`);
+			new Notice(`archivist: could not open that note (${String(e)})`);
 		}
+	}
+
+	/**
+	 * Where a look-only copy goes.
+	 *
+	 * At the VAULT ROOT, not the original folder: the folder is usually gone
+	 * too -- a deleted note is often a deleted directory -- and recreating a
+	 * tree just to hold a copy the user may discard would rebuild the very
+	 * structure they removed. The original path stays in the filename so it is
+	 * still obvious where it came from.
+	 */
+	private localCopyPath(item: DeletedPath): string {
+		const name = item.path.slice(item.path.lastIndexOf("/") + 1);
+		const dot = name.lastIndexOf(".");
+		const stem = dot > 0 ? name.slice(0, dot) : name;
+		const ext = dot > 0 ? name.slice(dot) : ".md";
+		return `${stem}.${item.short.slice(0, 7)}.local${ext}`;
 	}
 }

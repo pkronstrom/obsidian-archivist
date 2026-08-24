@@ -383,3 +383,59 @@ func TestSecondPruneLeavesTheRepositoryReadable(t *testing.T) {
 		t.Error("keep.md lost across two prunes")
 	}
 }
+
+// A device that was BEHIND when the prune ran should not be forced into a full
+// re-bootstrap when its exact content is still reachable under a new hash.
+//
+// The map used to hold only the head pair, so any base but the newest was
+// unknown afterwards. It now holds every pair whose tree survived the rewrite
+// untouched -- and deliberately NOT the ones whose tree changed, because
+// translating those would hand a client a tree it never had and let it push
+// back exactly what the prune removed.
+func TestPruneMapCarriesTreeIdenticalCommitsNotAlteredOnes(t *testing.T) {
+	r := reclaimRepo(t)
+	writeCommit(t, r, "keep.md", "kept", "add keep")
+	// This commit's tree CONTAINS the doomed file, so the rewrite must change
+	// it -- it is the unsafe kind.
+	writeCommit(t, r, "attach/big.pdf", "big content here", "add big")
+	altered, _ := r.Head()
+	// After the delete, later commits no longer contain it, so their trees
+	// survive untouched -- the safe kind.
+	removeCommit(t, r, "attach/big.pdf", "delete big")
+	writeCommit(t, r, "keep.md", "kept, edited", "edit keep")
+	unaltered, _ := r.Head()
+
+	// A base one commit behind the head, which a head-only map cannot help.
+	writeCommit(t, r, "keep.md", "edited again", "another edit")
+	oldHead, _ := r.Head()
+
+	// Captured before the rewrite: prune collects the old commits, so their
+	// trees cannot be read afterwards.
+	unalteredTree := treeOf(t, r, unaltered)
+
+	res, err := r.Prune([]string{"attach/big.pdf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ReadPruneMap(r.gitDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m[oldHead] != res.NewHead {
+		t.Errorf("the head pair must still be recorded: %q -> %q", oldHead, m[oldHead])
+	}
+
+	to, ok := m[unaltered]
+	if !ok {
+		t.Fatal("a commit whose tree survived the rewrite is missing from the map, so a device sitting on it re-bootstraps for nothing")
+	}
+	// And the translation must be honest: same content, new hash.
+	if treeOf(t, r, to) != unalteredTree {
+		t.Error("translated commit has a different tree; that is the unsound case the check exists to prevent")
+	}
+
+	if _, ok := m[altered]; ok {
+		t.Error("a commit whose tree the rewrite CHANGED must not be translatable: a client would diff against content it never had and push back what the prune removed")
+	}
+}
