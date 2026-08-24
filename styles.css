@@ -294,3 +294,59 @@
 .archivist-del-items {
 	padding-left: var(--size-4-4);
 }
+
+/* File rows here are DENSER than the revision browser's, deliberately.
+ *
+ * There the row is the subject: a handful of sessions, each worth reading. Here
+ * it is one leaf of a tree that can run to hundreds, and the same two-line
+ * treatment turns a folder of twelve notes into a page of scrolling. So: one
+ * line, name and metadata side by side, and the vertical padding halved.
+ * Scoped to this modal so the revision list keeps its roominess. */
+.archivist-del-items .archivist-rev-row {
+	flex-direction: row;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: var(--size-4-2);
+	padding: 1px var(--size-4-2);
+}
+
+.archivist-del-items .archivist-rev-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	gap: var(--size-4-2);
+}
+
+/* The filename is the thing being scanned, so it gets the width and the
+ * ellipsis rather than pushing the date off the row. */
+.archivist-del-items .archivist-rev-when {
+	font-weight: var(--font-normal);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.archivist-del-items .archivist-rev-metaline {
+	flex: 0 0 auto;
+	gap: var(--size-4-2);
+}
+
+.archivist-del-items .archivist-rev-restore {
+	padding: 0 var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+}
+
+/* Reveal-on-hover ONLY where hovering exists. A button on every row of a long
+ * list is noise on a desktop, but a phone has no hover state at all -- hiding
+ * it unconditionally would make the one action in this modal unreachable on
+ * mobile, which is where "I deleted something yesterday" is most likely to be
+ * asked. */
+@media (hover: hover) {
+	.archivist-del-items .archivist-rev-restore {
+		visibility: hidden;
+	}
+
+	.archivist-del-items .archivist-rev-row:hover .archivist-rev-restore,
+	.archivist-del-items .archivist-rev-restore:focus-visible {
+		visibility: visible;
+	}
+}
