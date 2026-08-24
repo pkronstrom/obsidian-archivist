@@ -2,6 +2,7 @@ import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import { hostname as osHostname } from "os";
 import { Client } from "./client";
 import { PinModal } from "./revision-modal";
+import { DeletedModal } from "./deleted-modal";
 import { scopeWarning, stepUpWarning } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
@@ -473,6 +474,29 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	private renderMaintenance(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName("Maintenance").setHeading();
+
+		// Same audience as re-bootstrap and vault restore points: rare,
+		// deliberate, whole-vault. Not in the note's revision modal, because
+		// the note you are looking at is by definition not the one you deleted.
+		new Setting(containerEl)
+			.setName("Restore a deleted note")
+			.setDesc(
+				"Lists notes the server still has but this vault no longer shows, newest " +
+					"first. Restoring puts the file back where it was and syncs it like any " +
+					"new note. Deleting a note has never removed it from the server \u2014 this " +
+					"only makes that visible.",
+			)
+			.addButton((b) =>
+				b.setButtonText("Browse deleted").onClick(() => {
+					const { serverUrl, vault } = this.plugin.settings;
+					const token = loadToken(this.app);
+					if (!serverUrl || !token) {
+						new Notice("archivist: set the server URL and token first");
+						return;
+					}
+					new DeletedModal(this.app, () => new Client(serverUrl, token, vault)).open();
+				}),
+			);
 
 		new Setting(containerEl)
 			.setName("Group revisions edited within (minutes)")

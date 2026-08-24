@@ -181,6 +181,19 @@ type Revision struct {
 	Created bool `json:"created,omitempty"`
 }
 
+// DeletedPath is a path that history holds but HEAD does not.
+type DeletedPath struct {
+	Path string    `json:"path"`
+	When time.Time `json:"when"`
+	// Revision is the commit whose tree still HOLDS the content: the parent of
+	// the deletion. Pass it to restore.
+	Revision string `json:"revision"`
+	Short    string `json:"short"`
+	// DeletedIn is the commit that removed it, for context only.
+	DeletedIn string `json:"deletedIn"`
+	Device    string `json:"device,omitempty"`
+}
+
 // ---- requests and responses ------------------------------------------------
 
 type HeadResponse struct {

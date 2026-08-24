@@ -614,6 +614,7 @@ From the command line on the server, without git installed:
 
 ```bash
 archivist-server history notes/idea.md        # revisions that touched it
+archivist-server deleted                      # notes history holds that the vault does not
 archivist-server show notes/idea.md 4f3538ca  # print an old version, changing nothing
 archivist-server restore notes/idea.md 4f3538ca
 archivist-server check                        # working tree versus history; non-zero on drift
@@ -642,6 +643,24 @@ point before a big reorganisation. They are lines in `pins.jsonl` in your vault
 root, so they sync, merge and survive history rewrites like any other note. A
 pin always marks the current state; to keep an old version, open it first, then
 pin that.
+
+### Recovering a deleted note
+
+Deleting a note has never removed it from the server — a delete is just a commit
+where the path stops existing, and every version stays in the repository. What
+was missing was a way to *find* one without already knowing its filename.
+
+**Settings → Maintenance → Restore a deleted note** lists them, newest first,
+with who deleted each and when. Restoring writes the file back where it was and
+it syncs like any new note. On the server, `archivist-server deleted` prints the
+same list along with the exact `restore` command for each row.
+
+Restoring never overwrites: if something now lives at that path, the note was
+re-created since and the restore is refused rather than destroying the newer
+version to recover the older one.
+
+If you want something *actually* gone, this is not the feature — that needs
+`reclaim`, which rewrites history and drops the objects.
 
 ### Files that never sync
 

@@ -67,6 +67,19 @@ export type Revision = {
 	created?: boolean;
 };
 
+/** A path that history still holds but the vault no longer shows. */
+export type DeletedPath = {
+	path: string;
+	when: string;
+	/** The commit whose tree still HOLDS the content — the parent of the
+	 *  deletion. Reading the deleting commit itself would 404, since that is
+	 *  precisely where the file stopped existing. */
+	revision: string;
+	short: string;
+	deletedIn: string;
+	device?: string;
+};
+
 /** A named restore point. */
 export type Pin = {
 	id: string;
@@ -202,6 +215,12 @@ export class Client {
 		const escaped = path.split("/").map(encodeURIComponent).join("/");
 		const res = await this.call("GET", `/v1/at/${encodeURIComponent(rev)}/${escaped}`);
 		return res.arrayBuffer;
+	}
+
+	/** deleted lists paths history holds that head does not, newest first. */
+	async deleted(): Promise<DeletedPath[]> {
+		const j = (await this.call("GET", "/v1/deleted")).json;
+		return (j?.deleted ?? []) as DeletedPath[];
 	}
 
 	/** pins lists named restore points. `path` filters to one file; "*" asks

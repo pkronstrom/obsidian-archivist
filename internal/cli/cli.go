@@ -29,7 +29,7 @@ var ErrDrift = errors.New("working tree differs from the last commit")
 // Handles reports whether name is one of our subcommands.
 func Handles(name string) bool {
 	switch name {
-	case "history", "show", "restore", "check", "export", "reclaim":
+	case "history", "show", "restore", "check", "export", "reclaim", "deleted":
 		return true
 	}
 	return false
@@ -64,6 +64,8 @@ func Run(name string, args []string, env Env) error {
 		return export(r, args, env)
 	case "reclaim":
 		return reclaim(r, args, env)
+	case "deleted":
+		return deleted(r, env)
 	}
 	return fmt.Errorf("unknown command %q", name)
 }
@@ -117,6 +119,40 @@ func show(r *repo.Repo, args []string, env Env) error {
 	}
 	_, err = env.Out.Write(content)
 	return err
+}
+
+// deleted lists what history still holds but the vault no longer shows.
+//
+// Deliberately server-side only for now. Nothing here is new capability --
+// every version has always been in the pack, and restore has always been able
+// to bring one back -- so this is a discovery aid, not a new power. Keeping it
+// off the HTTP surface for now means the question "should deleting be
+// undoable" stays answerable later without having shipped an answer.
+func deleted(r *repo.Repo, env Env) error {
+	gone, err := r.Deleted()
+	if err != nil {
+		return err
+	}
+	if env.JSON {
+		return json.NewEncoder(env.Out).Encode(map[string]any{"deleted": gone})
+	}
+	if len(gone) == 0 {
+		fmt.Fprintln(env.Out, "nothing deleted that history still holds")
+		return nil
+	}
+	for _, d := range gone {
+		who := d.Device
+		if who == "" {
+			who = "unknown"
+		}
+		fmt.Fprintf(env.Out, "%s  %s  deleted by %s\n", d.When.Format("2006-01-02 15:04"), d.Path, who)
+		// The recovery command, spelled out per row. A list of paths that
+		// leaves the reader to work out which revision still has the content
+		// is the half of the job that is easy to get wrong: the deleting
+		// commit does NOT hold it.
+		fmt.Fprintf(env.Out, "    archivist-server restore %q %s\n", d.Path, d.Short)
+	}
+	return nil
 }
 
 func restore(r *repo.Repo, args []string, env Env) error {

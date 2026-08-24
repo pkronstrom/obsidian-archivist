@@ -753,6 +753,15 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request, inst *vaults.In
 	writeJSON(w, resp)
 }
 
+func (s *Server) listDeleted(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	gone, err := inst.Repo.Deleted()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"deleted": gone})
+}
+
 func (s *Server) listPins(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	list, head, err := inst.Pins.List(r.URL.Query().Get("path"))
 	if err != nil {
@@ -922,6 +931,10 @@ func (s *Server) routes() []route {
 		// creating a pin is a put to one tracked file, nothing more.
 		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins},
 		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin},
+		// Discovery only: every version has always been in the pack, and /v1/at
+		// has always been able to serve one. This answers "what did I lose",
+		// which was previously answerable only by knowing the path already.
+		{Method: "GET", Path: "/v1/deleted", Does: "paths history holds that head does not, with the revision to read them from", Scope: auth.ScopeRead, handle: s.listDeleted},
 		{Method: "GET", Path: "/v1/at/{rev}/{path...}", Does: "a file as it was at a revision; does not restore", Scope: auth.ScopeRead, handle: s.at},
 		{Method: "GET", Path: "/v1/check", Does: "working tree versus head", Scope: auth.ScopeRead, handle: s.check},
 		{Method: "GET", Path: "/v1/export", Does: "consistent archive of history; ?gzip=1 to compress", Scope: auth.ScopeRead, handle: s.export},

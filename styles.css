@@ -251,3 +251,9 @@
 	width: 100%;
 	margin-bottom: var(--size-4-2);
 }
+
+/* The restore action sits on the row it acts on, pushed right so the paths
+ * stay scannable as a column. */
+.archivist-rev-restore {
+	margin-left: auto;
+}
