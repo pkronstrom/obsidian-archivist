@@ -1,4 +1,4 @@
-import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { hostname as osHostname } from "os";
 import { Client } from "./client";
 import { PinModal } from "./revision-modal";
@@ -80,6 +80,42 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	 *  away instead of appending them to a pane it no longer owns. */
 	private renderGeneration = 0;
 
+	/** Sections the user has opened, surviving the re-renders that saving a
+	 *  setting triggers. Not persisted: a fresh visit should show the pane in
+	 *  its considered default state rather than however it was left months ago. */
+	private opened = new Set<string>();
+
+	/**
+	 * A collapsible section, returning the element its rows go in.
+	 *
+	 * Collapsed by default for everything a settled user does not need, which
+	 * is most of the pane: on a phone the flat version was several screens of
+	 * scrolling to reach a control someone visits twice a year. `openWhen`
+	 * overrides that for a section that currently NEEDS attention -- an
+	 * unconfigured server is the case that matters, since a collapsed Server
+	 * block on first run would hide the only rows that do anything.
+	 */
+	private section(containerEl: HTMLElement, title: string, openWhen = false): HTMLElement {
+		const open = openWhen || this.opened.has(title);
+		const head = new Setting(containerEl).setName(title).setHeading();
+		head.settingEl.addClass("archivist-section-head");
+		head.settingEl.addClass("mod-clickable");
+
+		const chevron = createSpan({ cls: "archivist-section-chevron" });
+		setIcon(chevron, open ? "chevron-down" : "chevron-right");
+		head.settingEl.prepend(chevron);
+
+		const body = containerEl.createDiv({ cls: "archivist-section-body" });
+		if (!open) body.hide();
+
+		head.settingEl.onClickEvent(() => {
+			if (this.opened.has(title)) this.opened.delete(title);
+			else this.opened.add(title);
+			this.display();
+		});
+		return body;
+	}
+
 	constructor(app: App, private plugin: ArchivistPlugin) {
 		super(app, plugin);
 	}
@@ -108,11 +144,18 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// someone comes back for. First-run stays linear anyway, because an
 		// unconfigured Status card points straight at Server.
 		this.renderStatus(containerEl);
-		this.renderServer(containerEl);
-		this.renderSyncBehavior(containerEl);
-		this.renderConfigSync(containerEl);
-		this.renderHistoryAndRecovery(containerEl);
-		this.renderTroubleshooting(containerEl);
+
+		// Server opens itself while there is nothing to connect with: a
+		// collapsed block on first run would hide the only rows that do
+		// anything. Sync behavior stays open because it is the section people
+		// actually tune, and because the .local rule lives there -- a file that
+		// silently stops syncing is only safe while the rule is easy to find.
+		const unconfigured = !this.plugin.settings.serverUrl || !loadToken(this.app);
+		this.renderServer(this.section(containerEl, "Server", unconfigured));
+		this.renderSyncBehavior(this.section(containerEl, "Sync behavior", true));
+		this.renderConfigSync(this.section(containerEl, "Obsidian config"));
+		this.renderHistoryAndRecovery(this.section(containerEl, "History and recovery"));
+		this.renderTroubleshooting(this.section(containerEl, "Troubleshooting"));
 	}
 
 	/**
@@ -226,7 +269,6 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	/** How this device is wired up: URL, token, name -- touched at setup,
 	 *  then left alone. */
 	private renderServer(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Server").setHeading();
 
 		new Setting(containerEl)
 			.setName("Server URL")
@@ -416,7 +458,6 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	 * what it already had); the dropdown writes presets back onto them.
 	 */
 	private renderSyncBehavior(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Sync behavior").setHeading();
 
 		// This is the ONLY place a user learns why a file stopped syncing, so
 		// it is a visible setting row rather than a tooltip. A file that
@@ -477,7 +518,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		if (s.syncOnChange) {
 			new Setting(containerEl)
-				.setName("Wait after typing stops (seconds)")
+				.setName("Wait after typing (seconds)")
 				.setDesc(
 					"How long editing must pause before syncing. Lower syncs sooner; higher " +
 						"keeps history readable, since every sync is a commit. A continuous " +
@@ -512,13 +553,12 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	}
 
 	private renderHistoryAndRecovery(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("History and recovery").setHeading();
 
 		// Same audience as re-bootstrap and vault restore points: rare,
 		// deliberate, whole-vault. Not in the note's revision modal, because
 		// the note you are looking at is by definition not the one you deleted.
 		new Setting(containerEl)
-			.setName("Restore a deleted note")
+			.setName("Deleted notes")
 			.setDesc(
 				"Notes the server still holds but this vault no longer shows. Restoring " +
 					"puts one back where it was and syncs it.",
@@ -536,7 +576,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Group revisions edited within (minutes)")
+			.setName("Group revisions within (minutes)")
 			.setDesc(
 				"The revision browser groups edits closer together than this into one " +
 					"session. Lower shows finer detail; 0 lists every sync. Affects the " +
@@ -561,7 +601,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// the one they asked for. Same audience as re-bootstrap: rare,
 		// deliberate, whole-vault.
 		new Setting(containerEl)
-			.setName("Vault restore points")
+			.setName("Restore points")
 			.setDesc(
 				"Name the vault's current state so you can find it later. Restore points " +
 					"sync to your other devices and survive history cleanups. Always marks " +
@@ -593,10 +633,9 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	 *  than sitting one row below "restore a deleted note" -- which is exactly
 	 *  the kind of neighbouring that gets something clicked by mistake. */
 	private renderTroubleshooting(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Troubleshooting").setHeading();
 
 		new Setting(containerEl)
-			.setName("Re-bootstrap from server")
+			.setName("Re-bootstrap")
 			.setDesc(
 				"Discards this device's sync state and rebuilds it from the server. " +
 					"Deletes nothing and never touches .local files, but a note that " +
@@ -614,7 +653,6 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	/** The config-sync section: level, then per-plugin opt-ins. */
 	private renderConfigSync(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Obsidian config").setHeading();
 
 		// Obsidian lets the config directory be renamed. This plugin does not
 		// follow that: the whole point of syncing config in-vault is that files

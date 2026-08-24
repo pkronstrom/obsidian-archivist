@@ -409,3 +409,22 @@
 		visibility: visible;
 	}
 }
+
+/* Collapsible settings sections ------------------------------------------- */
+
+.archivist-section-head {
+	cursor: pointer;
+}
+
+.archivist-section-chevron {
+	display: inline-flex;
+	align-items: center;
+	margin-right: var(--size-4-2);
+	color: var(--text-muted);
+}
+
+/* The heading is a flex row in Obsidian's own styling; prepending the chevron
+ * makes it the first item, so this only has to stop it stretching. */
+.archivist-section-head .archivist-section-chevron {
+	flex: 0 0 auto;
+}
