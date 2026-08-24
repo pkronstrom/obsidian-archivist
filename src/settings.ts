@@ -123,14 +123,22 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Archivist – self-hosted Obsidian sync" });
+		containerEl.createEl("h2", { text: "Archivist" });
 
 		// A control-less Setting rather than a bare <p>: the description class
 		// only gets its muted styling inside a .setting-item, and themes align
 		// and pad setting rows -- loose paragraphs sit off-grid beside them.
 		new Setting(containerEl).setDesc(
 			createFragment((f) => {
-				f.appendText("Connect this vault to your Archivist server. ");
+				// What it is, what that buys, and the one property that is
+				// actually unusual. Three short sentences: someone opening
+				// settings on a phone will read the first, maybe the second.
+				f.appendText(
+					"Self-hosted sync for this vault. Your notes stay plain Markdown " +
+						"files on a server you own, so nothing is locked in a proprietary " +
+						"format and no third party holds them. Every sync is a commit, so " +
+						"nothing is overwritten and any earlier version can be read back. ",
+				);
 				f.createEl("a", {
 					href: "https://github.com/pkronstrom/obsidian-archivist",
 					text: "github.com/pkronstrom/obsidian-archivist",
