@@ -28,7 +28,7 @@ func TestPinAppendsAndCommits(t *testing.T) {
 	rc, v, r := newPinFixture(t)
 
 	head, _ := r.Head()
-	entry, newHead, err := rc.Pin(head, "before reorg", "")
+	entry, newHead, err := rc.Pin(head, "before reorg", "Note.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestPinRefusesStaleHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, head, err := rc.Pin(stale, "too late", "")
+	_, head, err := rc.Pin(stale, "too late", "Note.md")
 	if !errors.Is(err, ErrPinHeadMismatch) {
 		t.Fatalf("got %v, want ErrPinHeadMismatch", err)
 	}
@@ -78,6 +78,18 @@ func TestPinRefusesMissingPath(t *testing.T) {
 
 	head, _ := r.Head()
 	if _, _, err := rc.Pin(head, "ghost", "NoSuchNote.md"); !errors.Is(err, ErrPinPathMissing) {
+		t.Fatalf("got %v, want ErrPinPathMissing", err)
+	}
+}
+
+// Vault-wide pins were removed: a path-less pin would be a whole-vault restore
+// point, and a whole-vault restore has no safe gesture in a plugin. Minting one
+// would leave data no surface can act on.
+func TestPinRefusesAPathlessPin(t *testing.T) {
+	rc, _, r := newPinFixture(t)
+
+	head, _ := r.Head()
+	if _, _, err := rc.Pin(head, "whole vault", ""); !errors.Is(err, ErrPinPathMissing) {
 		t.Fatalf("got %v, want ErrPinPathMissing", err)
 	}
 }
@@ -111,7 +123,7 @@ func TestPinRejectsOversizeAndEmptyNames(t *testing.T) {
 	head, _ := r.Head()
 
 	for _, name := range []string{"", "   ", strings.Repeat("x", MaxPinName+1)} {
-		if _, _, err := rc.Pin(head, name, ""); !errors.Is(err, ErrPinName) {
+		if _, _, err := rc.Pin(head, name, "Note.md"); !errors.Is(err, ErrPinName) {
 			t.Errorf("Pin(%d bytes) = %v, want ErrPinName", len(name), err)
 		}
 	}

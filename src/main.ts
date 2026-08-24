@@ -1,7 +1,7 @@
 import { Notice, Plugin, TAbstractFile, setIcon } from "obsidian";
 import { Client } from "./client";
 import { Sync, skip, localOnly } from "./sync";
-import { RevisionModal, PinModal } from "./revision-modal";
+import { RevisionModal } from "./revision-modal";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
 import { loadState } from "./state";
@@ -157,23 +157,6 @@ export default class ArchivistPlugin extends Plugin {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || !this.configured()) return false;
 				if (!checking) this.openRevisions();
-				return true;
-			},
-		});
-		this.addCommand({
-			id: "pin-vault",
-			name: "Pin the whole vault",
-			checkCallback: (checking) => {
-				if (!this.configured()) return false;
-				if (!checking) {
-					new PinModal(
-						this.app,
-						undefined,
-						() => this.clientOrNull(),
-						() => loadState(this.app).base,
-						() => this.syncScheduler.flush({ force: true }),
-					).open();
-				}
 				return true;
 			},
 		});

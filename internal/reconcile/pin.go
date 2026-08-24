@@ -57,13 +57,13 @@ func (rc *Reconciler) Pin(expectedHead, name, path string) (pins.Entry, string, 
 		return pins.Entry{}, head, fmt.Errorf("%w: have %s, expected %s", ErrPinHeadMismatch, head, expectedHead)
 	}
 
-	// A file pin must name something that exists in the tree it pins.
-	// Validated under the lock, so the answer cannot go stale between the
-	// check and the commit.
-	if path != "" {
-		if _, err := rc.r.ReadAt(head, path); err != nil {
-			return pins.Entry{}, head, fmt.Errorf("%w: %s", ErrPinPathMissing, path)
-		}
+	// A pin must name something that exists in the tree it pins. Validated
+	// under the lock, so the answer cannot go stale between check and commit.
+	if path == "" {
+		return pins.Entry{}, head, fmt.Errorf("%w: empty", ErrPinPathMissing)
+	}
+	if _, err := rc.r.ReadAt(head, path); err != nil {
+		return pins.Entry{}, head, fmt.Errorf("%w: %s", ErrPinPathMissing, path)
 	}
 
 	existing, err := rc.v.Read(pins.File)

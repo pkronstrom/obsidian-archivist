@@ -125,14 +125,41 @@ that HEAD, appends, commits, notifies, and returns the new head. Mismatch is
 before surfacing an error. API code cannot reach the mutex directly, which is
 why this is a reconciler method rather than a handler.
 
-**Pin scopes — file pins first.** File pins (`path` set) show in that note's
-modal and are the primary feature: they are what the revision browser is for,
-and what gets built and shipped first. Vault-wide pins (`path` absent) are
-restore points for the whole vault, live in the settings Maintenance section,
-and are deliberately NOT interleaved into a note's modal because they are not
-about that note. Same route, same file, same id scheme — the scope is just
-whether `path` is set — so vault-wide pins are a small addition afterwards
-rather than a parallel design.
+**File pins only. Vault-wide pins were built and then removed (2026-08-24).**
+A pin names one file. The vault-wide variant shipped as a create button with
+nothing that consumed it, and the reason it stalled is the reason it is gone:
+"restore a file" has a safe gesture (materialise beside, rename to accept)
+while "restore a vault" has none. To be a real restore it must DELETE
+everything created since the pin, every device then pulls hundreds of changes,
+any device that was offline returns with mass conflict copies, and undoing it
+needs a second bulk operation performed against a vault that no longer matches
+your memory. Nothing is lost permanently -- the pre-restore state stays in
+history -- but the blast radius is the whole vault and the recovery is expert-
+only.
+
+The stronger argument is that no use case survives contact. Every real story is
+"I reorganised on Tuesday and regret part of it", and stamping the vault back
+to Monday also discards every good edit since. What that person wants is *what
+changed since Monday*, then to pull back the three notes they miss -- which is
+the file restore that already exists.
+
+If it returns it should be a **vault checkpoint**, and behind step-up auth: a
+whole-vault operation is exactly what a second factor is for, and step-up is
+not wired into the plugin yet.
+
+**A checkpoint would want a git branch, and that has a prerequisite.** A branch
+is the right mechanism -- the branch NAME is stable identity with no hash to
+dangle, and the state becomes a real GC root. But `collect()` drops only
+unreferenced objects and `pointHeadAt` moves only HEAD, so a branch would keep
+its whole ancestry alive: one checkpoint from June pins all history before
+June, and reclaim would report success while recovering nothing. Worse, part of
+what reclaim exists for is purging a path from ALL history -- a leaked token, a
+huge accidental file -- and a stale branch would leave that content reachable
+while the purge reported success. The fix is what `git filter-repo` does:
+rewrite EVERY ref, not just HEAD. The rewrite loop already builds `mapped` with
+every old-to-new pair and `safe` with the tree-identical subset, so it is a
+small change -- and worth doing regardless, because today a stray branch would
+quietly corrupt a purge.
 
 **Pins mark now.** There is no way to pin a historical revision: no use case
 survived scrutiny (preserve an old version by materialising it, then pin the

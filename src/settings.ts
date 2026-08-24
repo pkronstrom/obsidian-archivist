@@ -1,7 +1,6 @@
 import { App, Notice, Platform, PluginSettingTab, Setting, setIcon } from "obsidian";
 import { hostname as osHostname } from "os";
 import { Client } from "./client";
-import { PinModal } from "./revision-modal";
 import { DeletedModal } from "./deleted-modal";
 import { scopeWarning, stepUpWarning } from "./scopes";
 import { isFirstRun, loadState } from "./state";
@@ -592,36 +591,6 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						this.plugin.settings.revisionGapMinutes = Math.floor(n);
 						await this.plugin.saveSettings();
 					}),
-			);
-
-		// Vault-wide pins live HERE and not in the note's revision modal. They
-		// are not about any one note, and interleaving them into a file's
-		// history would make the user filter someone else's chronology out of
-		// the one they asked for. Same audience as re-bootstrap: rare,
-		// deliberate, whole-vault.
-		new Setting(containerEl)
-			.setName("Restore points")
-			.setDesc(
-				"Name the vault's current state so you can find it later. Restore points " +
-					"sync to your other devices and survive history cleanups. Always marks " +
-					"now.",
-			)
-			.addButton((b) =>
-				b.setButtonText("Pin the vault now").onClick(() => {
-					const { serverUrl, vault } = this.plugin.settings;
-					const token = loadToken(this.app);
-					if (!serverUrl || !token) {
-						new Notice("archivist: set the server URL and token first");
-						return;
-					}
-					new PinModal(
-						this.app,
-						undefined,
-						() => new Client(serverUrl, token, vault),
-						() => loadState(this.app).base,
-						() => this.plugin.flushSync(),
-					).open();
-				}),
 			);
 
 		// Most setup failures are a wrong URL or a wrong token. A button that

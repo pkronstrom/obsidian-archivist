@@ -798,11 +798,19 @@ func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "expectedHead is required")
 		return
 	}
-	if req.Path != "" {
-		if err := vault.ValidPath(req.Path); err != nil {
-			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
-			return
-		}
+	// A pin names a FILE. Vault-wide pins were removed: a whole-vault restore
+	// point implies a whole-vault restore, which has no safe gesture in a
+	// plugin -- it must delete everything created since, and undoing it needs
+	// a second bulk operation. Allowing a path-less pin here would mint data
+	// no surface can act on. See the design note for the checkpoint idea that
+	// replaces it, which belongs behind step-up auth.
+	if req.Path == "" {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "path is required")
+		return
+	}
+	if err := vault.ValidPath(req.Path); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
+		return
 	}
 
 	entry, head, err := inst.Reconciler.Pin(req.ExpectedHead, req.Name, req.Path)
