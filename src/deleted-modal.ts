@@ -151,14 +151,28 @@ export class DeletedModal extends Modal {
 			});
 		}
 
-		const action = main.createEl("button", {
+		// A child of the ROW, not of the text block: the grid places it in the
+		// second column, which is what pulls it to the right edge. Created
+		// inside main it was just another flex item hugging the filename.
+		const action = row.createEl("button", {
 			cls: "archivist-rev-restore",
 		});
 		// An icon on mobile: the word costs a third of the row, and the tap
 		// target stays the same size either way.
 		if (Platform.isMobile) {
-			setIcon(action, this.localOnly ? "eye" : "rotate-ccw");
-			action.setAttr("aria-label", this.localOnly ? "Open copy" : "Restore");
+			// rotate-ccw is the refresh glyph and reads as "sync this again".
+			// archive-restore is the actual metaphor -- something coming back
+			// out of storage. Verified rather than assumed: an icon name the
+			// running Obsidian does not ship renders NOTHING, which would
+			// leave an invisible button as the modal's only action.
+			const label = this.localOnly ? "Open copy" : "Restore";
+			for (const name of this.localOnly ? ["eye"] : ["archive-restore", "undo-2", "undo"]) {
+				setIcon(action, name);
+				if (action.querySelector("svg")) break;
+				action.empty();
+			}
+			if (!action.querySelector("svg")) action.setText(label);
+			action.setAttr("aria-label", label);
 		} else {
 			action.setText(this.localOnly ? "Open copy" : "Restore");
 		}

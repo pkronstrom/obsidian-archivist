@@ -337,12 +337,14 @@
 .archivist-del-items .archivist-rev-restore {
 	grid-column: 2;
 	grid-row: 1 / span 2;
+	/* Hard right, so the buttons form a column the thumb can find without
+	 * reading. Buttons that trail each filename give a ragged edge the eye has
+	 * to chase down the list. */
+	justify-self: end;
 }
 
 .archivist-del-items .archivist-rev-main {
-	flex: 1 1 auto;
 	min-width: 0;
-	gap: var(--size-4-2);
 }
 
 /* The filename is the thing being scanned, so it gets the width and the
