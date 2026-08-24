@@ -68,6 +68,35 @@ const PLUGIN_LIST_FILES = new Set(["community-plugins.json", "core-plugins.json"
  * Returns false for every path outside CONFIG_DIR: this decides config only, and
  * ordinary notes are the caller's business.
  */
+/**
+ * The plugin id for a path that is a plugin's data.json, or null.
+ *
+ * Used to decide whether a file needs scanning before it is pushed: only these
+ * paths can carry a plugin's credentials.
+ */
+export function pluginDataId(path: string): string | null {
+	if (!path.startsWith(CONFIG_DIR + "/plugins/")) return null;
+	const rest = path.slice(CONFIG_DIR.length + "/plugins/".length).split("/");
+	if (rest.length !== 2 || rest[1] !== "data.json") return null;
+	return rest[0] || null;
+}
+
+/**
+ * True when this data.json is syncing ONLY because "sync all plugins" is on,
+ * rather than because the user enabled that specific plugin.
+ *
+ * That distinction is the whole basis of enforcement: an explicit per-plugin
+ * opt-in is a decision someone made having read what the scanner found, and it
+ * must keep working. Accept-all is a blanket default, and a blanket default
+ * must not be able to push a credential nobody looked at.
+ */
+export function acceptedOnlyByDefault(path: string, settings: ConfigSyncSettings): boolean {
+	const id = pluginDataId(path);
+	if (!id) return false;
+	if (settings.acceptedPlugins.includes(id)) return false;
+	return settings.acceptAllPlugins;
+}
+
 export function configSyncable(path: string, settings: ConfigSyncSettings): boolean {
 	if (settings.level === "files") return false;
 	if (!path.startsWith(CONFIG_DIR + "/")) return false;

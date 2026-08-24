@@ -672,6 +672,15 @@ was never lost and "restoring" it would leave you with two copies.
 If you want something *actually* gone, this is not the feature — that needs
 `reclaim`, which rewrites history and drops the objects.
 
+**Plugin settings.** A plugin's `data.json` often holds an API key, so it is
+scanned before it can sync. Two modes: leave *Sync settings for all plugins*
+off and enable each plugin yourself, or turn it on and every plugin syncs
+except the ones the scan flags. Either way, a flagged plugin needs an explicit
+decision from you, and the scan runs again at the push rather than only in the
+settings pane, so a blanket default can never send a credential nobody looked
+at. Scanning is best-effort: it reads names and values it recognises, and it
+cannot recognise everything.
+
 ### Files that never sync
 
 **Anything marked `.local` stays on the device that made it** — never

@@ -676,10 +676,29 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setName("Plugin settings").setHeading();
 
+		// Two modes, and the scanner behaves differently in each. Off: nothing
+		// syncs until you say so, per plugin, having read what the scan found.
+		// On: everything syncs EXCEPT what the scan objects to, checked again
+		// at the push rather than only here, because a blanket default must
+		// not be able to send a credential nobody looked at.
+		new Setting(containerEl)
+			.setName("Sync settings for all plugins")
+			.setDesc(
+				"Includes plugins you install later, without enabling each one. " +
+					"Anything the scan flags is still held back until you allow it below.",
+			)
+			.addToggle((t) =>
+				t.setValue(config.acceptAllPlugins).onChange(async (on) => {
+					config.acceptAllPlugins = on;
+					saveConfigSync(this.app, config);
+					this.display();
+				}),
+			);
+
 		new Setting(containerEl).setDesc(
-			"A plugin's data.json syncs only if you turn it on here. Each is scanned " +
-				"for credentials first, but scanning is best-effort, not a guarantee. " +
-				"Enabling a flagged one puts its secrets into sync history.",
+			"Plugin settings (data.json) often hold API keys, so each is scanned for " +
+				"credentials. Scanning is best-effort, not a guarantee: enabling a " +
+				"flagged plugin puts its secrets into sync history permanently.",
 		);
 
 		// Its own container, filled asynchronously. display() can run again
@@ -710,6 +729,10 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		const { folders } = await adapter.list(dir);
 		if (generation !== this.renderGeneration) return;
+		// Counted while scanning, and reported at the end: the friction this
+		// removes is not knowing that a plugin you installed last month has
+		// been quietly not syncing its settings ever since.
+		let cleanAndIdle = 0;
 		for (const folder of folders.sort()) {
 			// Re-checked each iteration: the scan reads and parses a data.json
 			// per plugin, so a re-render can easily land mid-loop.
@@ -743,6 +766,18 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			if (desc) setting.setDesc(desc);
 			if (unreadable) continue;
 
+			// With accept-all on, a clean plugin is already syncing and its
+			// toggle would be a lie: turning it "off" changes nothing, because
+			// the blanket default puts it back. Say so instead of offering a
+			// control that does not control anything.
+			if (config.acceptAllPlugins && suspicions.length === 0) {
+				setting.setDesc("Syncing, allowed by the setting above");
+				continue;
+			}
+			if (suspicions.length === 0 && !config.acceptedPlugins.includes(id)) {
+				cleanAndIdle++;
+			}
+
 			setting.addToggle((t) =>
 				t.setValue(config.acceptedPlugins.includes(id)).onChange(async (on) => {
 					if (on && suspicions.length > 0) {
@@ -760,6 +795,18 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						: config.acceptedPlugins.filter((p) => p !== id);
 					saveConfigSync(this.app, config);
 				}),
+			);
+		}
+
+		// The nudge that makes opt-in bearable. Without it, a plugin installed
+		// months ago sits here not syncing its settings and nothing ever says
+		// so -- you find out when a laptop and a phone disagree about a plugin
+		// you configured once.
+		if (!config.acceptAllPlugins && cleanAndIdle > 0 && generation === this.renderGeneration) {
+			new Setting(containerEl).setDesc(
+				cleanAndIdle === 1
+					? "1 plugin has clean settings that are not syncing. Turn it on above, or use the setting at the top of this section."
+					: `${cleanAndIdle} plugins have clean settings that are not syncing. Turn them on above, or use the setting at the top of this section.`,
 			);
 		}
 	}

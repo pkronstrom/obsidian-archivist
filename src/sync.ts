@@ -13,11 +13,13 @@ import {
 } from "./state";
 import { PairingHazardError, isRescuePath, rescueFolder, type PairingChoice } from "./pairing";
 import {
+	acceptedOnlyByDefault,
 	CONFIG_DIR,
 	configSyncable,
 	DEFAULT_CONFIG_SYNC,
 	type ConfigSyncSettings,
 } from "./config-sync";
+import { scanForSecrets } from "./secrets";
 
 export type SyncReport = {
 	pulled: number;
@@ -146,6 +148,14 @@ export function skipDir(
  * what changed".
  */
 export class Sync {
+	/**
+	 * Plugin settings files refused by the scanner on the way out, so the
+	 * settings pane and the sync report can say WHICH plugin is not syncing
+	 * and why. Rebuilt each cycle: a refusal that no longer applies, because
+	 * the user removed the key or enabled the plugin explicitly, should stop
+	 * being reported.
+	 */
+	readonly refusedSecrets = new Map<string, string[]>();
 	private running = false;
 	private queued = false;
 
@@ -471,6 +481,10 @@ export class Sync {
 	private async localChanges(state: SyncState): Promise<PendingChange[]> {
 		const out: PendingChange[] = [];
 		const seen = new Set<string>();
+		// Rebuilt every cycle. A refusal that no longer applies, because the
+		// key was removed or the plugin was enabled explicitly, must stop being
+		// reported rather than linger as a stale warning.
+		this.refusedSecrets.clear();
 
 		for (const path of await this.listAll("")) {
 			seen.add(path);
@@ -487,6 +501,23 @@ export class Sync {
 				// re-hashing it every cycle.
 				state.files[path] = { hash, mtime: st.mtime, size: st.size };
 				continue;
+			}
+			// A plugin's data.json syncing only because "sync all plugins" is
+			// on gets scanned HERE, at the push, not merely in the settings
+			// pane. Scanning that lives only in the UI is advice; a blanket
+			// default needs enforcement, because the asymmetry is unforgiving:
+			// a false positive costs a setting, a false negative puts a live
+			// key in git history permanently and nothing reports it.
+			if (acceptedOnlyByDefault(path, this.config())) {
+				const why = this.suspicionsIn(content);
+				if (why.length > 0) {
+					// Skipped, never edited: a data.json with a hole in it is a
+					// broken file that looks fine, and the plugin reading it
+					// re-prompts or silently resets.
+					this.refusedSecrets.set(path, why);
+					this.log(`refusing ${path}: ${why.join("; ")}`);
+					continue;
+				}
 			}
 			out.push({ path, op: "put", hash, mtime: st.mtime, size: st.size, content });
 		}
@@ -520,6 +551,23 @@ export class Sync {
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
 		return pairRenames(out as Pending[], this.serverProtocol) as PendingChange[];
+	}
+
+	/**
+	 * What the scanner objects to in a data.json, as plain sentences.
+	 *
+	 * Unparseable counts as suspicious rather than clean: a file this cannot
+	 * read is a file this cannot vouch for, and the safe answer for a blanket
+	 * default is to leave it alone.
+	 */
+	private suspicionsIn(content: ArrayBuffer): string[] {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(new TextDecoder().decode(content));
+		} catch {
+			return ["its data.json could not be parsed, so it cannot be checked"];
+		}
+		return scanForSecrets(parsed).map((x) => `${x.path}: ${x.why}`);
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {

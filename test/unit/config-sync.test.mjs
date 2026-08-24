@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { configSyncable, DEFAULT_CONFIG_SYNC } from "../../dist-test/entry.mjs";
+import { configSyncable, DEFAULT_CONFIG_SYNC, acceptedOnlyByDefault } from "../../dist-test/entry.mjs";
 import { skip } from "../../dist-test/entry.mjs";
 
 const files = { ...DEFAULT_CONFIG_SYNC, level: "files" };
@@ -160,4 +160,35 @@ test("accept-all does not widen anything beyond plugin data", () => {
 test("accept-all is inert below the plugins level", () => {
 	const appearanceAll = { ...DEFAULT_CONFIG_SYNC, level: "appearance", acceptAllPlugins: true };
 	assert.equal(configSyncable(".obsidian/plugins/dataview/data.json", appearanceAll), false);
+});
+
+// The distinction enforcement rests on: an explicit per-plugin opt-in is a
+// decision someone made having read what the scanner found, so it must keep
+// working. Accept-all is a blanket default, and a blanket default must not be
+// able to push a credential nobody looked at.
+test("acceptedOnlyByDefault separates a blanket default from a real decision", () => {
+	const dataPath = ".obsidian/plugins/some-plugin/data.json";
+	const all = { ...DEFAULT_CONFIG_SYNC, level: "plugins", acceptAllPlugins: true };
+	const named = {
+		...DEFAULT_CONFIG_SYNC,
+		level: "plugins",
+		acceptedPlugins: ["some-plugin"],
+	};
+
+	assert.equal(acceptedOnlyByDefault(dataPath, all), true, "blanket default: needs scanning");
+	assert.equal(
+		acceptedOnlyByDefault(dataPath, named),
+		false,
+		"explicitly enabled: the user already decided",
+	);
+	assert.equal(
+		acceptedOnlyByDefault(dataPath, { ...all, acceptedPlugins: ["some-plugin"] }),
+		false,
+		"explicit opt-in wins even with accept-all on",
+	);
+	// Not a plugin data.json at all.
+	assert.equal(acceptedOnlyByDefault(".obsidian/appearance.json", all), false);
+	assert.equal(acceptedOnlyByDefault("Note.md", all), false);
+	// Nested files under a plugin are not its settings.
+	assert.equal(acceptedOnlyByDefault(".obsidian/plugins/p/sub/data.json", all), false);
 });
