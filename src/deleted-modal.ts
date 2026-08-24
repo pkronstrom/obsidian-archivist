@@ -159,23 +159,12 @@ export class DeletedModal extends Modal {
 		});
 		// An icon on mobile: the word costs a third of the row, and the tap
 		// target stays the same size either way.
-		if (Platform.isMobile) {
-			// rotate-ccw is the refresh glyph and reads as "sync this again".
-			// archive-restore is the actual metaphor -- something coming back
-			// out of storage. Verified rather than assumed: an icon name the
-			// running Obsidian does not ship renders NOTHING, which would
-			// leave an invisible button as the modal's only action.
-			const label = this.localOnly ? "Open copy" : "Restore";
-			for (const name of this.localOnly ? ["eye"] : ["archive-restore", "undo-2", "undo"]) {
-				setIcon(action, name);
-				if (action.querySelector("svg")) break;
-				action.empty();
-			}
-			if (!action.querySelector("svg")) action.setText(label);
-			action.setAttr("aria-label", label);
-		} else {
-			action.setText(this.localOnly ? "Open copy" : "Restore");
-		}
+		// Text, not an icon, on every platform. archive-restore and undo both
+		// read as "refresh" or "undo my last action" at 16px, and this button
+		// is rare enough that a word costs less than a wrong guess. Kept small
+		// by CSS instead of by shortening it.
+		action.setText(this.localOnly ? "Open copy" : "Restore");
+
 		action.onclick = () => void this.restore(item, row);
 	}
 

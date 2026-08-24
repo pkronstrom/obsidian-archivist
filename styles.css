@@ -365,15 +365,13 @@
 }
 
 /* Obsidian sizes mobile buttons for standalone use; inside a dense list that
- * makes every row a third button. Shrink the chrome, keep the tap target. */
+ * makes every row a third button. Shrink the chrome, keep the tap target
+ * legible -- 32px high is still comfortably tappable. */
 .is-mobile .archivist-del-items .archivist-rev-restore {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 34px;
-	height: 34px;
-	padding: 0;
+	height: 32px;
+	padding: 0 var(--size-4-2);
 	margin: 0;
+	font-size: var(--font-ui-smaller);
 	box-shadow: none;
 }
 
