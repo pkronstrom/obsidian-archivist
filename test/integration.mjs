@@ -214,6 +214,43 @@ check("`.obsidian` does not reach the other device",
   check("the rescued copy reached the other device", asideOnMac, asideName);
 }
 
+// A .local file must survive a re-bootstrap untouched. The settings pane
+// promises exactly this, and the promise is the whole reason the namespace is
+// safe to use: a scratch note you keep on one device must not vanish because
+// you repaired sync state. Re-bootstrap adopts the server's snapshot, and a
+// .local path is by construction absent from it -- so the danger is not that
+// the server deletes it, but that a local pass treats "not in the snapshot" as
+// "should not exist here".
+{
+  const keep = await device("keeper");
+  await keep.sync.run();
+  await fs.writeFile(path.join(keep.root, "Scratch.local.md"), "never leaves this device\n");
+  await fs.mkdir(path.join(keep.root, "Journal.local"), { recursive: true });
+  await fs.writeFile(path.join(keep.root, "Journal.local/entry.md"), "nor does this\n");
+
+  // Force the re-bootstrap path with a cursor the server never issued.
+  keep.app.saveLocalStorage("archivist.state", {
+    base: "0123456789012345678901234567890123456789",
+    files: {},
+  });
+  const r2 = await keep.sync.run();
+  check("re-bootstrap happened (local-only survival)", r2.rebootstrapped, JSON.stringify(r2));
+
+  check("a .local file survived re-bootstrap",
+    await keep.app.vault.adapter.exists("Scratch.local.md"));
+  check("a .local folder's contents survived re-bootstrap",
+    await keep.app.vault.adapter.exists("Journal.local/entry.md"));
+  check("the .local file still holds its content",
+    (await fs.readFile(path.join(keep.root, "Scratch.local.md"), "utf8")) === "never leaves this device\n");
+
+  // And it never reached the server, which is the other half of the promise.
+  await mac.sync.run();
+  check("the .local file was never uploaded",
+    !(await mac.app.vault.adapter.exists("Scratch.local.md")));
+  check("the .local folder was never uploaded",
+    !(await mac.app.vault.adapter.exists("Journal.local/entry.md")));
+}
+
 // --- pairing safety ---------------------------------------------------------
 // By this point the server has content, which is exactly the hazard: a fresh
 // device with its own notes must refuse rather than union the two.
