@@ -95,11 +95,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// and pad setting rows -- loose paragraphs sit off-grid beside them.
 		new Setting(containerEl).setDesc(
 			createFragment((f) => {
-				f.appendText(
-					"Self-hosted sync: your vault stays plain Markdown files on a " +
-						"server you own, with full history. This plugin connects to " +
-						"your own Archivist server. Setup instructions: ",
-				);
+				f.appendText("Connect this vault to your Archivist server. ");
 				f.createEl("a", {
 					href: "https://github.com/pkronstrom/obsidian-archivist",
 					text: "github.com/pkronstrom/obsidian-archivist",
@@ -107,11 +103,16 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			}),
 		);
 
+		// Ordered for the SETTLED user, not the first-run one: setup happens
+		// once, while "is it working", sync tuning and recovery are what
+		// someone comes back for. First-run stays linear anyway, because an
+		// unconfigured Status card points straight at Server.
 		this.renderStatus(containerEl);
 		this.renderServer(containerEl);
 		this.renderSyncBehavior(containerEl);
-		this.renderMaintenance(containerEl);
 		this.renderConfigSync(containerEl);
+		this.renderHistoryAndRecovery(containerEl);
+		this.renderTroubleshooting(containerEl);
 	}
 
 	/**
@@ -129,7 +130,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const token = loadToken(this.app);
 
 		if (!serverUrl || !token) {
-			card.createDiv({ text: "Not configured — set the server URL and token below." });
+			card.createDiv({ text: "Not configured. Set the server URL and token below." });
 			this.renderPairingHazard(containerEl);
 			return;
 		}
@@ -242,7 +243,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Token")
 			.setDesc(
-				"Bearer token the server expects. Stored on this device only — " +
+				"Bearer token the server expects. Stored on this device only, " +
 					"never in the vault, so it cannot reach git history.",
 			)
 			.addText((t) => {
@@ -273,10 +274,12 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		// Choosing a vault is a SETUP action: after the first successful sync
 		// this device has adopted a vault and repointing it is no longer a
 		// settings tweak -- the identity guard would refuse to sync anyway.
-		// The deliberate escape hatch is Re-bootstrap, under Maintenance.
+		// The deliberate escape hatch is Re-bootstrap, under Troubleshooting.
 		if (isFirstRun(loadState(this.app))) {
 			this.renderVaultChooser(containerEl);
 		}
+
+		this.renderTestConnection(containerEl);
 	}
 
 	/** os.hostname() only exists in the Electron/Node desktop runtime -- guarded
@@ -295,6 +298,45 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		await this.plugin.saveSettings();
 		new Notice(`archivist: syncing vault "${vault}"`);
 		this.display();
+	}
+
+	/** The last row of Server, beside the URL and token it checks. It used to
+	 *  sit at the bottom of Maintenance, a whole pane away from the two fields
+	 *  it exists to validate. */
+	private renderTestConnection(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Test connection")
+			.setDesc("Check the URL and token, and show which vault they reach")
+			.addButton((b) =>
+				b.setButtonText("Test").onClick(async () => {
+					const { serverUrl } = this.plugin.settings;
+					const token = loadToken(this.app);
+					if (!serverUrl || !token) {
+						new Notice("archivist: set the server URL and token first");
+						return;
+					}
+					try {
+						const client = new Client(serverUrl, token, this.plugin.settings.vault);
+						const idx = await client.index();
+						const { files } = await client.snapshot();
+						const entries = Object.values(files);
+						this.vaultStats = {
+							files: entries.length,
+							bytes: entries.reduce((sum, e) => sum + e.size, 0),
+						};
+						const name = idx.vault || "unnamed (older server)";
+						new Notice(
+							`archivist: connected to vault "${name}": ${entries.length} file(s), ` +
+								`server ${idx.version}`,
+							10000,
+						);
+						// Re-render so the Status card above picks up vaultStats.
+						this.display();
+					} catch (err) {
+						new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
+					}
+				}),
+			);
 	}
 
 	/** Shown only before the first successful sync -- see renderServer. */
@@ -384,13 +426,10 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Files that never sync")
 			.setDesc(
-				"Anything marked .local stays on this device and is never uploaded: a " +
-					"file like Scratch.local.md, or a whole folder like Journal.local/. " +
-					"Rename it without the .local part to start syncing it. A folder must " +
-					"END in .local to count, so an ordinary folder such as " +
-					"project.local.assets keeps syncing normally. Revisions you open from " +
-					"the history browser are saved this way, so browsing an old version " +
-					"never touches your other devices.",
+				"Files with .local before the extension stay on this device, as do " +
+					"folders ending in .local: Scratch.local.md, Journal.local/. Remove " +
+					"the .local to start syncing one. A folder like project.local.assets/ " +
+					"is unaffected.",
 			);
 
 		const s = this.plugin.settings;
@@ -441,8 +480,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				.setName("Wait after typing stops (seconds)")
 				.setDesc(
 					"How long editing must pause before syncing. Lower syncs sooner; higher " +
-						"keeps note history readable, because every sync is a commit. " +
-						"A long unbroken burst still syncs at least every 30 seconds.",
+						"keeps history readable, since every sync is a commit. A continuous " +
+						"burst still syncs every 30 seconds.",
 				)
 				.addText((t) =>
 					t.setValue(String(s.syncQuietSeconds)).onChange(async (v) => {
@@ -472,8 +511,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private renderMaintenance(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Maintenance").setHeading();
+	private renderHistoryAndRecovery(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("History and recovery").setHeading();
 
 		// Same audience as re-bootstrap and vault restore points: rare,
 		// deliberate, whole-vault. Not in the note's revision modal, because
@@ -481,10 +520,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Restore a deleted note")
 			.setDesc(
-				"Lists notes the server still has but this vault no longer shows, newest " +
-					"first. Restoring puts the file back where it was and syncs it like any " +
-					"new note. Deleting a note has never removed it from the server \u2014 this " +
-					"only makes that visible.",
+				"Notes the server still holds but this vault no longer shows. Restoring " +
+					"puts one back where it was and syncs it.",
 			)
 			.addButton((b) =>
 				b.setButtonText("Browse deleted").onClick(() => {
@@ -501,11 +538,9 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Group revisions edited within (minutes)")
 			.setDesc(
-				"The revision browser groups a note's history into editing sessions: " +
-					"edits closer together than this become one entry, shown as the state " +
-					"the note was left in. Lower shows finer detail; 0 lists every " +
-					"individual sync. Purely a display choice \u2014 it changes nothing on " +
-					"the server and nothing about what is stored.",
+				"The revision browser groups edits closer together than this into one " +
+					"session. Lower shows finer detail; 0 lists every sync. Affects the " +
+					"list only.",
 			)
 			.addText((t) =>
 				t
@@ -528,10 +563,9 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Vault restore points")
 			.setDesc(
-				"Name the vault's current state before a big reorganisation. A restore " +
-					"point is a line in pins.jsonl, so it syncs and survives history " +
-					"cleanups like any note. It always marks now \u2014 to keep an older " +
-					"state, open it from a note's history first.",
+				"Name the vault's current state so you can find it later. Restore points " +
+					"sync to your other devices and survive history cleanups. Always marks " +
+					"now.",
 			)
 			.addButton((b) =>
 				b.setButtonText("Pin the vault now").onClick(() => {
@@ -553,59 +587,22 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		// Most setup failures are a wrong URL or a wrong token. A button that
 		// says which beats asking someone to read a console on a phone.
-		new Setting(containerEl)
-			.setName("Test connection")
-			.setDesc(
-				"Reports WHICH VAULT the server serves, so you can confirm you " +
-					"pointed this Obsidian vault at the right one. With more than one " +
-					"vault, the URL and token are the only things distinguishing them, " +
-					"and the local folder name tells you nothing: you create it empty " +
-					"before the plugin can connect.",
-			)
-			.addButton((b) =>
-				b.setButtonText("Test").onClick(async () => {
-					const { serverUrl } = this.plugin.settings;
-					const token = loadToken(this.app);
-					if (!serverUrl || !token) {
-						new Notice("archivist: set the server URL and token first");
-						return;
-					}
-					try {
-						const client = new Client(serverUrl, token, this.plugin.settings.vault);
-						const idx = await client.index();
-						const { files } = await client.snapshot();
-						const entries = Object.values(files);
-						this.vaultStats = {
-							files: entries.length,
-							bytes: entries.reduce((sum, e) => sum + e.size, 0),
-						};
-						const name = idx.vault || "unnamed (older server)";
-						new Notice(
-							`archivist: connected to vault "${name}" — ${entries.length} file(s), ` +
-								`server ${idx.version}`,
-							10000,
-						);
-						// Re-render so the Status card above picks up vaultStats.
-						this.display();
-					} catch (err) {
-						new Notice(`archivist: ${err instanceof Error ? err.message : String(err)}`, 8000);
-					}
-				}),
-			);
+	}
+
+	/** The only action here discards state, so it gets its own section rather
+	 *  than sitting one row below "restore a deleted note" -- which is exactly
+	 *  the kind of neighbouring that gets something clicked by mistake. */
+	private renderTroubleshooting(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Troubleshooting").setHeading();
 
 		new Setting(containerEl)
 			.setName("Re-bootstrap from server")
 			.setDesc(
-				"Use this if this device's sync history seems wrong — e.g. after " +
-					"restoring this vault from a backup, editing files outside of sync, or " +
-					"a sync that got stuck. It makes the plugin forget what it last saw " +
-					"here and re-derive that from what the server has now. Deletes " +
-					"nothing — files only this device has are pushed on the next sync (except "
-					+ "anything marked .local, which never syncs by design). It is also " +
-					"the escape hatch for pointing this device at a different vault on " +
-					"purpose. It's marked red because discarding correct history " +
-					"unnecessarily can cause a burst of re-push/re-pull churn — only use " +
-					"it when something actually looks wrong.",
+				"Discards this device's sync state and rebuilds it from the server. " +
+					"Deletes nothing and never touches .local files, but a note that " +
+					"differs from the server's is renamed aside as a conflict copy, and " +
+					"many files may be re-sent. Use it to repair sync state or to point " +
+					"this device at a different vault.",
 			)
 			.addButton((b) =>
 				b.setWarning().setButtonText("Re-bootstrap").onClick(async () => {
@@ -660,10 +657,9 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Plugin settings").setHeading();
 
 		new Setting(containerEl).setDesc(
-			"Settings (data.json) are off for every plugin until you turn one on " +
-				"below. Each is scanned first, and a plugin whose settings look like " +
-				"they hold a credential is refused with a reason. Nothing is stripped " +
-				"or rewritten, so you never get a settings file with a hole in it.",
+			"A plugin's data.json syncs only if you turn it on here. Each is scanned " +
+				"for credentials first, but scanning is best-effort, not a guarantee. " +
+				"Enabling a flagged one puts its secrets into sync history.",
 		);
 
 		// Its own container, filled asynchronously. display() can run again
@@ -712,13 +708,19 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				unreadable = true;
 			}
 
+			// A clean row says NOTHING. The caveat that a clean scan is not a
+			// guarantee belongs once, in the section description above -- repeated
+			// under every plugin it was three lines of identical grey text per
+			// row, which on a phone is most of the screen and reads as noise
+			// rather than as a warning.
 			const desc = unreadable
-				? "Its data.json could not be parsed, so it cannot be checked. Not offered."
+				? "data.json could not be parsed, so it cannot be checked"
 				: suspicions.length === 0
-					? "Nothing recognised as a credential. That is not a guarantee — the scanner reports what it recognises, and it cannot recognise everything."
-					: `Refused: ${suspicions.map((x) => `${x.path} — ${x.why}`).join("; ")}`;
+					? ""
+					: `Possible credentials: ${suspicions.map((x) => `${x.path}: ${x.why}`).join("; ")}`;
 
-			const setting = new Setting(containerEl).setName(id).setDesc(desc);
+			const setting = new Setting(containerEl).setName(id);
+			if (desc) setting.setDesc(desc);
 			if (unreadable) continue;
 
 			setting.addToggle((t) =>
