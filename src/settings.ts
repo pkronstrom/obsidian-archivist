@@ -107,10 +107,16 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const body = containerEl.createDiv({ cls: "archivist-section-body" });
 		if (!open) body.hide();
 
+		// Toggled IN PLACE rather than by re-rendering the tab. display()
+		// rebuilds every section, which re-derives the Status card (so its
+		// Access row visibly blinks) and re-runs the plugin data.json scan --
+		// a lot of work, and a flash of changing text, to hide four rows.
 		head.settingEl.onClickEvent(() => {
-			if (this.opened.has(title)) this.opened.delete(title);
-			else this.opened.add(title);
-			this.display();
+			const nowOpen = !this.opened.has(title);
+			if (nowOpen) this.opened.add(title);
+			else this.opened.delete(title);
+			body.toggle(nowOpen);
+			setIcon(chevron, nowOpen ? "chevron-down" : "chevron-right");
 		});
 		return body;
 	}

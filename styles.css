@@ -3,7 +3,10 @@
 
 .archivist-status {
 	background: var(--background-secondary);
-	border-radius: var(--radius-m);
+	/* Matches the radius Obsidian gives its own setting cards. radius-m left
+	 * this block visibly squarer than every card above and below it, which
+	 * reads as a rendering fault rather than as a different kind of block. */
+	border-radius: var(--radius-l);
 	padding: var(--size-4-3) var(--size-4-4);
 	margin-bottom: var(--size-4-4);
 }
