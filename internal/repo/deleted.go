@@ -19,7 +19,13 @@ import (
 func (r *Repo) Deleted() ([]protocol.DeletedPath, error) {
 	head, err := r.Head()
 	if err != nil {
-		return nil, err
+		// A vault with no commits yet has deleted nothing. Reporting that as a
+		// server error would make a brand-new vault look broken on the one
+		// screen whose whole job is reassurance.
+		return []protocol.DeletedPath{}, nil
+	}
+	if head == "" {
+		return []protocol.DeletedPath{}, nil
 	}
 	live, err := r.Snapshot(head)
 	if err != nil {

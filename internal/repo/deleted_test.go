@@ -102,3 +102,18 @@ func TestDeletedIgnoresExcludedPaths(t *testing.T) {
 		}
 	}
 }
+
+// A vault with no commits has deleted nothing. Returning an error made the
+// route answer 500, which the route-index test caught -- and which would have
+// shown a brand-new vault a failure on the one screen whose job is
+// reassurance.
+func TestDeletedOnEmptyRepo(t *testing.T) {
+	r, _, _ := newRepo(t)
+	gone, err := r.Deleted()
+	if err != nil {
+		t.Fatalf("empty repo should not error: %v", err)
+	}
+	if len(gone) != 0 {
+		t.Fatalf("got %d", len(gone))
+	}
+}
