@@ -133,6 +133,20 @@ func (r *Repo) Prune(paths []string) (*PruneResult, error) {
 		return nil, err
 	}
 
+	// Every OTHER ref moves through the same mapping, which is what
+	// git filter-repo does and what makes a rewrite honest.
+	//
+	// Without it a branch or tag left anywhere in this repository keeps its
+	// own commit and the entire ancestry behind it reachable, so collect()
+	// drops nothing under it. Two consequences, and the second is the serious
+	// one: reclaim would report success while recovering no space, and a purge
+	// -- the reason this exists, for a leaked token or an accidental 200 MB
+	// file -- would leave that content reachable under the stale ref while
+	// reporting that it was removed.
+	if err := r.repointRefs(mapped); err != nil {
+		return nil, err
+	}
+
 	// Update the prune-map BEFORE collecting, so a crash between the two
 	// leaves a map that is merely stale rather than one pointing at commits
 	// that have just been deleted.
@@ -321,6 +335,60 @@ func (r *Repo) liveTreePaths() (map[string]bool, error) {
 }
 
 // pointHeadAt moves whatever branch HEAD tracks to h.
+// repointRefs moves every branch and tag onto its rewritten commit.
+//
+// A ref whose target was NOT rewritten is left alone: it already points at
+// something the rewrite did not touch. A ref pointing at a commit that the
+// rewrite dropped entirely is deleted rather than left dangling, because a ref
+// to a collected object is a repository that fails to open, not a repository
+// that has lost one branch.
+func (r *Repo) repointRefs(mapped map[plumbing.Hash]plumbing.Hash) error {
+	iter, err := r.git.References()
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	type move struct {
+		name plumbing.ReferenceName
+		to   plumbing.Hash
+		drop bool
+	}
+	var moves []move
+
+	err = iter.ForEach(func(ref *plumbing.Reference) error {
+		// HEAD is handled by pointHeadAt, and a symbolic ref follows whatever
+		// it targets rather than holding a hash of its own.
+		if ref.Type() != plumbing.HashReference || ref.Name() == plumbing.HEAD {
+			return nil
+		}
+		next, rewritten := mapped[ref.Hash()]
+		if !rewritten {
+			return nil
+		}
+		moves = append(moves, move{name: ref.Name(), to: next})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Collected outside the iteration: mutating the ref store while walking it
+	// is undefined, and go-git's iterators are not required to tolerate it.
+	for _, m := range moves {
+		if m.drop {
+			if err := r.git.Storer.RemoveReference(m.name); err != nil {
+				return fmt.Errorf("repo: drop ref %s: %w", m.name, err)
+			}
+			continue
+		}
+		if err := r.git.Storer.SetReference(plumbing.NewHashReference(m.name, m.to)); err != nil {
+			return fmt.Errorf("repo: repoint ref %s: %w", m.name, err)
+		}
+	}
+	return nil
+}
+
 func (r *Repo) pointHeadAt(h plumbing.Hash) error {
 	ref, err := r.git.Reference(plumbing.HEAD, false)
 	if err != nil {

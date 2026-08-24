@@ -439,3 +439,43 @@ func TestPruneMapCarriesTreeIdenticalCommitsNotAlteredOnes(t *testing.T) {
 		t.Error("a commit whose tree the rewrite CHANGED must not be translatable: a client would diff against content it never had and push back what the prune removed")
 	}
 }
+
+// A branch left anywhere in the repository must not survive a purge holding the
+// old commits. Without rewriting every ref, collect() drops nothing beneath it:
+// reclaim reports success while recovering no space, and -- the serious case --
+// a purge of a leaked credential leaves the credential reachable under the
+// stale ref while reporting that it was removed.
+func TestPruneRewritesEveryRefSoAPurgeIsHonest(t *testing.T) {
+	r := reclaimRepo(t)
+	writeCommit(t, r, "keep.md", "kept", "add keep")
+	writeCommit(t, r, "secret.env", "SUPER_SECRET_TOKEN", "add secret")
+	// A branch pointing at the commit that HOLDS the secret: the exact shape
+	// that would defeat the purge.
+	head, _ := r.Head()
+	branch := plumbing.NewBranchReferenceName("checkpoint")
+	if err := r.git.Storer.SetReference(plumbing.NewHashReference(branch, plumbing.NewHash(head))); err != nil {
+		t.Fatal(err)
+	}
+	removeCommit(t, r, "secret.env", "delete secret")
+
+	if _, err := r.Prune([]string{"secret.env"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ref, err := r.git.Reference(branch, false)
+	if err != nil {
+		t.Fatalf("the branch vanished rather than moving: %v", err)
+	}
+	if ref.Hash().String() == head {
+		t.Fatal("the branch still points at the pre-rewrite commit, so the purged content is still reachable")
+	}
+	// The commit it moved to must be readable -- a ref to a collected object is
+	// a repository that fails to open, not one that merely lost a branch.
+	if _, err := r.git.CommitObject(ref.Hash()); err != nil {
+		t.Fatalf("the branch points at an unreadable commit: %v", err)
+	}
+	// And the secret must be gone from what the branch now reaches.
+	if _, err := r.ReadAt(ref.Hash().String(), "secret.env"); err == nil {
+		t.Fatal("the purged path is still readable through the branch")
+	}
+}
