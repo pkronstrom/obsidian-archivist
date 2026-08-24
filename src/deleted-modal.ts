@@ -13,7 +13,7 @@
  * note protects nothing here, and a `.local` copy the user then has to rename
  * would be ceremony for its own sake.
  */
-import { App, Modal, Notice, TFile, setIcon } from "obsidian";
+import { App, Modal, Notice, Platform, TFile, setIcon } from "obsidian";
 import type { Client, DeletedPath } from "./client";
 
 export class DeletedModal extends Modal {
@@ -131,21 +131,37 @@ export class DeletedModal extends Modal {
 		});
 
 		const meta = row.createDiv({ cls: "archivist-rev-metaline" });
+		// "21 Aug 2026 at 15:09" is most of a phone's width on its own, and the
+		// date is context here rather than the thing being read -- the filename
+		// is. Short form on mobile, and the device loses its "deleted by"
+		// preamble, which the modal's own title already implies.
 		meta.createSpan({
 			cls: "archivist-rev-meta",
-			text: new Date(item.when).toLocaleString(undefined, {
-				dateStyle: "medium",
-				timeStyle: "short",
-			}),
+			text: new Date(item.when).toLocaleString(
+				undefined,
+				Platform.isMobile
+					? { dateStyle: "short", timeStyle: "short" }
+					: { dateStyle: "medium", timeStyle: "short" },
+			),
 		});
 		if (item.device) {
-			meta.createSpan({ cls: "archivist-rev-device", text: `deleted by ${item.device}` });
+			meta.createSpan({
+				cls: "archivist-rev-device",
+				text: Platform.isMobile ? item.device : `deleted by ${item.device}`,
+			});
 		}
 
 		const action = main.createEl("button", {
-			text: this.localOnly ? "Open copy" : "Restore",
 			cls: "archivist-rev-restore",
 		});
+		// An icon on mobile: the word costs a third of the row, and the tap
+		// target stays the same size either way.
+		if (Platform.isMobile) {
+			setIcon(action, this.localOnly ? "eye" : "rotate-ccw");
+			action.setAttr("aria-label", this.localOnly ? "Open copy" : "Restore");
+		} else {
+			action.setText(this.localOnly ? "Open copy" : "Restore");
+		}
 		action.onclick = () => void this.restore(item, row);
 	}
 

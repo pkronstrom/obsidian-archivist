@@ -295,6 +295,17 @@
 	padding-left: var(--size-4-4);
 }
 
+/* A phone has no width to spare: the nesting indent and the modal's own
+ * padding together left the filenames a narrow column that ellipsised names
+ * which would otherwise fit. */
+.is-mobile .archivist-del-items {
+	padding-left: var(--size-4-3);
+}
+
+.is-mobile .archivist-del-folderhead {
+	padding: var(--size-4-1) 0;
+}
+
 /* File rows here are DENSER than the revision browser's, deliberately.
  *
  * There the row is the subject: a handful of sessions, each worth reading. Here
@@ -303,11 +314,29 @@
  * line, name and metadata side by side, and the vertical padding halved.
  * Scoped to this modal so the revision list keeps its roominess. */
 .archivist-del-items .archivist-rev-row {
-	flex-direction: row;
-	align-items: baseline;
-	flex-wrap: wrap;
-	gap: var(--size-4-2);
-	padding: 1px var(--size-4-2);
+	display: grid;
+	/* Text column, then a button sized to its content. A flex row that WRAPS
+	 * was the mistake: on a phone the metadata simply moved to its own line, so
+	 * the two-line height came back with bigger gaps than before. A grid keeps
+	 * the button beside the text at every width and lets the text column
+	 * shrink instead of pushing. */
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	column-gap: var(--size-4-2);
+	row-gap: 0;
+	padding: var(--size-4-1) var(--size-4-2);
+}
+
+/* The two text lines are a tight block, not two rows of a list. */
+.archivist-del-items .archivist-rev-main,
+.archivist-del-items .archivist-rev-metaline {
+	grid-column: 1;
+	line-height: 1.25;
+}
+
+.archivist-del-items .archivist-rev-restore {
+	grid-column: 2;
+	grid-row: 1 / span 2;
 }
 
 .archivist-del-items .archivist-rev-main {
@@ -326,8 +355,38 @@
 }
 
 .archivist-del-items .archivist-rev-metaline {
-	flex: 0 0 auto;
 	gap: var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Obsidian sizes mobile buttons for standalone use; inside a dense list that
+ * makes every row a third button. Shrink the chrome, keep the tap target. */
+.is-mobile .archivist-del-items .archivist-rev-restore {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
+	margin: 0;
+	box-shadow: none;
+}
+
+.is-mobile .archivist-del-items .archivist-rev-row {
+	padding: var(--size-4-1) 0;
+}
+
+/* Mobile fonts run larger, and this list is scanned rather than read. */
+.is-mobile .archivist-del-items .archivist-rev-when {
+	font-size: var(--font-ui-small);
+}
+
+.is-mobile .archivist-del-items .archivist-rev-metaline {
+	font-size: var(--font-ui-smaller);
+	opacity: 0.75;
 }
 
 .archivist-del-items .archivist-rev-restore {
