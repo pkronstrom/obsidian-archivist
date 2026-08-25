@@ -50,6 +50,33 @@ the agent a token with `read,write` and no `delete`, and a leaked token cannot
 erase notes. The relay usually runs on the same box; it is stateless, so it can
 equally run on your laptop or in the container that needs it.
 
+**The tools.** Thirteen, and the scopes on the caller's token decide which of
+them actually work:
+
+| Tool | Scope |
+| --- | --- |
+| `list_vaults` | read. Which vaults this token addresses; every other tool takes an optional `vault` |
+| `list_notes` | read. Notes and attachments, cursor-paged |
+| `list_folders` | read. Folder map with file counts, for orienting before listing |
+| `read_note` | read |
+| `search_notes` | read. Content and path substring match |
+| `note_history` | read. Revisions of one note, newest first |
+| `read_note_at` | read. A note as it was at a past revision, without restoring it |
+| `read_attachment` | read. Images, PDFs, any non-text file, base64 |
+| `write_note` | write. Refuses if another writer changed the note since you read it |
+| `write_attachment` | write. Base64 in, same staleness check |
+| `move_note` | write. Rename or move any file; deliberately not a delete plus a create |
+| `delete_note` | delete. A separate scope, so a token can write without being able to erase |
+| `unlock` | none. Spends a one-time code for a vault that requires step-up |
+
+`move_note` is the reason `delete` is its own scope: renaming used to require
+it, which meant every agent that tidied filenames could also erase the vault.
+
+An agent hitting a step-up protected vault gets a refusal naming the vault, and
+can call `unlock` with a code you read off your authenticator. The grant is
+time-boxed and belongs to that token alone. See
+[OPERATIONS](OPERATIONS.md#protecting-a-vault).
+
 ### Editing files directly on the server
 
 The vault is a plain directory, so anything that writes Markdown works — `vim`

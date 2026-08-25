@@ -107,7 +107,17 @@ Seven routes, all behind `Authorization: Bearer <token>`.
 | `GET` | `/personal/v1/content/{hash}` | download |
 | `POST` | `/personal/v1/push` | apply a change set against a base |
 | `GET` | `/personal/v1/export` | consistent archive of the git directory |
-| `GET` | `/v1` | the endpoint list, plus `protocol` and `version` |
+| `GET` | `/personal/v1/history?path=&limit=&before=` | revisions touching a path, newest first, cursor-paged |
+| `GET` | `/personal/v1/at/{rev}/{path...}` | one file as it was at a revision; never touches the working tree |
+| `GET` | `/personal/v1/deleted` | paths history holds that head does not, with the revision to read each from |
+| `GET` | `/personal/v1/pins` | named restore points, resolved to the commit that introduced them |
+| `POST` | `/personal/v1/pin` | name a restore point; requires `expectedHead` |
+| `GET` | `/personal/v1/check` | working tree versus head, including paths stranded by an exclusion |
+| `GET` | `/personal/v1/events` | SSE, one event per commit |
+| `GET` | `/personal/v1/wait?since=&timeout=` | long-poll until head moves |
+| `POST` | `/personal/v1/unlock` | spend a one-time code on a protected vault |
+| `GET` | `/v1/vaults` | which vaults this token opens, and what it may do |
+| `GET` | `/personal/v1` | the endpoint list, plus `protocol` and `version` |
 
 Content is addressed by **git object hash**, so a client can compute an address
 with plain `git hash-object` and nothing bespoke:

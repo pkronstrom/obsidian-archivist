@@ -169,8 +169,9 @@ browsing an old version never reaches your other devices.
 
 ### In Obsidian: the revision browser
 
-The status bar carries a history icon scoped to the note you are looking at,
-and on mobile the same thing is *Archivist: Show versions* in the ribbon.
+The status bar carries a history icon scoped to the note you are looking at.
+On mobile the same thing is *Archivist: Show versions* in the ribbon, and from
+the command palette it is *Browse revisions of this note*.
 It groups revisions into **editing sessions** rather than listing every commit.
 A vault commits whenever you pause, so one evening's drafting is otherwise
 twenty entries that all say the same thing.
