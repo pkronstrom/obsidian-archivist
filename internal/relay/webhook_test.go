@@ -51,14 +51,13 @@ func liveClient(t *testing.T) *client.Client {
 	return client.New(srv.URL, "tok", "relay").WithVault("personal")
 }
 
-// livePool is liveClient's pass-through sibling: a Pool aimed at the same
-// server, plus a background client for healthz. Callers present relayTok, which
-// IS the server token now -- under pass-through there is no separate relay
-// credential to present.
+// livePool is liveClient's pass-through sibling: a Pool and health probe aimed
+// at the same server. Ping strips the helper client's token, so health remains
+// unauthenticated. Callers present relayTok, which the Pool forwards.
 func livePool(t *testing.T) (*relay.Pool, *client.Client) {
 	t.Helper()
-	bg := liveClient(t)
-	return relay.NewPool(bg.BaseURL(), "relay"), bg
+	probe := liveClient(t)
+	return relay.NewPool(probe.BaseURL(), "relay"), probe
 }
 
 // A collector stands in for n8n or Node-RED.

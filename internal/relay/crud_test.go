@@ -22,8 +22,8 @@ const relayTok = "tok"
 
 func crudServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	pool, bg := livePool(t)
-	srv := httptest.NewServer(relay.NewHandler(pool, bg, quiet(), nil, nil))
+	pool, probe := livePool(t)
+	srv := httptest.NewServer(relay.NewHandler(pool, probe, quiet(), nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
