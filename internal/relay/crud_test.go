@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pkronstrom/obsidian-archivist/internal/client"
 	"github.com/pkronstrom/obsidian-archivist/internal/relay"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
@@ -349,7 +350,7 @@ func TestRelayRefusesARequestWithNoBearer(t *testing.T) {
 
 func TestHealthzStaysUnauthenticated(t *testing.T) {
 	pool := relay.NewPool("https://unused.example", "relay")
-	h := relay.NewHandler(pool, nil, quiet(), nil, nil)
+	h := relay.NewHandler(pool, client.New("https://unused.example", "", "relay"), quiet(), nil, nil)
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

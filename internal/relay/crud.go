@@ -29,10 +29,8 @@ const maxBody = 32 << 20
 // ergonomics rather than a second way in.
 type Handler struct {
 	pool *Pool
-	// bg is the relay's OWN client, used only where there is no caller: the
-	// healthz upstream probe. Never used on a caller's behalf -- every request
-	// is served with the credential its caller presented.
-	bg    *client.Client
+	// probe is tokenless and used only for upstream health metadata.
+	probe *client.Client
 	log   *slog.Logger
 	mcp   http.Handler
 	hooks *Webhooks
@@ -43,8 +41,8 @@ type ctxKey int
 
 const ctxClient ctxKey = iota
 
-func NewHandler(pool *Pool, bg *client.Client, log *slog.Logger, mcpHandler http.Handler, hooks *Webhooks) http.Handler {
-	h := &Handler{pool: pool, bg: bg, log: log, mcp: mcpHandler, hooks: hooks}
+func NewHandler(pool *Pool, probe *client.Client, log *slog.Logger, mcpHandler http.Handler, hooks *Webhooks) http.Handler {
+	h := &Handler{pool: pool, probe: probe, log: log, mcp: mcpHandler, hooks: hooks}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /file/{path...}", h.read)
@@ -308,17 +306,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 // relay that is up but cut off from the vault is not usefully healthy.
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"status": "ok", "protocol": protocol.Version}
-	// healthz is unauthenticated, so there is no caller credential to probe
-	// with. It uses the relay's own background token -- the same one the
-	// compatibility checker and the webhook stream use. Without one configured
-	// the relay can still report its own liveness, which is what a container
-	// healthcheck is actually asking.
-	if h.bg == nil {
-		out["upstream"] = "not probed: the relay has no background credential"
-		writeJSON(w, out)
-		return
-	}
-	if up, err := h.bg.Ping(r.Context()); err != nil {
+	if up, err := h.probe.Ping(r.Context()); err != nil {
 		out["status"] = "degraded"
 		out["upstream"] = "unreachable: " + err.Error()
 		w.Header().Set("Content-Type", "application/json")

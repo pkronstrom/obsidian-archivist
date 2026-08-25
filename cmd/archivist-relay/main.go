@@ -67,9 +67,7 @@ func load(args []string) (*config, error) {
 	fs.StringVar(&c.url, "url", env("ARCHIVIST_URL", ""),
 		"base URL of the Archivist server")
 	fs.StringVar(&c.token, "token", env("ARCHIVIST_TOKEN", ""),
-		"the relay's OWN token, for background work only: the compatibility check, "+
-			"the webhook stream and the healthz probe. Callers present their own, which "+
-			"the relay forwards; this is never used on their behalf. Mint it read-only.")
+		"background token for webhooks; callers present their own tokens")
 	fs.StringVar(&c.listen, "listen", env("ARCHIVIST_RELAY_LISTEN", ":8091"),
 		"HTTP listen address for the relay's own API and MCP")
 	fs.StringVar(&c.vault, "vault", env("ARCHIVIST_VAULT", ""),
@@ -89,22 +87,17 @@ func load(args []string) (*config, error) {
 	if c.url == "" {
 		return nil, errors.New("server URL is required (-url or ARCHIVIST_URL)")
 	}
-	if c.token == "" {
-		return nil, errors.New("the relay's own token is required (-token or ARCHIVIST_TOKEN)")
-	}
-	// Removed, not deprecated. A silent fallback is how the old path survives
-	// forever, and a relay that starts happily while every caller gets 401 is
-	// the worst version of this change -- so refuse at the one moment somebody
-	// is in a position to fix it.
-	if os.Getenv("ARCHIVIST_RELAY_TOKEN") != "" {
-		return nil, errors.New(
-			"ARCHIVIST_RELAY_TOKEN is set but no longer used: callers now present " +
-				"their own archivist token, which the relay forwards. Mint one per " +
-				"caller with `archivist-server token add`, then unset this variable")
-	}
 	for _, h := range strings.Split(hooks, ",") {
 		if h = strings.TrimSpace(h); h != "" {
 			c.webhooks = append(c.webhooks, h)
+		}
+	}
+	if len(c.webhooks) > 0 {
+		if c.token == "" {
+			return nil, errors.New("webhooks require a relay background token (-token or ARCHIVIST_TOKEN)")
+		}
+		if c.vault == "" {
+			return nil, errors.New("webhooks require a vault (-vault or ARCHIVIST_VAULT)")
 		}
 	}
 	return c, nil
@@ -135,12 +128,14 @@ func main() {
 }
 
 func run(cfg *config, log *slog.Logger) error {
-	// Two credentials with different jobs, and they must not be confused. bg is
-	// the relay's OWN, used only where there is no caller: the compatibility
-	// check, the webhook stream and the healthz probe. pool builds one client
-	// per CALLER token and is what every request goes through.
-	bg := client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
+	// The probe is tokenless because compatibility and health live at /healthz.
+	// The pool builds one client per caller token for every request operation.
+	probe := client.New(cfg.url, "", cfg.device)
 	pool := relay.NewPool(cfg.url, cfg.device)
+	var bg *client.Client
+	if len(cfg.webhooks) > 0 {
+		bg = client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -153,15 +148,18 @@ func run(cfg *config, log *slog.Logger) error {
 	// reports degraded, and calls fail until it returns.
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := bg.CheckCompatible(checkCtx); err != nil {
+	if err := probe.CheckCompatible(checkCtx); err != nil {
 		if strings.Contains(err.Error(), "protocol") {
 			return err
 		}
 		log.Warn("cannot reach the server yet; starting anyway", "url", cfg.url, "err", err)
 	} else {
 		log.Info("server is compatible", "url", cfg.url, "protocol", version.Version)
-		if list, err := bg.VaultListing(checkCtx); err == nil {
-			warnIfProtected(log, cfg.vault, list.ProtectedVaults, cfg.webhooks)
+		if bg != nil {
+			list, err := bg.VaultListing(checkCtx)
+			if err == nil {
+				warnIfProtected(log, cfg.vault, list.ProtectedVaults, cfg.webhooks)
+			}
 		}
 	}
 
@@ -179,7 +177,7 @@ func run(cfg *config, log *slog.Logger) error {
 				return
 			case <-t.C:
 				cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				err := bg.CheckCompatible(cctx)
+				err := probe.CheckCompatible(cctx)
 				cancel()
 				switch {
 				case err != nil && strings.Contains(err.Error(), "protocol"):
@@ -227,7 +225,7 @@ func run(cfg *config, log *slog.Logger) error {
 
 	httpSrv := &http.Server{
 		Addr:              cfg.listen,
-		Handler:           relay.NewHandler(pool, bg, log, mcpHandler, hooks),
+		Handler:           relay.NewHandler(pool, probe, log, mcpHandler, hooks),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

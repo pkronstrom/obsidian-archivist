@@ -100,7 +100,7 @@ func TestDistinguishesTooLargeFromHashMismatch(t *testing.T) {
 	}
 }
 
-// An error body with no envelope (an old server, or a proxy in the way) must
+// An error body with no envelope (for example, from a proxy) must
 // still produce a usable error rather than a nil or a panic.
 func TestBareErrorBodyStillYieldsAnError(t *testing.T) {
 	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +135,14 @@ func TestRefusesAnIncompatibleProtocol(t *testing.T) {
 
 func TestAcceptsAMatchingProtocol(t *testing.T) {
 	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, protocol.IndexResponse{
-			Service: "archivist", Version: "0.3.0", Protocol: protocol.Version,
+		if r.URL.Path != "/healthz" {
+			t.Errorf("compatibility path = %q, want /healthz", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("health compatibility probe sent a credential: %q", got)
+		}
+		writeJSON(w, protocol.HealthResponse{
+			Status: "ok", Version: "0.3.0", Protocol: protocol.Version,
 		})
 	})
 	if err := c.CheckCompatible(context.Background()); err != nil {

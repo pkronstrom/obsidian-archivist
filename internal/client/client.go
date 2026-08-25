@@ -214,7 +214,9 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	if c.via != "" {
 		req.Header.Set(protocol.HeaderVia, c.via)
 	}
@@ -243,7 +245,7 @@ func decodeError(resp *http.Response) error {
 		return &Error{Code: env.Error.Code, Message: env.Error.Message, Status: resp.StatusCode}
 	}
 
-	// No envelope: an older server, or something in front of it.
+	// No envelope: typically a proxy or gateway response.
 	code := protocol.CodeInternal
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
@@ -303,17 +305,17 @@ func (c *Client) Index(ctx context.Context) (protocol.IndexResponse, error) {
 // server protocol is refused because we cannot know what changed; an older one
 // is refused because we may send fields it will ignore silently.
 func (c *Client) CheckCompatible(ctx context.Context) error {
-	idx, err := c.Index(ctx)
+	health, err := c.Ping(ctx)
 	if err != nil {
 		// Unreachable is not incompatible. Leave the verdict unset so the next
 		// call retries rather than caching a network blip as a protocol verdict.
 		return err
 	}
 	var verdict error
-	if idx.Protocol != protocol.Version {
+	if health.Protocol != protocol.Version {
 		verdict = fmt.Errorf(
 			"archivist: server speaks protocol %d, this client speaks %d (server build %s)",
-			idx.Protocol, protocol.Version, idx.Version)
+			health.Protocol, protocol.Version, health.Version)
 	}
 	c.compat.mu.Lock()
 	c.compat.err, c.compat.set = verdict, true
@@ -667,9 +669,12 @@ func (c *Client) Events(ctx context.Context) (<-chan protocol.Event, <-chan erro
 func (c *Client) Ping(ctx context.Context) (protocol.HealthResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// c.atRoot(): /healthz is unqualified and unauthenticated, so asking for it
-	// under a vault prefix is a 404 that reads as "the server is down".
-	return getJSON[protocol.HealthResponse](ctx, c.atRoot(), "/healthz")
+	// /healthz is unqualified and unauthenticated. Clear both the vault and the
+	// credential so probes never leak a bearer to an endpoint that does not need
+	// one.
+	probe := *c.atRoot()
+	probe.token = ""
+	return getJSON[protocol.HealthResponse](ctx, &probe, "/healthz")
 }
 
 // BaseURL is the server this client addresses, without a trailing slash.
