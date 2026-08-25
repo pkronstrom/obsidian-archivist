@@ -1,7 +1,12 @@
 # Diagrams
 
-`architecture.svg` is embedded in the top-level README. `architecture.mmd` is its
-source. Edit the source, then regenerate:
+**The README inlines the mermaid source directly**, so GitHub renders it: the
+diagram zooms, diffs as text, and needs no regeneration step. `architecture.mmd`
+is kept as the canonical copy and `architecture.svg` as a fallback, because the
+tradeoff below is real and may send us back to the image.
+
+Edit the source, then regenerate the SVG and paste the source into the README's
+"How it flows" block:
 
 ```bash
 npx -y @mermaid-js/mermaid-cli \
@@ -11,18 +16,21 @@ npx -y @mermaid-js/mermaid-cli \
   -b white
 ```
 
-## Why it is rendered rather than inlined
+## The tradeoff, and why it went back and forth
 
-The README used to carry the mermaid source in a fenced block, which GitHub
-renders itself. Two things made that stop working.
+The README carried the source, then the SVG, and now the source again. What
+each costs:
 
-**The layout needs ELK.** Mermaid's default engine is dagre, and dagre staggers
+**The layout wants ELK.** Mermaid's default engine is dagre, and dagre staggers
 the two subgraphs diagonally and routes the device edges in long swoops across
 the whole figure. ELK lays the same source out compactly with orthogonal edges.
-GitHub's mermaid build does not ship the ELK layout, so an inlined copy would
-silently fall back to dagre and look like the version we rejected.
+GitHub's mermaid build does not ship the ELK layout, so the inlined copy falls
+back to dagre. That is the price of inlining, and it is worth re-checking on the
+rendered page rather than assuming: if dagre's layout is unreadable, put the
+SVG back.
 
-**Labels must not be `foreignObject`.** Mermaid wraps every label in
+**Labels must not be `foreignObject`** *(only matters for the SVG path).*
+Mermaid wraps every label in
 `<foreignObject>` by default. That renders fine in a browser and as blank space
 when GitHub serves an SVG through its image proxy — the diagram would arrive with
 no text at all. `htmlLabels: false` in `mermaid-config.json` emits native `<text>`

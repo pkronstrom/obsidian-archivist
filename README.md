@@ -35,9 +35,47 @@ your devices.
 
 ## How it flows
 
-![archivist architecture](docs/diagrams/architecture.svg)
+```mermaid
+flowchart TB
+    mac["Obsidian<br/>laptop"]
+    phone["Obsidian<br/>phone"]
+    agents["AI agents<br/>Claude Code, nanoclaw"]
+    targets["n8n, memo-ai,<br/>automations"]
 
-<sub>Source and regeneration: [`docs/diagrams/`](docs/diagrams/).</sub>
+    subgraph host ["your server"]
+        mcp["MCP tools"]
+        relay(["archivist-relay<br/>stateless, usually here,<br/>can run anywhere"])
+        hooks["webhook fan-out"]
+        mcp --- relay
+        relay --- hooks
+
+        subgraph core ["archivist-server: the only authority"]
+            vs(["archivist-server<br/>one binary"])
+            vp[/"vaults/personal"/]
+            vw[/"vaults/work"/]
+            gp[("git history<br/>personal")]
+            gw[("git history<br/>work")]
+            local["grep, scripts, cron,<br/>agents on the box"]
+            vs --- vp
+            vs --- vw
+            vp -->|"a commit<br/>per change"| gp
+            vw --> gw
+            vp <--> local
+            vw <--> local
+        end
+    end
+
+    relay <==>|"caller's token"| vs
+    agents <==>|"its own token"| mcp
+    hooks -.->|"change events"| targets
+    mac <==> vs
+    phone <==> vs
+
+    classDef plain stroke:#999
+    classDef hot stroke:#c9a227,stroke-width:2px
+    class vp,vw,vs hot
+    class mac,phone,local,relay,mcp,hooks,agents,targets plain
+```
 
 Thick lines carry vault traffic over HTTP. Thin lines are ordinary file I/O on
 the server. Dotted lines are optional.
