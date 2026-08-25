@@ -1,216 +1,205 @@
-# Using the vault from other tools
+# Integrations
 
-The vault is a directory of ordinary files, so most integration is not
-integration at all: something on the server opens a file. This covers the cases
-where that is not enough, because the caller is somewhere else or wants to be
-told when something changes.
+The vault is an ordinary directory, so software on the server can usually open
+the files directly. Use the relay when a caller is elsewhere, needs MCP, or
+wants webhook notifications.
 
-For running the server itself, see [OPERATIONS](OPERATIONS.md).
+For deployment and credentials, see [Running Archivist](OPERATIONS.md).
 
----
+## Claude Code over MCP
 
-
-## Deployment scenarios
-
-Four shapes people actually run. They compose — most setups end up as two or
-three of them at once.
-
-### Obsidian on several devices
-
-The baseline, and the one to start with.
-
-```
-Mac (plugin) ──┐
-               ├──> archivist-server + vault on a remote box
-iPhone (plugin)┘
-```
-
-Install the server next to the vault directory, mint one token per device, point
-the plugin at the URL. Nothing else is required — no relay, no webhooks, no
-agents. Each device holds a cursor and pulls what it missed, so a phone that was
-off for a fortnight catches up rather than fighting.
-
-The one thing to get right is the first connect on a device that *already* has
-notes. Pairing a populated, never-synced vault against a populated server is the
-case that silently merges two unrelated vaults, so the plugin refuses it and
-offers three explicit recoveries. See [Connecting a vault that already has
-notes](OPERATIONS.md#connecting-a-vault-that-already-has-notes).
-
-### Agents over MCP
-
-Add `archivist-relay` when something that is not on the server needs the vault.
-
-```
-Claude Code, nanoclaw ──> archivist-relay (MCP) ──> archivist-server
-```
-
-The relay forwards each caller's own token rather than standing in for everyone,
-so an agent token's scopes are evaluated by the server that enforces them. Mint
-the agent a token with `read,write` and no `delete`, and a leaked token cannot
-erase notes. The relay usually runs on the same box; it is stateless, so it can
-equally run on your laptop or in the container that needs it.
-
-**The tools.** Thirteen, and the scopes on the caller's token decide which of
-them actually work:
-
-| Tool | Scope |
-| --- | --- |
-| `list_vaults` | read. Which vaults this token addresses; every other tool takes an optional `vault` |
-| `list_notes` | read. Notes and attachments, cursor-paged |
-| `list_folders` | read. Folder map with file counts, for orienting before listing |
-| `read_note` | read |
-| `search_notes` | read. Content and path substring match |
-| `note_history` | read. Revisions of one note, newest first |
-| `read_note_at` | read. A note as it was at a past revision, without restoring it |
-| `read_attachment` | read. Images, PDFs, any non-text file, base64 |
-| `write_note` | write. Refuses if another writer changed the note since you read it |
-| `write_attachment` | write. Base64 in, same staleness check |
-| `move_note` | write. Rename or move any file; deliberately not a delete plus a create |
-| `delete_note` | delete. A separate scope, so a token can write without being able to erase |
-| `unlock` | none. Spends a one-time code for a vault that requires step-up |
-
-`move_note` is the reason `delete` is its own scope: renaming used to require
-it, which meant every agent that tidied filenames could also erase the vault.
-
-An agent hitting a step-up protected vault gets a refusal naming the vault, and
-can call `unlock` with a code you read off your authenticator. The grant is
-time-boxed and belongs to that token alone. See
-[OPERATIONS](OPERATIONS.md#protecting-a-vault).
-
-### Editing files directly on the server
-
-The vault is a plain directory, so anything that writes Markdown works — `vim`
-over ssh, a cron job, or a web editor.
-
-```
-browser ──> NoteDiscovery ─┐
-                           ├──> the vault directory ──> archivist-server ──> commit
-ssh, cron, scripts ────────┘
-```
-
-This repository's own server runs NoteDiscovery (`ghcr.io/gamosoft/notediscovery`)
-with the vault mounted read-write, so the same notes are editable in a browser
-and in Obsidian. There is no bridge and no API between them: both write plain
-Markdown to one directory, and the server's watcher commits whatever appears
-there.
-
-Read-write on purpose, and with Obsidian on two devices that makes three writers
-on one directory. Two of them editing one note is exactly the case the three-way
-merge exists for, and the loser of a genuine conflict gets a conflict copy rather
-than losing text.
-
-Two things to check when picking a web editor for this. It must keep **no
-database** — an editor that indexes the vault into its own store goes stale the
-moment a device syncs a change underneath it, and NoteDiscovery is usable here
-precisely because it has none. And it must run as the user that owns the vault:
-an image with no `USER` runs as root and writes root-owned files that neither
-Obsidian nor the server can then touch.
-
-### Reacting to changes
-
-Three surfaces, none of them a websocket.
-
-| surface | shape | use it for |
-|---|---|---|
-| `GET /personal/v1/events` | SSE, one message per commit | a long-lived consumer on the box |
-| `GET /personal/v1/wait` | long-poll until head moves | a shell script, a poller with no SSE client |
-| relay webhooks | best-effort POST per commit | n8n, memo-ai, anything with an HTTP endpoint |
-
-All three tell you *that* something changed and roughly what. None of them is a
-durable queue — webhook delivery has no retry and no dead-letter on purpose.
-Durability comes from the cursor instead: a consumer that was down for a week
-asks `/personal/v1/changes?since=<commit>` and gets exactly what it missed. Keep the
-cursor, treat the notification as a hint to go look.
-
-## Hooking things up to it
-
-Because every change is a commit, **history is already a durable event feed**.
-Anything that wants to react to edits — an indexer, an AI agent, a webhook
-bridge — stores a cursor and asks what it missed:
+The Compose stack already runs `archivist-relay`. Give Claude Code its own
+credential so the server can enforce and record that caller's access:
 
 ```bash
-curl -s -H "$AUTH" "https://vault.example/v1/changes?since=$CURSOR"
+docker compose exec archivist /archivist-server token add \
+  -root /data -label claude-code -vaults personal -profile mcp-client
 ```
 
-That works however long the consumer was away, so there is nothing to queue and
-no backlog to manage.
-
-For low latency, subscribe to the change stream:
+Save the printed token as `AGENT_TOKEN`, then add the relay. Use loopback when
+Claude Code runs on the Docker host:
 
 ```bash
-curl -N -H "$AUTH" https://vault.example/v1/events
-data: {"head":"4ff143d6..."}
+claude mcp add --transport http archivist http://127.0.0.1:8091/mcp \
+  --header "Authorization: Bearer $AGENT_TOKEN"
 ```
 
-It carries a **notification, not the change** — "something moved, go look". A
-missed event costs nothing, because the cursor still says what changed. Use the
-stream to know *when*, and `/personal/v1/changes` to know *what*.
+From another tailnet device, use the relay URL configured in
+[private remote access](OPERATIONS.md#reach-it-from-other-devices):
 
-Each event carries enough to triage without a follow-up call:
+```bash
+claude mcp add --transport http archivist \
+  https://notes.example.ts.net:8443/mcp \
+  --header "Authorization: Bearer $AGENT_TOKEN"
+```
+
+Run `claude mcp get archivist` or open `/mcp` inside Claude Code to check the
+connection. The command follows Claude Code's current
+[remote HTTP MCP syntax](https://code.claude.com/docs/en/mcp).
+
+The relay forwards the caller's token. Its background token is used only for
+health checks and webhook streams; it never supplies an agent's permissions.
+The `mcp-client` profile has read and write but no delete scope.
+
+### MCP tool reference
+
+| Tool | Scope | Purpose |
+| --- | --- | --- |
+| `list_vaults` | read | list the vaults this token opens |
+| `list_notes` | read | list notes and attachments, cursor-paged |
+| `list_folders` | read | map folders and file counts |
+| `read_note` | read | read current Markdown and its revision |
+| `search_notes` | read | search content and paths |
+| `note_history` | read | list revisions of one note |
+| `read_note_at` | read | read a historical revision without restoring |
+| `read_attachment` | read | read binary content as base64 |
+| `write_note` | write | write only if the supplied revision is current |
+| `write_attachment` | write | write base64 content with the same stale check |
+| `move_note` | write | move or rename without delete scope |
+| `delete_note` | delete | delete a path |
+| `unlock` | none | spend a one-time code for a protected vault |
+
+Every tool accepts an optional `vault`. Omit it when the token opens exactly one
+vault. If it opens several, call `list_vaults` and name one explicitly.
+
+`read_note` returns the revision that `write_note` expects. Passing it prevents
+a stale agent from overwriting a change that landed after its read.
+
+## Edit notes on the server or web
+
+Programs on the server can work directly in `data/vaults/<name>`:
+
+```text
+SSH editor, cron job or web editor
+                 |
+                 v
+data/vaults/personal  --> filesystem watcher --> git commit --> devices
+```
+
+There is no bridge or second copy. The watcher commits changes after they sit
+quiet for the configured debounce.
+
+For a browser editor, choose one that:
+
+- reads and writes the directory directly instead of importing it into a
+  database;
+- runs with the UID and GID that own `./data` (the supplied Compose file uses
+  `1000:1000`);
+- can be kept private behind the same Tailscale or VPN boundary.
+
+[NoteDiscovery](https://github.com/gamosoft/notediscovery) is one possible
+database-free editor, but Archivist does not deploy or require it. Mount
+`./data/vaults/personal` into whichever editor you choose.
+
+Direct writes have no merge base. If a long-open web editor saves over a newer
+phone edit, the watcher commits the resulting file and history keeps the older
+version, but Archivist cannot detect the stale write in advance. Keep direct
+editors short-lived or read-mostly. Remote writers that need stale-write
+protection should use MCP or the relay file API.
+
+The relay's file API uses ordinary bearer authorization. Reading returns an
+`ETag`; send it back as `If-Match` when replacing a file:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8091/file/notes/idea.md
+
+curl -T note.md \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'If-Match: "the-etag-from-the-read"' \
+  http://127.0.0.1:8091/file/notes/idea.md
+```
+
+Add `?vault=work` when a token opens more than one vault. `GET /` on the relay
+lists the rest of its HTTP surface.
+
+## React to changes
+
+Archivist offers three notification surfaces:
+
+| Surface | Shape | Use it for |
+| --- | --- | --- |
+| `/personal/v1/events` | server-sent event per commit | long-lived consumer |
+| `/personal/v1/wait` | long-poll until the head moves | simple poller |
+| relay webhooks | best-effort POST per commit | n8n and other HTTP automation |
+
+Notifications are hints, not a durable queue. A consumer stores the last commit
+it processed and catches up from history:
+
+```bash
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8090/personal/v1/changes?since=$CURSOR"
+```
+
+For low latency, listen for the next commit and then request its changes:
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8090/personal/v1/events
+```
+
+An event looks like this:
 
 ```json
-{ "head": "ff5a0b52...", "prev": "4f3538ca...", "count": 2, "changes": [
-  { "path": "att/scan.pdf",  "op": "put", "ext": "pdf", "kind": "binary", "size": 3000,  "hash": "0dc8eb..." },
-  { "path": "notes/idea.md", "op": "put", "ext": "md",  "kind": "text",   "size": 11,    "hash": "a1988d..." } ] }
+{
+  "head": "ff5a0b52...",
+  "prev": "4f3538ca...",
+  "count": 2,
+  "changes": [
+    {"path":"att/scan.pdf","op":"put","kind":"binary","size":3000},
+    {"path":"notes/idea.md","op":"put","kind":"text","size":11}
+  ]
+}
 ```
 
-`kind` is sniffed from the content, not guessed from the name, so an agent can
-skip what it cannot read. A commit touching more than 100 files is truncated
-with a count — read `/personal/v1/changes` for those.
+Large commits may truncate the embedded list; `/personal/v1/changes` remains
+authoritative. [`examples/watch-vault.py`](../examples/watch-vault.py) is a
+standard-library consumer that reconnects and resumes from its cursor.
 
-`/personal/v1/changes` returns the **same shape**, so a consumer can use the stream and
-the catch-up path interchangeably.
+### Webhooks
 
-[`../examples/watch-vault.py`](../examples/watch-vault.py) is a working consumer in
-~120 lines of standard library — subscribe, triage, act, reconnect, resume from
-the cursor. Adapt the `handle()` function and you have an agent.
+Set one or more comma-separated targets in `.env`:
 
-An agent on the same machine should read the changed files straight off disk
-rather than fetching them; the vault is an ordinary directory.
+```dotenv
+ARCHIVIST_WEBHOOKS=https://n8n.example.ts.net/webhook/archivist
+```
 
-## Syncing Obsidian's own config
+Then recreate the relay:
 
-Off by default. Each device chooses its own level in the plugin's settings, and
-that choice is never itself synced — a phone can stay on **Files only** while a
-laptop syncs everything.
+```bash
+docker compose up -d relay
+docker compose logs relay
+```
 
-| Level | What travels |
-|---|---|
-| **Files only** | notes and attachments; no config at all |
-| **Files + appearance** | `app.json`, `appearance.json`, `hotkeys.json`, `snippets/*.css`, `themes/*/` |
-| **Files + appearance + plugins** | the above, plus `community-plugins.json`, `core-plugins.json`, and any plugin's `data.json` you turn on individually |
+The relay posts each commit to every target. Delivery has no retry or dead
+letter queue. Make the receiver idempotent, store its cursor, and use
+`/personal/v1/changes?since=` to recover anything missed while it was down.
 
-Never, at any level:
+Webhook fan-out uses the relay's read-only background token and covers the
+vaults that token can read.
 
-| Never syncs | Why |
-|---|---|
-| `workspace.json`, `workspace-mobile.json` | per-device by nature; a synced layout fights across screens |
-| `graph.json`, caches, anything unlisted | per-device, and an allowlist fails safe |
-| plugin **code** (`main.js`, `manifest.json`, `styles.css`) | ~50 MB a year of binary churn, unrecoverable except by prune |
-| `plugins/*/data.json` unless you turn it on | the most likely place in a vault to find a live credential |
-| **Archivist's own `data.json`** | it holds the bearer token for this server. Hard-excluded, no override, enforced on the server as well as in the plugin — and since this release the token is not in that file at all |
+## Sync Obsidian configuration
 
-The allowlist is enforced in the plugin **and** on the server, independently, so
-an older or buggy plugin cannot push something into history that this version
-would not send.
+Configuration sync is off by default and selected independently on each device:
 
-**Plugin code is not shipped through the vault.** The list travels; the
-receiving device offers to install what is missing from the community store,
-naming every plugin first. Decline and you get the list with the code absent,
-which is what Obsidian Sync gives you. Desktop-only plugins are skipped on
-mobile automatically.
+| Level | What syncs |
+| --- | --- |
+| **Files only** | notes and attachments |
+| **Files + appearance** | appearance, hotkeys, snippets and themes |
+| **Files + appearance + plugins** | appearance plus plugin lists and approved settings |
 
-**Plugin settings are opt-in, per plugin.** Each `data.json` is scanned first,
-and a plugin whose settings look like they hold a credential is **refused with a
-reason** — nothing is stripped or rewritten, because a filtered settings file is
-a broken file that looks fine. You can override per plugin, and the override
-states what is being accepted. Finding nothing is not a guarantee: the scanner
-reports what it recognises, and it cannot recognise everything.
+Workspaces, graph state, caches and plugin code never sync. Archivist's own
+settings never sync because they contain its server configuration.
 
-Settings files are merged by key rather than by line, with arrays replaced
-wholesale. When both devices change the same key to different values, the last
-writer wins and the other version is kept beside it as a conflict copy —
-ordinary JSON you can copy straight back over the winner.
+Plugin `data.json` files are opt-in because they commonly contain API keys. A
+best-effort scanner refuses settings that look credential-bearing and explains
+why. You can approve a plugin explicitly, but a clean scan is not a guarantee
+that a file contains no secret.
 
-Config sync needs the default `.obsidian` directory. If you renamed it, the
-plugin says so and syncs notes only.
+Plugin lists sync without plugin code. A receiving device names missing plugins
+and asks before installing them from the community store; desktop-only plugins
+are skipped on mobile.
+
+Settings files merge by JSON key. Arrays replace wholesale. If two devices
+change the same key differently, the last write wins and the other version is
+kept as a conflict copy. Config sync requires the default `.obsidian` directory.
