@@ -51,11 +51,12 @@ what a device may do, not who anyone is.
 **Not for the public internet.** It expects to sit behind Tailscale, a VPN, or
 a private network. There is no rate limiting, lockout or audit log.
 
-**Conflicts are resolved, not prevented.** Edit the same lines on two devices and
-you get both versions: the server's, plus yours in a `.conflict-<device>-<fragment>`
-file next to it. Where a three-way merge was possible that parked file contains
-git-style conflict markers rather than a clean copy. Nothing is lost, but you
-resolve it by hand.
+**Conflicts are resolved, not prevented.** Edit the same lines on two devices
+and you get both versions: the server's stays at the real path, and yours lands
+beside it as `.conflict-<device>-<fragment>`. That file opens with a line saying
+what happened and the two versions marked up against their common ancestor, so
+you can see what actually differs. Binary files, and paths both sides created
+independently, get a clean copy instead, because there is nothing to mark up.
 
 **Editing on the server is last-writer-wins.** A push from Obsidian carries a
 base version, so it can be merged. A program writing directly to the directory
@@ -66,51 +67,73 @@ but nothing warns you. Keep server-side editors read-mostly.
 **New.** Written in 2026 and used by one person. Keep backups, and test
 restoring them.
 
-## Getting started
+## Quickstart
 
-**Server.** Grab a binary from [releases](../../releases), or build the image
-from the `Dockerfile`.
-A vault is a directory under `$ARCHIVIST_ROOT/vaults/`:
+One server, one vault, one desktop Obsidian. Phones and extra devices are the
+same steps again.
+
+**1. Run the server.** Grab a binary from [releases](../../releases), or use the
+`compose.yaml` in this repo.
 
 ```bash
 export ARCHIVIST_ROOT=~/archivist
 mkdir -p "$ARCHIVIST_ROOT/vaults/personal"
 
-export ARCHIVIST_TOKEN=$(openssl rand -hex 32)
-archivist-server                       # serves every vault under $ARCHIVIST_ROOT
+export ARCHIVIST_TOKEN=$(openssl rand -hex 32)   # print it, you need it below
+archivist-server
 ```
 
-That single token opens every vault, which is fine to start with and the server
-warns about it. For real use, mint one per device: see
-[OPERATIONS](docs/OPERATIONS.md#minting-tokens).
+That token opens every vault, which is fine for one. For more than one device,
+mint a token each: [OPERATIONS](docs/OPERATIONS.md#minting-tokens).
 
-**Plugin.** Archivist is not in the community plugin store, so it installs
-through [BRAT](https://github.com/TfTHacker/obsidian42-brat), which tracks a
-GitHub repository and keeps the plugin updated from its releases.
+**2. Install the plugin.** Archivist is not in the community store, so it comes
+through [BRAT](https://github.com/TfTHacker/obsidian42-brat).
 
 1. **Community plugins → Browse**, search **BRAT**, install and enable it.
-2. Run **BRAT: Add a beta plugin for testing** from the command palette (or
-   *BRAT settings → Add beta plugin*).
-3. Paste `pkronstrom/obsidian-archivist`, leave the version as **latest**, and
-   confirm. Leave *Enable after installing* ticked.
-4. **Community plugins → Archivist → Options**, set the server URL and token,
-   and press **Test connection**.
+2. Run **BRAT: Add a beta plugin for testing** from the command palette.
+3. Paste `pkronstrom/obsidian-archivist`, keep the version as **latest**, confirm.
 
-Repeat on every device, phone included: BRAT works the same on mobile.
+**3. Connect it.** In **Community plugins → Archivist → Options**, set the
+server URL and the token, then press **Test connection**. It reports which
+vault it reached.
 
-While this repository is private, BRAT also needs a GitHub personal access
-token with `repo` scope, set in its settings. That requirement goes away when
-the repository is public.
+That is the whole setup. Edits now sync a few seconds after you stop typing.
 
-To update later, run **BRAT: Check for updates to all beta plugins**, or turn on
-*Auto-update plugins at startup*. If an update does not arrive, check that the
-version has a release attached and that BRAT still lists the repository; it can
-drop the link silently.
+Two things worth knowing before you point it at a vault you care about:
 
-If the vault you are connecting **already has notes** and the server does too,
-the plugin stops and asks rather than merging two unrelated vaults. That is
-deliberate; the choices are explained in
-[OPERATIONS](docs/OPERATIONS.md#connecting-a-vault-that-already-has-notes).
+- If the vault **already has notes** and the server does too, the plugin stops
+  and asks rather than merging two unrelated vaults. The choices are in
+  [OPERATIONS](docs/OPERATIONS.md#connecting-a-vault-that-already-has-notes).
+- While this repository is private, BRAT needs a GitHub token with `repo`
+  scope in its settings. That goes away when the repository is public.
+
+### Optional: reach the vault from Claude Code
+
+The relay exposes the vault as MCP tools, so an agent that is not running on
+the server can read and write notes. It forwards each caller's own token rather
+than holding one for everybody.
+
+```bash
+# A token for the relay's own background work, read-only is enough.
+archivist-relay -url http://localhost:8090 -token "$ARCHIVIST_TOKEN" -listen :8091
+```
+
+Then point Claude Code at it. The caller's token is what decides the scopes, so
+use one minted for the agent rather than the relay's:
+
+```bash
+claude mcp add --transport http archivist http://localhost:8091/mcp \
+  --header "Authorization: Bearer $AGENT_TOKEN"
+```
+
+`list_vaults`, `read_note`, `write_note`, `search_notes` and `note_history`
+then appear as tools. Give the agent a token without `delete` unless you mean
+it: see [INTEGRATIONS](docs/INTEGRATIONS.md).
+
+To update the plugin later, run **BRAT: Check for updates to all beta plugins**
+or turn on *Auto-update plugins at startup*. If an update does not arrive,
+check that the version has a release attached and that BRAT still lists the
+repository; it can drop the link silently.
 
 ## Using it
 

@@ -1,0 +1,79 @@
+# A working starting point. Copy it, adjust the two paths, and run:
+#
+#   docker compose up -d --build
+#
+# One vault named "personal" lives at ./data/vaults/personal, and its history
+# at ./data/.archivist/personal.
+
+services:
+  archivist:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Stamped into the binary and reported by GET /{vault}/v1, so you can
+        # tell what is actually running.
+        VERSION: ${ARCHIVIST_VERSION:-dev}
+    restart: unless-stopped
+
+    # Run as yourself, not root. Nothing in the image drops privileges, so
+    # without this every note the server writes lands root-owned in your
+    # directory: you cannot edit them, and host-side git refuses the repository
+    # with "detected dubious ownership".
+    user: "1000:1000"
+
+    ports:
+      - "127.0.0.1:8090:8090"
+
+    volumes:
+      # ONE mount of the shared parent, not two mounts of its children.
+      #
+      # The repository lives outside the vault, and <vault>/.git is a pointer
+      # holding a RELATIVE path. It only resolves when the vault and the
+      # repository sit in the same relative positions inside and outside the
+      # container. Mounting them separately writes a path that resolves to
+      # nothing from the host, and `git -C <vault> log` then fails with "not a
+      # git repository" long after the change that caused it.
+      - ./data:/data
+
+    environment:
+      - ARCHIVIST_ROOT=/data
+      - ARCHIVIST_LISTEN=:8090
+
+      # Per-device tokens, minted with `token add` (see docs/OPERATIONS.md).
+      # ARCHIVIST_TOKEN is the single-token fallback: it opens EVERY vault, and
+      # the server warns at startup when it is being used.
+      - ARCHIVIST_TOKENS=${ARCHIVIST_TOKENS:-}
+      - ARCHIVIST_TOKEN=${ARCHIVIST_TOKEN:-}
+
+      # macOS writes a filename containing "ä" decomposed and iOS writes it
+      # composed; on Linux those are two different paths. Without this the same
+      # note arrives twice, or two devices rename it back and forth forever.
+      # It MODIFIES filenames on disk, which is why it is opt-in.
+      - ARCHIVIST_NORMALIZE_NFC=${ARCHIVIST_NORMALIZE_NFC:-true}
+
+      # How long a file must sit quiet before a filesystem edit is committed.
+      # Only affects edits made ON the server: a device push commits inline.
+      # Raise it if something on the box autosaves aggressively.
+      - ARCHIVIST_DEBOUNCE=${ARCHIVIST_DEBOUNCE:-15s}
+
+      - ARCHIVIST_LOG_LEVEL=${ARCHIVIST_LOG_LEVEL:-info}
+
+  # Optional. Only needed to reach the vault from somewhere that is not this
+  # machine: MCP tools, webhooks, a friendlier API. See docs/INTEGRATIONS.md.
+  relay:
+    profiles: ["relay"]
+    build:
+      context: .
+      dockerfile: Dockerfile.relay
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8091:8091"
+    environment:
+      - ARCHIVIST_URL=http://archivist:8090
+      # A read-only background token. Callers pass their own, which the relay
+      # forwards rather than standing in for them.
+      - ARCHIVIST_TOKEN=${RELAY_BG_TOKEN:-}
+      - ARCHIVIST_RELAY_LISTEN=:8091
+    depends_on:
+      - archivist
