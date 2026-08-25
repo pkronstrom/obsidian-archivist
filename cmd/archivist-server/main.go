@@ -144,7 +144,7 @@ func envOr(key, def string) string {
 }
 
 func run(cfg *config.Config, log *slog.Logger) error {
-	tokens, err := auth.Load(cfg.TokensFile, cfg.Token)
+	tokens, err := auth.Load(cfg.TokensFile)
 	if err != nil {
 		return err
 	}
@@ -188,13 +188,6 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	log.Info("archivist-server starting",
 		"root", cfg.Root, "listen", cfg.Listen, "vaults", layout.Describe(names),
 		"level", cfg.LogLevel)
-
-	// A single unscoped token is the one-vault convenience, not isolation. Say
-	// so once at startup rather than letting it be discovered after a leak.
-	if tokens.IsBootstrap() {
-		log.Warn("running on a single ARCHIVIST_TOKEN, which opens EVERY vault",
-			"fix", "mint per-device tokens with `archivist-server token add` and set ARCHIVIST_TOKENS")
-	}
 
 	if cfg.NtfyURL == "" {
 		log.Info("ntfy alerts are disabled; set ARCHIVIST_NTFY_URL to enable them")

@@ -21,9 +21,6 @@ import (
 //
 // Watch returns once the watcher is established, and runs until ctx is done.
 func (s *Set) Watch(ctx context.Context, path string, log *slog.Logger) error {
-	if path == "" {
-		return nil // bootstrap mode: there is no file to watch
-	}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -55,7 +52,7 @@ func (s *Set) Watch(ctx context.Context, path string, log *slog.Logger) error {
 				if !ev.Has(fsnotify.Create) && !ev.Has(fsnotify.Write) {
 					continue
 				}
-				next, err := Load(path, "")
+				next, err := Load(path)
 				if err != nil {
 					log.Error("tokens: the file changed but does not load; keeping the previous table",
 						"path", path, "err", err)

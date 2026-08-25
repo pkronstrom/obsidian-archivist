@@ -240,23 +240,14 @@ type file struct {
 // Set is the live token table. Safe for concurrent use: the HTTP handlers read
 // it on every request while the watcher replaces it wholesale.
 type Set struct {
-	mu        sync.RWMutex
-	byHash    map[string]Principal
-	bootstrap bool
+	mu     sync.RWMutex
+	byHash map[string]Principal
 	// now is a seam for testing expiry. Nil means time.Now.
 	now func() time.Time
 }
 
 // New returns an empty set, for minting into.
 func New() *Set { return &Set{byHash: map[string]Principal{}} }
-
-// IsBootstrap reports that this set came from a single ARCHIVIST_TOKEN rather
-// than a tokens file, so one token opens every vault. The caller warns.
-func (s *Set) IsBootstrap() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.bootstrap
-}
 
 // HashToken is the storage key for a token. Exported because the CLI needs to
 // name an entry for revocation without ever holding the secret.
@@ -347,36 +338,10 @@ func (s *Set) Entries() map[string]Principal {
 	return out
 }
 
-// Load reads the tokens file, falling back to a single bootstrap token.
-//
-// path may be empty, in which case fallback must not be: a server with neither
-// would compare against "Bearer " and accept any request -- authentication that
-// looks like authentication and is not.
-func Load(path, fallback string) (*Set, error) {
+// Load reads a minted-token file.
+func Load(path string) (*Set, error) {
 	if path == "" {
-		if fallback == "" {
-			return nil, errors.New(
-				"auth: no credentials. Set ARCHIVIST_TOKENS to a tokens file, or " +
-					"ARCHIVIST_TOKEN for a single unscoped token")
-		}
-		// Every verb, so an existing single-token deployment keeps working across
-		// the upgrade. Withholding delete was the first shape of this and it was
-		// wrong twice over: a write token can already blank a note, so it bought
-		// no safety, and the plugin deletes and renames as a matter of course --
-		// upgrading would have turned ordinary edits into 403s.
-		//
-		// Creation stays off. That one is a real capability, not a verb, and it
-		// costs a single command to mint a token that has it.
-		return &Set{
-			byHash: map[string]Principal{
-				HashToken(fallback): {
-					Label:  "bootstrap",
-					Vaults: []string{"*"},
-					Scopes: []string{ScopeRead, ScopeWrite, ScopeDelete},
-				},
-			},
-			bootstrap: true,
-		}, nil
+		return nil, errors.New("auth: tokens file path is required")
 	}
 
 	body, err := os.ReadFile(path)
@@ -474,11 +439,10 @@ func (s *Set) Replace(other *Set) {
 	for h, p := range other.byHash {
 		next[h] = p
 	}
-	boot := other.bootstrap
 	other.mu.RUnlock()
 
 	s.mu.Lock()
-	s.byHash, s.bootstrap = next, boot
+	s.byHash = next
 	s.mu.Unlock()
 }
 

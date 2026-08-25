@@ -528,7 +528,7 @@ func TestIndexAndHealthzReportTheProtocol(t *testing.T) {
 // table. Both are worth asserting, because between them they are the only
 // thing standing between a typo and an open vault.
 func TestEmptyTokenIsRefusedRatherThanServingAnOpenVault(t *testing.T) {
-	if _, err := auth.Load("", ""); err == nil {
+	if _, err := auth.Load(""); err == nil {
 		t.Error("a server with no credentials at all was accepted")
 	}
 

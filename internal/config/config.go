@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -30,14 +29,10 @@ type Config struct {
 	// and serves them, so raising the value is always a way out. It is a guard
 	// against mistakes, not against an adversary.
 	MaxVaults int
-	// TokensFile maps tokens to the vaults they open. Empty falls back to
-	// Token, which opens EVERY vault -- convenient for one vault, and not
-	// isolation.
+	// TokensFile maps minted tokens to the vaults they open.
 	TokensFile string
 	// Listen is the HTTP bind address.
 	Listen string
-	// Token is the bearer token every client must present.
-	Token string
 	// Debounce is how long a path must be quiet before a filesystem change is
 	// acted on.
 	Debounce time.Duration
@@ -112,20 +107,6 @@ func env(key, def string) string {
 
 // Load parses args over environment defaults.
 func Load(args []string) (*Config, error) {
-	// The old single-vault flags. Rejecting them by name beats "flag provided
-	// but not defined", which says nothing about what to do instead. Prefix,
-	// not equality: `-vault=/path` is a single argv entry.
-	for _, a := range args {
-		if strings.HasPrefix(a, "-vault") || strings.HasPrefix(a, "--vault") ||
-			strings.HasPrefix(a, "-git") || strings.HasPrefix(a, "--git") {
-			return nil, errors.New(
-				"-vault and -git are gone: one process now serves every vault under " +
-					"-root (ARCHIVIST_ROOT), with vaults at $ROOT/vaults/<name> and their " +
-					"history at $ROOT/.archivist/<name>. The offline subcommands still " +
-					"accept -vault and -git for a single repository")
-		}
-	}
-
 	debounce, err := time.ParseDuration(env("ARCHIVIST_DEBOUNCE", "1s"))
 	if err != nil {
 		return nil, errors.New("ARCHIVIST_DEBOUNCE: " + err.Error())
@@ -162,8 +143,6 @@ func Load(args []string) (*Config, error) {
 		"tokens file written by `archivist-server token add`; hashed, never hand-edited")
 	fs.StringVar(&c.Listen, "listen", env("ARCHIVIST_LISTEN", ":8090"),
 		"HTTP listen address")
-	fs.StringVar(&c.Token, "token", env("ARCHIVIST_TOKEN", ""),
-		"bearer token required from clients")
 	fs.DurationVar(&c.Debounce, "debounce", debounce,
 		"quiet period before a filesystem change is acted on")
 	fs.BoolVar(&c.NormalizeNFC, "normalize-nfc", env("ARCHIVIST_NORMALIZE_NFC", "false") == "true",
@@ -208,10 +187,8 @@ func Load(args []string) (*Config, error) {
 	if c.Root == "" {
 		return nil, errors.New("root directory is required (-root or ARCHIVIST_ROOT)")
 	}
-	if c.Token == "" && c.TokensFile == "" {
-		return nil, errors.New(
-			"credentials are required: -tokens/ARCHIVIST_TOKENS for per-vault tokens, " +
-				"or -token/ARCHIVIST_TOKEN for a single token that opens every vault")
+	if c.TokensFile == "" {
+		return nil, errors.New("tokens file is required (-tokens or ARCHIVIST_TOKENS)")
 	}
 	return c, nil
 }

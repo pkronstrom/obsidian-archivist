@@ -25,7 +25,7 @@ func TestWatchPicksUpATokenMintedAfterStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	live, err := Load(path, "")
+	live, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestWatchPicksUpATokenMintedAfterStartup(t *testing.T) {
 	}
 
 	// Mint into a fresh set loaded from the same file, exactly as the CLI does.
-	minter, err := Load(path, "")
+	minter, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestWatchKeepsTheOldTableWhenTheNewFileIsBroken(t *testing.T) {
 	if err := seed.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	live, err := Load(path, "")
+	live, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}

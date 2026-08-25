@@ -77,7 +77,7 @@ func hashOf(token string) string {
 func TestLookupFindsAPrincipalByTheHashOfItsToken(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("secret-a")+`":
 		{"label":"mac","vaults":["personal"],"scopes":["read","write"]}}}`)
-	set, err := Load(path, "")
+	set, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestAMintedTokenLooksUpImmediately(t *testing.T) {
 func TestExpiredTokensAreRejectedAtLookup(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("old")+`":
 		{"vaults":["personal"],"scopes":["read"],"expiresAt":1000}}}`)
-	set, err := Load(path, "")
+	set, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestExpiredTokensAreRejectedAtLookup(t *testing.T) {
 // secrets the new format deliberately cannot hold.
 func TestAVersionOneFileIsARefusalToStart(t *testing.T) {
 	path := writeTokens(t, `{"tok-personal": {"label":"mac","vaults":["personal"]}}`)
-	_, err := Load(path, "")
+	_, err := Load(path)
 	if err == nil {
 		t.Fatal("a v1 file was accepted; those tokens are plaintext")
 	}
@@ -185,58 +185,29 @@ func TestRevokeRemovesATokenFromTheSet(t *testing.T) {
 }
 
 func TestNoTokensAtAllIsAnError(t *testing.T) {
-	if _, err := Load("", ""); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("a server with no tokens would serve an open vault")
 	}
 }
 
 func TestATokenWithNoVaultsIsAnError(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("t")+`":{"vaults":[],"scopes":["read"]}}}`)
-	if _, err := Load(path, ""); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Error("a token that opens nothing is a configuration mistake, not a valid entry")
 	}
 }
 
 func TestATokenWithNoScopesIsAnError(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("t")+`":{"vaults":["personal"],"scopes":[]}}}`)
-	if _, err := Load(path, ""); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Error("a token that can do nothing is a mistake, and reads as a lockout at request time")
-	}
-}
-
-func TestBootstrapTokenOpensEverythingAndSaysSo(t *testing.T) {
-	set, err := Load("", "bootstrap-secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !set.IsBootstrap() {
-		t.Error("the caller must be able to tell it is running unscoped, so it can warn")
-	}
-	p, ok := set.Lookup("bootstrap-secret")
-	if !ok {
-		t.Fatal("the bootstrap token was rejected")
-	}
-	if !p.Opens("personal") || !p.Opens("work") {
-		t.Error("the bootstrap token must open every vault")
-	}
-	if !p.Can(ScopeRead) || !p.Can(ScopeWrite) {
-		t.Error("the bootstrap token must be able to sync a vault, which needs read and write")
-	}
-	// Delete too. Withholding it would be theatre -- a write token can already
-	// blank a note -- while breaking the plugin, which deletes and renames as a
-	// matter of course. An existing single-token install must keep working.
-	if !p.Can(ScopeDelete) {
-		t.Error("the bootstrap token must be able to delete; the plugin renames and deletes normally")
-	}
-	if p.CanCreateVaults {
-		t.Error("the bootstrap token must not create vaults; that needs a minted token")
 	}
 }
 
 func TestVisibleReturnsOnlyWhatTheTokenOpens(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("t")+`":
 		{"vaults":["work"],"scopes":["read"]}}}`)
-	set, _ := Load(path, "")
+	set, _ := Load(path)
 	p, _ := set.Lookup("t")
 	got := p.Visible([]string{"personal", "work", "archive"})
 	if len(got) != 1 || got[0] != "work" {
@@ -247,7 +218,7 @@ func TestVisibleReturnsOnlyWhatTheTokenOpens(t *testing.T) {
 func TestWildcardOpensEverythingButCannotCreate(t *testing.T) {
 	path := writeTokens(t, `{"v":2,"tokens":{"`+hashOf("t")+`":
 		{"vaults":["*"],"scopes":["read"]}}}`)
-	set, _ := Load(path, "")
+	set, _ := Load(path)
 	p, _ := set.Lookup("t")
 	if !p.Opens("anything") {
 		t.Error(`"*" should open every vault`)
@@ -351,7 +322,7 @@ func TestLoadRejectsAnUnknownStepUpEntry(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path, ""); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Fatal("a tokens file with an unknown step-up entry loaded cleanly")
 	}
 }
@@ -363,7 +334,7 @@ func TestLoadRejectsAPostureWithNoSecret(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path, ""); err == nil {
+	if _, err := Load(path); err == nil {
 		t.Fatal("a posture with no secret loaded cleanly; the token could never unlock")
 	}
 }

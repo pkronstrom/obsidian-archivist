@@ -149,7 +149,7 @@ func load(path string) (*auth.Set, error) {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return auth.New(), nil
 	}
-	return auth.Load(path, "")
+	return auth.Load(path)
 }
 
 func runAdd(args []string, out io.Writer) error {

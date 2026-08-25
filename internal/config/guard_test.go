@@ -11,7 +11,7 @@ func minimalEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("ARCHIVIST_ROOT", t.TempDir())
 	t.Setenv("ARCHIVIST_GIT", t.TempDir())
-	t.Setenv("ARCHIVIST_TOKEN", "t")
+	t.Setenv("ARCHIVIST_TOKENS", t.TempDir()+"/tokens.json")
 }
 
 func TestGuardDefaults(t *testing.T) {

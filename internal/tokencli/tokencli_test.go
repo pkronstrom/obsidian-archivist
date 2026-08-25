@@ -35,7 +35,7 @@ func TestAddMintsATokenAndPrintsItOnce(t *testing.T) {
 	}
 	token := printedToken(t, out.String())
 
-	set, err := auth.Load(path, "")
+	set, err := auth.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestRevokeRemovesByHashPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	set, _ := auth.Load(path, "")
+	set, _ := auth.Load(path)
 	var target string
 	for hash, p := range set.Entries() {
 		if p.Label == "gone" {
@@ -134,7 +134,7 @@ func TestRevokeRemovesByHashPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, err := auth.Load(path, "")
+	after, err := auth.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestConcurrentAddAndRevokeDoNotResurrectAToken(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	set, _ := auth.Load(path, "")
+	set, _ := auth.Load(path)
 	var doomed string
 	for hash, p := range set.Entries() {
 		if p.Label == "doomed" {
@@ -217,7 +217,7 @@ func TestConcurrentAddAndRevokeDoNotResurrectAToken(t *testing.T) {
 		}
 	}
 
-	after, err := auth.Load(path, "")
+	after, err := auth.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestNoStepUpIsRecordedOnThePrincipal(t *testing.T) {
 		"-label", "phone", "-vaults", "work", "-no-step-up", "work"}, &out); err != nil {
 		t.Fatalf("the deliberate opt-out was refused: %v", err)
 	}
-	set, err := auth.Load(tokensPath(dir), "")
+	set, err := auth.Load(tokensPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}

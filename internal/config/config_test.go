@@ -9,7 +9,7 @@ func TestEnvFallback(t *testing.T) {
 	// ARCHIVIST_VAULT and ARCHIVIST_GIT are gone: one process serves every
 	// vault under ARCHIVIST_ROOT, and the per-vault paths are derived from it.
 	t.Setenv("ARCHIVIST_ROOT", "/srv/knowledge")
-	t.Setenv("ARCHIVIST_TOKEN", "secret")
+	t.Setenv("ARCHIVIST_TOKENS", "/srv/knowledge/.archivist/tokens.json")
 	c, err := Load([]string{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -25,7 +25,7 @@ func TestEnvFallback(t *testing.T) {
 func TestFlagBeatsEnv(t *testing.T) {
 	t.Setenv("ARCHIVIST_LISTEN", ":1111")
 	t.Setenv("ARCHIVIST_ROOT", "/v")
-	t.Setenv("ARCHIVIST_TOKEN", "s")
+	t.Setenv("ARCHIVIST_TOKENS", "/v/.archivist/tokens.json")
 	c, err := Load([]string{"-listen", ":2222"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -35,15 +35,17 @@ func TestFlagBeatsEnv(t *testing.T) {
 	}
 }
 
-func TestMissingTokenIsAnError(t *testing.T) {
+func TestTokensFileIsRequired(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "/v")
-	if _, err := Load([]string{}); err == nil {
-		t.Fatal("want an error when the token is unset, got nil")
+	t.Setenv("ARCHIVIST_TOKENS", "")
+	t.Setenv("ARCHIVIST_TOKEN", "legacy-token-must-not-count")
+	if _, err := Load([]string{}); err == nil || !strings.Contains(err.Error(), "ARCHIVIST_TOKENS") {
+		t.Fatalf("Load without a token file = %v, want actionable refusal", err)
 	}
 }
 
 func TestMissingVaultIsAnError(t *testing.T) {
-	t.Setenv("ARCHIVIST_TOKEN", "s")
+	t.Setenv("ARCHIVIST_TOKENS", "/v/.archivist/tokens.json")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("want an error when the vault is unset, got nil")
 	}
@@ -51,7 +53,7 @@ func TestMissingVaultIsAnError(t *testing.T) {
 
 func TestWatchCanBeDisabled(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "/v")
-	t.Setenv("ARCHIVIST_TOKEN", "s")
+	t.Setenv("ARCHIVIST_TOKENS", "/v/.archivist/tokens.json")
 	c, err := Load([]string{"-watch=false"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -63,7 +65,7 @@ func TestWatchCanBeDisabled(t *testing.T) {
 
 func TestBadDebounceIsAnError(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "/v")
-	t.Setenv("ARCHIVIST_TOKEN", "s")
+	t.Setenv("ARCHIVIST_TOKENS", "/v/.archivist/tokens.json")
 	t.Setenv("ARCHIVIST_DEBOUNCE", "not-a-duration")
 	if _, err := Load([]string{}); err == nil {
 		t.Fatal("want an error for an unparseable debounce, got nil")
@@ -72,7 +74,7 @@ func TestBadDebounceIsAnError(t *testing.T) {
 
 func TestRootIsRequired(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "")
-	t.Setenv("ARCHIVIST_TOKEN", "tok")
+	t.Setenv("ARCHIVIST_TOKENS", "/v/.archivist/tokens.json")
 	if _, err := Load(nil); err == nil {
 		t.Fatal("a root directory is required")
 	}
@@ -80,7 +82,7 @@ func TestRootIsRequired(t *testing.T) {
 
 func TestRootFromFlagAndEnvironment(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "/from-env")
-	t.Setenv("ARCHIVIST_TOKEN", "tok")
+	t.Setenv("ARCHIVIST_TOKENS", "/from-env/.archivist/tokens.json")
 
 	c, err := Load(nil)
 	if err != nil {
@@ -101,46 +103,12 @@ func TestRootFromFlagAndEnvironment(t *testing.T) {
 
 func TestMaxVaultsDefaultsToFive(t *testing.T) {
 	t.Setenv("ARCHIVIST_ROOT", "/data")
-	t.Setenv("ARCHIVIST_TOKEN", "tok")
+	t.Setenv("ARCHIVIST_TOKENS", "/data/.archivist/tokens.json")
 	c, err := Load(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.MaxVaults != 5 {
 		t.Errorf("MaxVaults = %d, want 5", c.MaxVaults)
-	}
-}
-
-func TestEitherATokenOrATokensFileIsRequired(t *testing.T) {
-	t.Setenv("ARCHIVIST_ROOT", "/data")
-	t.Setenv("ARCHIVIST_TOKEN", "")
-	t.Setenv("ARCHIVIST_TOKENS", "")
-	if _, err := Load(nil); err == nil {
-		t.Fatal("a server with no credentials would serve an open vault")
-	}
-
-	t.Setenv("ARCHIVIST_TOKENS", "/data/.archivist/tokens.json")
-	if _, err := Load(nil); err != nil {
-		t.Errorf("a tokens file alone must be enough: %v", err)
-	}
-}
-
-// The single-vault flags are gone, and saying so beats a mystery.
-func TestTheOldVaultFlagIsRejectedWithGuidance(t *testing.T) {
-	t.Setenv("ARCHIVIST_ROOT", "/data")
-	t.Setenv("ARCHIVIST_TOKEN", "tok")
-	for _, form := range [][]string{
-		{"-vault", "/data/vaults/personal"},
-		{"-vault=/data/vaults/personal"}, // one argv entry: an equality check misses it
-		{"--git=/data/.archivist/personal"},
-	} {
-		_, err := Load(form)
-		if err == nil {
-			t.Errorf("%v must be rejected", form)
-			continue
-		}
-		if !strings.Contains(err.Error(), "-root") {
-			t.Errorf("%v: the error must point at the replacement: %v", form, err)
-		}
 	}
 }
