@@ -1,5 +1,5 @@
-# Local-first Archivist stack. Create data/vaults/personal, put
-# ARCHIVIST_TOKEN and RELAY_BG_TOKEN in .env, then run:
+# Local-first Archivist stack. Create data/vaults/personal and
+# data/.archivist, set your UID/GID in .env, mint a token, then run:
 #
 #   docker compose up -d --build
 #
@@ -42,10 +42,7 @@ services:
       - ARCHIVIST_LISTEN=:8090
 
       # Per-device tokens, minted with `token add` (see docs/OPERATIONS.md).
-      # ARCHIVIST_TOKEN is the single-token fallback: it opens EVERY vault, and
-      # the server warns at startup when it is being used.
-      - ARCHIVIST_TOKENS=${ARCHIVIST_TOKENS:-}
-      - ARCHIVIST_TOKEN=${ARCHIVIST_TOKEN:-}
+      - ARCHIVIST_TOKENS=/data/.archivist/tokens.json
 
       # macOS writes a filename containing "ä" decomposed and iOS writes it
       # composed; on Linux those are two different paths. Without this the same
@@ -71,8 +68,8 @@ services:
       - "127.0.0.1:8091:8091"
     environment:
       - ARCHIVIST_URL=http://archivist:8090
-      # A read-only background token. Callers pass their own, which the relay
-      # forwards rather than standing in for them.
+      # Needed only when ARCHIVIST_WEBHOOKS is set. Callers otherwise pass
+      # their own token, which the relay forwards.
       - ARCHIVIST_TOKEN=${RELAY_BG_TOKEN:-}
       - ARCHIVIST_RELAY_LISTEN=:8091
       - ARCHIVIST_VAULT=${ARCHIVIST_RELAY_VAULT:-}

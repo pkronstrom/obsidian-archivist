@@ -13,25 +13,23 @@ file API or webhooks.
 ```bash
 git clone https://github.com/pkronstrom/obsidian-archivist.git
 cd obsidian-archivist
-mkdir -p data/vaults/personal
+mkdir -p data/vaults/personal data/.archivist
 
-TOKEN="$(openssl rand -hex 32)"
-printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\nARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' \
-  "$TOKEN" "$TOKEN" "$(id -u)" "$(id -g)" > .env
-docker compose up -d --build
+printf 'ARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' "$(id -u)" "$(id -g)" > .env
+docker compose build archivist relay
+docker compose run --rm --no-deps archivist token add \
+  -root /data -label first-device -vaults personal -profile obsidian-plugin
 ```
 
-Check both services:
+Save the printed `arch_...` token in the first device. It appears only once.
+Then start and check both services:
 
 ```bash
+docker compose up -d
 docker compose ps
 curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8090/healthz
 curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
 ```
-
-The initial `ARCHIVIST_TOKEN` opens every vault. That is useful for getting a
-local installation running, but it is not isolation. Replace it with scoped
-credentials before adding devices or agents.
 
 Compose keeps everything below `./data`:
 
@@ -108,44 +106,20 @@ tailnet HTTPS is enabled; the Caddy process must be allowed to access
 
 Keep the Compose ports on loopback in both setups.
 
-## Replace the bootstrap credential
+## Manage tokens
 
-Archivist stores scoped credentials as hashes in a file. Mint the plugin and
-relay credentials while the bootstrap stack is still running, and save each
-printed secret: it appears only once.
+Archivist stores only token hashes. Give each device or agent its own token and
+save the printed secret: it appears only once.
 
 ```bash
-docker compose exec -e ARCHIVIST_TOKENS=/data/.archivist/tokens.json archivist \
-  /archivist-server token add -root /data -label laptop \
+docker compose exec archivist /archivist-server token add -root /data -label laptop \
   -vaults personal -profile obsidian-plugin
-
-docker compose exec -e ARCHIVIST_TOKENS=/data/.archivist/tokens.json archivist \
-  /archivist-server token add -root /data -label relay \
-  -vaults personal -profile relay-background
-```
-
-Keep `ARCHIVIST_UID` and `ARCHIVIST_GID` in `.env`. Remove the bootstrap entries
-and add the token-file path and new relay token:
-
-```dotenv
-ARCHIVIST_TOKENS=/data/.archivist/tokens.json
-RELAY_BG_TOKEN=arch_replace_with_the_relay_token
-```
-
-Remove `ARCHIVIST_TOKEN`, restart, then replace the token in Obsidian with the
-new laptop token:
-
-```bash
-docker compose up -d
-```
-
-The running server reloads the token file when it changes. From now on, token
-administration needs no restart:
-
-```bash
 docker compose exec archivist /archivist-server token list
 docker compose exec archivist /archivist-server token revoke <id-prefix>
 ```
+
+The running server reloads the file after `add` or `revoke`; no restart is
+needed.
 
 A token carries a label, allowed vaults, expiry and the scopes `read`, `write`
 and `delete`. Its label is recorded in commit history. Prefer the built-in
@@ -156,7 +130,7 @@ profiles, which choose the expected scopes and step-up posture:
 | `obsidian-plugin` | attended Obsidian device | read, write, delete |
 | `mcp-client` | attended agent such as Claude Code | read, write |
 | `mcp-scheduled` | unattended agent or job | read, write |
-| `relay-background` | relay health checks and webhooks | read |
+| `relay-background` | webhook event stream | read |
 
 Add `-expires-in 720h` for an expiry. A lost secret cannot be recovered; revoke
 it and mint another.
@@ -313,44 +287,23 @@ docker compose exec archivist /archivist-server token add \
 docker compose exec archivist /archivist-server token add \
   -root /data -label agent-claude -vaults work,personal \
   -profile mcp-client -step-up vault:work,ops:work
-
-docker compose exec archivist /archivist-server token add \
-  -root /data -label relay -vaults work,personal \
-  -profile relay-background -no-step-up work
 ```
 
-Update the plugin and agent with their new credentials. Save the relay token in
-a shell variable and verify that it can see `work` before changing the vault:
+Update the plugin and agent with their new credentials and verify each can see
+the intended vault before creating the marker:
 
 ```bash
-NEW_RELAY_TOKEN=arch_replace_with_the_new_relay_token
-curl -fsS -H "Authorization: Bearer $NEW_RELAY_TOKEN" \
+NEW_TOKEN=arch_replace_with_the_new_token
+curl -fsS -H "Authorization: Bearer $NEW_TOKEN" \
   http://127.0.0.1:8090/v1/vaults
-```
-
-Put the same value in `.env`, recreate the relay, and verify that the container
-received it:
-
-```dotenv
-RELAY_BG_TOKEN=arch_replace_with_the_new_relay_token
-```
-
-```bash
-docker compose up -d relay
-curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
-docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  "$(docker compose ps -q relay)" | \
-  grep -Fqx "ARCHIVIST_TOKEN=$NEW_RELAY_TOKEN"
-```
-
-Only then create the marker and make a vault-scoped read. A successful response
-proves that the relay token's `-no-step-up work` posture is active:
-
-```bash
 touch data/.archivist/work/step-up
-curl -fsS -H "Authorization: Bearer $NEW_RELAY_TOKEN" \
+curl -fsS -H "Authorization: Bearer $NEW_TOKEN" \
   http://127.0.0.1:8090/work/v1/head
 ```
+
+If webhooks follow this vault, mint a separate `relay-background` token with
+`-no-step-up work`, set `RELAY_BG_TOKEN`, and recreate the relay before adding
+the marker. The [webhook setup](INTEGRATIONS.md#webhooks) shows the full flow.
 
 Once the marker exists, old tokens are refused because they have no explicit
 posture. New tokens minted with a profile receive that profile's default posture

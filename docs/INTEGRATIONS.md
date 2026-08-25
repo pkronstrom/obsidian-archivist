@@ -8,10 +8,6 @@ For deployment and credentials, see [Running Archivist](OPERATIONS.md).
 
 ## Claude Code over MCP
 
-First [replace the bootstrap credential](OPERATIONS.md#replace-the-bootstrap-credential).
-The token command below requires the server to be using `ARCHIVIST_TOKENS`; it
-will fail while the bootstrap-only configuration is still active.
-
 The Compose stack already runs `archivist-relay`. Give Claude Code its own
 credential so the server can enforce and record that caller's access:
 
@@ -41,8 +37,7 @@ Run `claude mcp get archivist` or open `/mcp` inside Claude Code to check the
 connection. The command follows Claude Code's current
 [remote HTTP MCP syntax](https://code.claude.com/docs/en/mcp).
 
-The relay forwards the caller's token. Its background token is used only for
-health checks and webhook streams; it never supplies an agent's permissions.
+The relay forwards the caller's token; it never supplies an agent's permissions.
 The `mcp-client` profile has read and write but no delete scope.
 
 ### MCP tool reference
@@ -162,9 +157,17 @@ standard-library consumer that reconnects and resumes from its cursor.
 
 ### Webhooks
 
-Set one or more comma-separated targets in `.env`:
+Webhooks are the only relay feature that needs a background token. Mint one:
+
+```bash
+docker compose exec archivist /archivist-server token add \
+  -root /data -label relay-background -vaults personal -profile relay-background
+```
+
+Save the printed token and configure the vault and targets in `.env`:
 
 ```dotenv
+RELAY_BG_TOKEN=arch_replace_with_the_printed_token
 ARCHIVIST_RELAY_VAULT=personal
 ARCHIVIST_WEBHOOKS=https://n8n.example.ts.net/webhook/archivist
 ```

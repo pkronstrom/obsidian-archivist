@@ -16,27 +16,30 @@ that machine can search, read, edit, serve and back up the same files.
 ## Quick start
 
 This starts one vault named `personal` on your current computer. You need Git,
-Docker Compose, OpenSSL and Obsidian.
+Docker Compose and Obsidian.
 
 ```bash
 git clone https://github.com/pkronstrom/obsidian-archivist.git
 cd obsidian-archivist
-mkdir -p data/vaults/personal
+mkdir -p data/vaults/personal data/.archivist
 
-TOKEN="$(openssl rand -hex 32)"
-printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\nARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' \
-  "$TOKEN" "$TOKEN" "$(id -u)" "$(id -g)" > .env
-docker compose up -d --build
+printf 'ARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' "$(id -u)" "$(id -g)" > .env
+docker compose build archivist relay
+docker compose run --rm --no-deps archivist token add \
+  -root /data -label first-device -vaults personal -profile obsidian-plugin
+```
 
+Copy the printed `arch_...` token; it is shown only once. Then start the stack:
+
+```bash
+docker compose up -d
 curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8090/healthz
 curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
-printf '%s\n' "$TOKEN"
 ```
 
 Both services listen on loopback, so this setup is reachable only from the
-computer running Docker. The generated bootstrap token is intentionally broad:
-it is convenient for a local first run, but replace it with scoped credentials
-before adding devices or agents.
+computer running Docker. Give every additional device and agent its own minted
+token so access can be scoped, attributed and revoked independently.
 
 ### Connect Obsidian
 
@@ -88,7 +91,7 @@ Funnel makes the service public.
 
 ## Add more
 
-- [Replace the bootstrap token and add devices](docs/OPERATIONS.md#replace-the-bootstrap-credential)
+- [Manage tokens and add devices](docs/OPERATIONS.md#manage-tokens)
 - [Give Claude Code MCP access](docs/INTEGRATIONS.md#claude-code-over-mcp)
 - [Edit or serve notes on the server](docs/INTEGRATIONS.md#edit-notes-on-the-server-or-web)
 - [Run webhooks and event consumers](docs/INTEGRATIONS.md#react-to-changes)

@@ -122,11 +122,6 @@ file, because minting renames a new file over the old one and replaces the
 inode. A file that fails to parse is logged and ignored and the running table is
 kept, so a typo cannot lock every device out at once.
 
-`ARCHIVIST_TOKEN` without a tokens file is the bootstrap principal: every vault,
-all three verbs, no vault creation. It holds delete because withholding it would
-be theatre — a write token can already blank a note — while breaking the plugin,
-which renames and deletes routinely.
-
 Streams re-check their token. `/personal/v1/events` authenticates once at connect but a
 stream can outlive that by days, so it re-resolves the principal on every
 keepalive tick and closes if the token was revoked, expired or narrowed. That
@@ -159,10 +154,8 @@ The plugin folds a deletion and an addition of identical content into one move,
 strictly one-to-one. Two deletions of the same content are ambiguous and
 guessing would rename the wrong file, so those stay del+put.
 
-**Older clients are unaffected on the read side.** `/personal/v1/changes` diffs trees, so
-a move reaches other devices as a deletion and an addition; they never see the
-op. Only a client that *emits* `move` needs a server that knows it, which is why
-the protocol went to 2 and why servers upgrade before plugins do.
+`/personal/v1/changes` diffs trees, so a move reaches clients as a deletion and
+an addition; the wire-only `move` operation is emitted during a push.
 
 ### Commit provenance
 
@@ -205,13 +198,10 @@ forwarding that would present `Bearer ` upstream.
 
 Two consequences worth stating:
 
-- `?vault=work` stops being a bypass. It was always caller-controlled, but the
-  relay's own token decided what it reached; now the server refuses a vault the
-  caller's principal does not open.
-- The relay is no longer worth compromising for its credentials. It keeps one
-  minted read-only token for the three jobs with no caller — the startup
-  compatibility check, the 60-second re-check, and the webhook stream — plus the
-  `/healthz` upstream probe, and nothing else.
+- `?vault=work` is authorized against the caller's principal, so naming a vault
+  the caller cannot open is refused by the server.
+- Compatibility and upstream health use tokenless `/healthz`. The relay holds a
+  minted read-only token only when webhook fan-out needs an unattended caller.
 
 The pool is bounded at 256 entries. Its key is a bearer token, a value the
 caller chooses, so an unbounded map would be a memory leak anyone who can reach

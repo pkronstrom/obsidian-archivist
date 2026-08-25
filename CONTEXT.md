@@ -16,10 +16,6 @@ editing an existing one.
 **Scope** — a verb a token holds: `read`, `write`, `delete`. No wildcard. Every
 route declares the scope it needs in the `routes()` table.
 
-**Bootstrap token** — a single `ARCHIVIST_TOKEN` from the environment, opening
-every vault, used when no tokens file exists. Keeps `delete`, because a `write`
-token can blank a note anyway and the plugin renames routinely.
-
 ## Step-up
 
 **Step-up authentication** — an already-authenticated principal proving more
@@ -85,9 +81,9 @@ makes every commit. Never makes outbound requests.
 
 **archivist-relay** — a stateless forwarder for callers that are not on the
 server. Holds no vault and no cursor, and no credential of its own beyond a
-read-only background token. Forwards each caller's own token, so the server
-evaluates the scopes that were actually minted.
+read-only background token when webhooks are configured. Forwards each caller's
+own token, so the server evaluates the scopes that were actually minted.
 
-**Background token** — the relay's own read-only credential, used for the two
-jobs that run with no caller present: the startup compatibility check and the
-webhook event stream. Must never carry step-up.
+**Background token** — the relay's optional read-only credential for the
+webhook event stream. Compatibility and health use tokenless `/healthz`. Must
+never carry step-up.
