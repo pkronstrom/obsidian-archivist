@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/pkronstrom/obsidian-archivist/internal/client"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 func TestPoolReturnsTheSameClientForOneToken(t *testing.T) {
@@ -15,6 +18,44 @@ func TestPoolReturnsTheSameClientForOneToken(t *testing.T) {
 	b := p.For("tok-a")
 	if a != b {
 		t.Error("two calls with the same token built two clients; the cache is not working")
+	}
+}
+
+func TestPoolSharesPeriodicCompatibilityVerdict(t *testing.T) {
+	var proto atomic.Int32
+	proto.Store(protocol.Version)
+	var pushes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			json.NewEncoder(w).Encode(protocol.HealthResponse{
+				Status: "ok", Version: "test", Protocol: int(proto.Load()),
+			})
+		case "/personal/v1/push":
+			pushes.Add(1)
+			json.NewEncoder(w).Encode(protocol.PushResponse{})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	probe := client.New(srv.URL, "", "relay")
+	p := NewPoolWithProbe(probe)
+	caller := p.For("tok").WithVault("personal")
+	if err := caller.CheckCompatible(context.Background()); err != nil {
+		t.Fatalf("baseline caller check: %v", err)
+	}
+
+	proto.Store(protocol.Version + 1)
+	if err := probe.CheckCompatible(context.Background()); err == nil {
+		t.Fatal("periodic probe accepted the incompatible server")
+	}
+	if _, err := caller.Push(context.Background(), "base", nil); err == nil {
+		t.Fatal("a caller with an earlier cached verdict was allowed to push")
+	}
+	if got := pushes.Load(); got != 0 {
+		t.Fatalf("incompatible server received %d push(es)", got)
 	}
 }
 

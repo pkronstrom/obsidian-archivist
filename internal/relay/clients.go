@@ -29,8 +29,7 @@ const maxPooledClients = 256
 // every caller reached the server as the relay's single identity, so the scopes
 // on their own token were never evaluated by the authority that enforces them.
 type Pool struct {
-	base   string
-	device string
+	template *client.Client
 
 	mu       sync.Mutex
 	clients  map[string]*client.Client
@@ -39,9 +38,15 @@ type Pool struct {
 }
 
 func NewPool(baseURL, device string) *Pool {
+	return NewPoolWithProbe(client.New(baseURL, "", device))
+}
+
+// NewPoolWithProbe builds caller clients from the same client family as the
+// periodic health probe. Copies keep caller tokens separate while sharing the
+// server-wide compatibility verdict.
+func NewPoolWithProbe(probe *client.Client) *Pool {
 	return &Pool{
-		base:     baseURL,
-		device:   device,
+		template: probe,
 		clients:  map[string]*client.Client{},
 		servers:  map[string]*mcp.Server{},
 		defaults: map[string]string{},
@@ -71,7 +76,7 @@ func (p *Pool) forLocked(token string) *client.Client {
 		p.servers = map[string]*mcp.Server{}
 		p.defaults = map[string]string{}
 	}
-	c := client.New(p.base, token, p.device)
+	c := p.template.WithToken(token)
 	p.clients[token] = c
 	return c
 }

@@ -53,6 +53,21 @@ test("listVaults requires current scoped-token metadata", async () => {
 	);
 });
 
+test("listVaults validates scoped-token metadata types", async () => {
+	globalThis.fetch = async () =>
+		new Response(
+			'{"vaults":["personal"],"canCreate":"no","scopes":[7],"protectedVaults":[],"requiresStepUpAuth":[]}',
+			{
+				status: 200,
+				headers: { "content-type": "application/json" },
+			},
+		);
+	await assert.rejects(
+		() => new Client("https://vault.example", "tok", "").listVaults(),
+		/current scoped-token metadata/,
+	);
+});
+
 test("a trailing slash on the server URL does not double up", async () => {
 	const seen = capturing();
 	await new Client("https://vault.example/", "tok", "personal").head();

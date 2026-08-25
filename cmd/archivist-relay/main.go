@@ -131,7 +131,7 @@ func run(cfg *config, log *slog.Logger) error {
 	// The probe is tokenless because compatibility and health live at /healthz.
 	// The pool builds one client per caller token for every request operation.
 	probe := client.New(cfg.url, "", cfg.device)
-	pool := relay.NewPool(cfg.url, cfg.device)
+	pool := relay.NewPoolWithProbe(probe)
 	var bg *client.Client
 	if len(cfg.webhooks) > 0 {
 		bg = client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)

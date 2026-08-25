@@ -28,14 +28,30 @@ export type Result = {
 export const PROTOCOL_VERSION = 2;
 export type ServerIndex = { service: string; version: string; protocol: number; vault: string };
 
-export function requireCurrentIndex(index: ServerIndex): ServerIndex {
+export function requireCurrentIndex(value: unknown): ServerIndex {
+	if (!value || typeof value !== "object") {
+		throw new Error("server response is missing current index metadata");
+	}
+	const index = value as Record<string, unknown>;
 	if (index.protocol !== PROTOCOL_VERSION) {
 		throw new Error(
-			`server protocol ${index.protocol} is incompatible; this plugin requires protocol ${PROTOCOL_VERSION}`,
+			`server protocol ${String(index.protocol)} is incompatible; this plugin requires protocol ${PROTOCOL_VERSION}`,
 		);
 	}
-	if (!index.vault) throw new Error("server response has no vault identity");
-	return index;
+	if (index.vault === "") throw new Error("server response has no vault identity");
+	if (
+		index.service !== "archivist" ||
+		typeof index.version !== "string" ||
+		!index.version ||
+		typeof index.vault !== "string"
+	) {
+		throw new Error("server response is missing current index metadata");
+	}
+	return index as ServerIndex;
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 /** Stable error codes from the server. Branch on these, never on the message:
@@ -185,20 +201,22 @@ export class Client {
 		const res = await this.callRoot("GET", "/v1/vaults");
 		const json = res.json;
 		if (
-			!Array.isArray(json?.vaults) ||
-			!Array.isArray(json?.scopes) ||
-			!Array.isArray(json?.protectedVaults) ||
-			!Array.isArray(json?.requiresStepUpAuth)
+			!isStringArray(json?.vaults) ||
+			!isStringArray(json?.scopes) ||
+			typeof json?.canCreate !== "boolean" ||
+			(json?.label !== undefined && typeof json.label !== "string") ||
+			!isStringArray(json?.protectedVaults) ||
+			!isStringArray(json?.requiresStepUpAuth)
 		) {
 			throw new Error("server response is missing current scoped-token metadata");
 		}
 		return {
-			vaults: json.vaults as string[],
-			canCreate: Boolean(json.canCreate),
-			scopes: json.scopes as string[],
-			label: typeof json.label === "string" ? json.label : undefined,
-			protectedVaults: json.protectedVaults as string[],
-			requiresStepUpAuth: json.requiresStepUpAuth as string[],
+			vaults: json.vaults,
+			canCreate: json.canCreate,
+			scopes: json.scopes,
+			label: json.label,
+			protectedVaults: json.protectedVaults,
+			requiresStepUpAuth: json.requiresStepUpAuth,
 		};
 	}
 

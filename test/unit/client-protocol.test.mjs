@@ -11,4 +11,12 @@ test("the plugin refuses a different or incomplete protocol", () => {
 		() => requireCurrentIndex({ protocol: 2, version: "test", vault: "" }),
 		/vault identity/,
 	);
+	assert.throws(
+		() => requireCurrentIndex({ service: "archivist", protocol: 2, version: "test", vault: 7 }),
+		/current index metadata/,
+	);
+	assert.throws(
+		() => requireCurrentIndex({ protocol: 2, version: "test", vault: "personal" }),
+		/current index metadata/,
+	);
 });

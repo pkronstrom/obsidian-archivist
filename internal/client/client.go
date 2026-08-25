@@ -113,6 +113,15 @@ func (c *Client) WithVault(name string) *Client {
 	return &cp
 }
 
+// WithToken returns a copy presenting another caller's credential. The copy
+// shares protocol compatibility state with its source because compatibility is
+// a property of the server, not of a principal.
+func (c *Client) WithToken(token string) *Client {
+	cp := *c
+	cp.token = token
+	return &cp
+}
+
 func (c *Client) Vault() string { return c.vault }
 
 // qualify is the ONE place a request path is built. Every call goes through

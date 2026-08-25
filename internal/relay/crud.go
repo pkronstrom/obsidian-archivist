@@ -293,7 +293,7 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 		"service":  "archivist-relay",
 		"protocol": protocol.Version,
 		"notes": []string{
-			"All routes except /healthz need Authorization: Bearer <relay token>.",
+			"All routes except /healthz need Authorization: Bearer <Archivist token>.",
 			"A PUT may return status 'merged' or 'conflict': the stored content is then " +
 				"not what you sent. Check the body, not just the HTTP status.",
 			"This is ergonomics over the server's sync protocol; the server remains the authority.",
