@@ -3,15 +3,16 @@
 The detail behind the [README](../README.md): protocol, guarantees, and the
 measurements that shaped them.
 
-**One repository, two counterparts:**
+**One repository, three counterparts:**
 
-| Half | What it is |
+| Part | What it is |
 | --- | --- |
 | **Server** — `cmd/`, `internal/` | one static Go binary; owns the vault, keeps history in git |
+| **Relay** — `cmd/archivist-relay`, `internal/relay/` | stateless MCP, file API and webhook forwarder |
 | **Plugin** — `src/`, `manifest.json` | the Obsidian client, for desktop and mobile |
 
 They share a wire protocol, so they live together: a protocol change touches
-both sides and belongs in one commit.
+the server, relay and plugin in one commit.
 
 ---
 
@@ -24,15 +25,12 @@ real git repository, and syncs it to Obsidian over HTTP.
 image is distroless (`static-debian12:nonroot`); scratch was tried and
 abandoned, for the reasons written in the `Dockerfile`.
 
-```
-Obsidian (Mac, iPhone)        SilverBullet / scripts / Claude
-        │  HTTP                            │  ordinary file I/O
-        └──────────────┬───────────────────┘
-                       ▼
-                   archivist
-                       │
-        ~/knowledge/personal   ← an ordinary directory, this is the vault
-        ~/archivist/git    ← history, deliberately outside the vault
+```text
+Obsidian ───────────────HTTP──────────────> archivist-server
+remote tools ──MCP/HTTP──> archivist-relay ────────┘
+local tools ─────────────file I/O────────> $ROOT/vaults/personal
+                                             │
+                                             └── $ROOT/.archivist/personal
 ```
 
 The working tree **is** the vault. Git is the state store: the tree at a commit
@@ -40,69 +38,30 @@ is the snapshot, a diff between commits is the change feed, the object database
 is the content-addressed blob store, and a commit hash is the sync cursor.
 Nothing else is needed, so nothing else exists.
 
-## Running it
+## Process configuration
 
-Prebuilt binaries are attached to every [release](../../releases) for
-`linux/amd64`, `linux/arm64` and `darwin/arm64`, with a `SHA256SUMS` file.
-Nothing needs a Go toolchain on the target host:
+[Operations](OPERATIONS.md) is the deployment reference. Internally,
+`internal/config/config.go` maps every server flag to an `ARCHIVIST_*`
+environment variable; an explicit flag wins. Serving requires `-root`, while
+offline commands can derive a single working tree and repository from `-root`
+plus `-name`.
 
-```bash
-curl -fsSLO https://github.com/pkronstrom/obsidian-archivist/releases/latest/download/archivist-server-linux-amd64
-curl -fsSLO https://github.com/pkronstrom/obsidian-archivist/releases/latest/download/SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing
-chmod +x archivist-server-linux-amd64
-```
-
-Or build it yourself:
-
-```bash
-go build -o archivist-server ./cmd/archivist-server
-
-export ARCHIVIST_ROOT=~/archivist            # holds vaults/ and .archivist/
-mkdir -p "$ARCHIVIST_ROOT/vaults/personal"
-ARCHIVIST_TOKEN=secret ./archivist-server
-```
-
-| Flag | Environment | Default |
-| --- | --- | --- |
-| `-root` | `ARCHIVIST_ROOT` | *(required)* — holds `vaults/` and `.archivist/` |
-| `-tokens` | `ARCHIVIST_TOKENS` | *(none)* — falls back to `-token`, which opens every vault |
-| `-token` | `ARCHIVIST_TOKEN` | *(none)* |
-| `-listen` | `ARCHIVIST_LISTEN` | `:8090` |
-| `-max-vaults` | `ARCHIVIST_MAX_VAULTS` | `5` |
-| `-debounce` | `ARCHIVIST_DEBOUNCE` | `1s` |
-| `-watch` | `ARCHIVIST_WATCH` | `true` |
-| `-normalize-nfc` | `ARCHIVIST_NORMALIZE_NFC` | `false` — see below |
-
-`-vault` and `-git` still exist, but only for the offline subcommands
-(`history`, `show`, `restore`, `check`, `export`, `deleted`, `reclaim`) against
-a single repository. Serving requires `-root`.
-
-Flags beat the environment: the environment is the deployment's baseline, a
-flag is a deliberate override of it.
-
-**`-normalize-nfc` MODIFIES the vault.** macOS writes filenames decomposed and
-iOS writes them composed; on Linux those are two different paths, so the same
-note arrives twice or two devices rename it back and forth. Turning this on
-renames non-composed paths on disk so one spelling wins. Off by default because
-a flag that renames files should be chosen, not inherited.
-
-```bash
-docker build -t archivist .
-docker run -e ARCHIVIST_TOKEN=secret -e ARCHIVIST_ROOT=/data \
-  -v ~/archivist:/data -p 8090:8090 archivist
-```
+`-normalize-nfc` is deliberately off in the binary and on in the supplied
+Compose deployment. It renames decomposed paths so macOS and iOS cannot create
+two byte-distinct names that look identical.
 
 ## API
 
-Seven routes, all behind `Authorization: Bearer <token>`.
+Routes are behind `Authorization: Bearer <token>` unless marked otherwise.
+`GET /personal/v1` returns the authoritative endpoint list for the running
+version.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/personal/v1/head` | current commit |
 | `GET` | `/personal/v1/snapshot` | full manifest — the bootstrap |
 | `GET` | `/personal/v1/changes?since=<sha>` | incremental delta; **409** if the cursor is unknown |
-| `POST` | `/v1/have` | which of these hashes are missing |
+| `POST` | `/personal/v1/have` | which of these hashes are missing |
 | `PUT` | `/personal/v1/content/{hash}` | upload; 400 if the bytes do not hash to `{hash}` |
 | `GET` | `/personal/v1/content/{hash}` | download |
 | `POST` | `/personal/v1/push` | apply a change set against a base |
@@ -140,16 +99,12 @@ A token carries the vaults it opens and the verbs it holds. Verbs are `read`,
 
 | verb | covers |
 |---|---|
-| `read` | every GET, plus `POST /v1/have`. Includes `/personal/v1/export`, which hands over the entire history in one call. |
+| `read` | every GET, plus `POST /personal/v1/have`. Includes `/personal/v1/export`, which hands over the entire history in one call. |
 | `write` | `POST /personal/v1/push` and `PUT /personal/v1/content/{hash}`. Staging a blob counts: an unreferenced blob still consumes disk, and the write guards count writes per path at push time — they never see an orphan. |
 | `delete` | a `del` op inside a push. Not a route — checked in the push handler over the whole change set, before anything is staged. |
 
 The scope a route needs is a field on the `routes()` table, which is also what
 builds the mux. A route therefore cannot exist without declaring what it needs.
-
-A rename is a `del` plus a `put`, so a token with `write` but not `delete`
-cannot rename. That is a known limitation, resolved by a `move` op in a later
-change.
 
 Tokens are stored as sha256 hashes in the tokens file, so nothing in it can be
 replayed. Lookup hashes the presented token and does a map lookup, where the old
@@ -239,7 +194,7 @@ what it needs, which is uniqueness; git already holds the time.
 keeps a `Pool` of one client per token, and — because the MCP SDK's handler
 factory receives the `*http.Request` — one MCP server per token as well, so the
 credential is a property of the server rather than something each tool has to
-remember to read. A future ninth tool cannot silently act as the wrong caller.
+remember to read. A future tool cannot silently act as the wrong caller.
 
 The relay validates nothing. Only the server knows whether a token is real, and
 asking would mean the relay holding a table of credentials, which is precisely
@@ -270,9 +225,9 @@ reads as a bug rather than as policy. Two or more vaults is a genuine question
 and returns an error naming them.
 
 Minting is offline only, via `archivist-server token add`. There is no HTTP
-route that mints. The server is internet-facing behind Caddy, and a mint
-endpoint would let a leaked admin token issue itself a successor that survives
-revoking the original.
+route that mints: shell access is the administrative boundary, and a network
+mint endpoint would let a leaked privileged token issue a successor that
+survives revoking the original.
 
 ## Backups
 
@@ -290,7 +245,8 @@ the objects and refs are always consistent with each other. **8 of 8 exports
 taken under the identical workload restored `fsck`-clean.**
 
 ```bash
-curl -sf -H "Authorization: Bearer $TOKEN" https://vault.example.net/v1/export \
+curl -sf -H "Authorization: Bearer $TOKEN" \
+  https://vault.example.net/personal/v1/export \
   | restic backup --stdin --stdin-filename vault-personal.tar
 ```
 
@@ -308,9 +264,8 @@ edit apart:
 Thirty daily snapshots would be thirty full copies. restic compresses
 repository-side anyway. Add `?gzip=1` only when piping somewhere that will not.
 
-Restore with `tar xzf` into an empty directory and point `--git-dir` at it; the
-working tree rebuilds from `git checkout` or simply by starting archivist
-against it.
+Restore the uncompressed export with `tar xf` into an empty repository
+directory. The working tree rebuilds when Archivist starts against it.
 
 **The working tree is safe to back up directly.** Every server write is
 temp-file-plus-rename, so each file is atomically old-or-new and never torn.
@@ -365,7 +320,7 @@ The repository is a standard git repository. Nothing at runtime needs the git
 CLI, but a human debugging it can use one:
 
 ```bash
-git --git-dir=~/archivist/git --work-tree=~/knowledge/personal log --oneline
+git -C "$ROOT/vaults/personal" log --oneline
 ```
 
 go-git writes a small `.git` pointer file into the vault (the linked-worktree
@@ -402,31 +357,9 @@ be checked against the real tool:
 printf 'hello\n' | git hash-object --stdin
 ```
 
-## Install
-
-Not in the community store yet. Use [BRAT](https://github.com/TfTHacker/obsidian42-brat):
-
-1. Install BRAT from Community Plugins.
-2. If this repository is private, add a fine-grained read-only GitHub token in
-   BRAT's settings.
-3. BRAT → *Add beta plugin* → `pkronstrom/obsidian-archivist`.
-
-Then set the server URL, token and device name in the plugin's settings, and
-press **Test connection**.
-
-## Settings
-
-| Setting | Notes |
-| --- | --- |
-| Server URL | e.g. `https://vault.example.net` |
-| Token | the bearer token the server expects |
-| Device name | appears in commit messages and conflict filenames |
-| Sync on change | sync shortly after edits, debounced |
-| Sync interval | background period; `0` disables it |
-
-Syncing also happens on window focus and blur. **Pull-on-focus is the one that
-matters** for the edit-on-phone-then-pick-up-the-laptop pattern: the laptop
-fetches the moment it is activated, rather than waiting for a timer.
+Installation and user-facing settings live in the [README](../README.md). The
+plugin stores its bearer token and sync cursor in Obsidian's device-local
+storage, never in the vault or its syncable `data.json`.
 
 ## Conflicts
 
@@ -509,10 +442,6 @@ npm run build
 # engine; only Obsidian's requestUrl and DataAdapter are substituted.
 node test/integration.mjs http://localhost:8090 <token>
 ```
-
-## Not built yet
-
-History squashing and object retention.
 
 ## Licence
 
