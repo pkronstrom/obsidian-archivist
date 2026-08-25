@@ -6,7 +6,7 @@
 // The plugin itself is one bundle, so this only ever bit the harness -- but it
 // bit it silently, as an unhandled rejection three tests later.
 export { Sync, skip, skipDir, conflictName, localOnly, localOnlyDir } from "../src/sync";
-export { Client, UnknownBaseError } from "../src/client";
+export { Client, UnknownBaseError, requireCurrentIndex } from "../src/client";
 
 export { PairingHazardError, rescueFolder } from "../src/pairing";
 

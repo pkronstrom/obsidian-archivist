@@ -7,10 +7,13 @@ function capturing() {
 	const seen = [];
 	globalThis.fetch = async (url) => {
 		seen.push(new URL(url).pathname);
-		return new Response('{"head":"abc","vaults":[],"canCreate":false}', {
+		return new Response(
+			'{"head":"abc","vaults":[],"canCreate":false,"scopes":["read","write"],"protectedVaults":[],"requiresStepUpAuth":[]}',
+			{
 			status: 200,
 			headers: { "content-type": "application/json" },
-		});
+			},
+		);
 	};
 	return seen;
 }
@@ -36,6 +39,18 @@ test("listVaults is a server-root route, reachable before a vault is chosen", as
 	const seen = capturing();
 	await new Client("https://vault.example", "tok", "personal").listVaults();
 	assert.equal(seen[0], "/v1/vaults");
+});
+
+test("listVaults requires current scoped-token metadata", async () => {
+	globalThis.fetch = async () =>
+		new Response('{"vaults":["personal"]}', {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+	await assert.rejects(
+		() => new Client("https://vault.example", "tok", "").listVaults(),
+		/current scoped-token metadata/,
+	);
 });
 
 test("a trailing slash on the server URL does not double up", async () => {

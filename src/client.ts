@@ -25,6 +25,19 @@ export type Result = {
 	reason?: string;
 };
 
+export const PROTOCOL_VERSION = 2;
+export type ServerIndex = { service: string; version: string; protocol: number; vault: string };
+
+export function requireCurrentIndex(index: ServerIndex): ServerIndex {
+	if (index.protocol !== PROTOCOL_VERSION) {
+		throw new Error(
+			`server protocol ${index.protocol} is incompatible; this plugin requires protocol ${PROTOCOL_VERSION}`,
+		);
+	}
+	if (!index.vault) throw new Error("server response has no vault identity");
+	return index;
+}
+
 /** Stable error codes from the server. Branch on these, never on the message:
  *  messages are for humans and get reworded. */
 export const Code = {
@@ -160,23 +173,32 @@ export class Client {
 	async listVaults(): Promise<{
 		vaults: string[];
 		canCreate: boolean;
-		/** Verbs this token holds. Absent on servers older than scoped tokens. */
-		scopes?: string[];
+		/** Verbs this token holds. */
+		scopes: string[];
 		/** What the token is called on the server. Never a secret. */
 		label?: string;
-		/** Vaults the SERVER protects with step-up. Absent on older servers. */
-		protectedVaults?: string[];
-		/** What THIS token decided about them. Absent on older servers. */
-		requiresStepUpAuth?: string[];
+		/** Vaults the SERVER protects with step-up. */
+		protectedVaults: string[];
+		/** What THIS token decided about them. */
+		requiresStepUpAuth: string[];
 	}> {
 		const res = await this.callRoot("GET", "/v1/vaults");
-		return res.json as {
-			vaults: string[];
-			canCreate: boolean;
-			scopes?: string[];
-			label?: string;
-			protectedVaults?: string[];
-			requiresStepUpAuth?: string[];
+		const json = res.json;
+		if (
+			!Array.isArray(json?.vaults) ||
+			!Array.isArray(json?.scopes) ||
+			!Array.isArray(json?.protectedVaults) ||
+			!Array.isArray(json?.requiresStepUpAuth)
+		) {
+			throw new Error("server response is missing current scoped-token metadata");
+		}
+		return {
+			vaults: json.vaults as string[],
+			canCreate: Boolean(json.canCreate),
+			scopes: json.scopes as string[],
+			label: typeof json.label === "string" ? json.label : undefined,
+			protectedVaults: json.protectedVaults as string[],
+			requiresStepUpAuth: json.requiresStepUpAuth as string[],
 		};
 	}
 
@@ -275,7 +297,7 @@ export class Client {
 		if (code === Code.UnknownBase) throw new UnknownBaseError(message);
 		if (code) throw new ServerError(code, message, res.status);
 
-		// No envelope: an older server, or something in front of it.
+		// No envelope: typically a proxy or gateway response.
 		if (res.status === 409) throw new UnknownBaseError(message);
 		throw new ServerError(
 			res.status === 401 ? Code.Unauthorized : Code.Internal,
@@ -306,9 +328,9 @@ export class Client {
 	}
 
 	// index is GET /v1: what the server is, and WHICH VAULT it serves.
-	async index(): Promise<{ service: string; version: string; protocol: number; vault: string }> {
+	async index(): Promise<ServerIndex> {
 		const res = await this.call("GET", "/v1");
-		return res.json as { service: string; version: string; protocol: number; vault: string };
+		return requireCurrentIndex(res.json as ServerIndex);
 	}
 
 	async head(): Promise<string> {

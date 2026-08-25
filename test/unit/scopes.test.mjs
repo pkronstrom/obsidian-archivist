@@ -21,9 +21,3 @@ test("a posture on a vault the server does not protect does not warn", () => {
 test("no posture, no warning, even on a protected vault", () => {
 	assert.equal(stepUpWarning(["work"], [], "phone"), "");
 });
-
-test("an older server sends neither field", () => {
-	// Absent is not 'gated on everything', which would refuse every device on a
-	// server that predates step-up.
-	assert.equal(stepUpWarning(undefined, undefined, "phone"), "");
-});

@@ -45,12 +45,6 @@ test("formatPermissions: partial access", () => {
 	assert.match(formatPermissions([]), /No read or write/);
 });
 
-test("formatPermissions: undefined scopes is an assumed-full-access legacy server, not a warning", () => {
-	const s = formatPermissions(undefined);
-	assert.match(s, /Read \+ write/);
-	assert.match(s, /doesn't report scopes/);
-});
-
 test("suggestDeviceName: desktop uses the hostname", () => {
 	const platform = { isDesktopApp: true, isIosApp: false, isAndroidApp: false, isTablet: false };
 	assert.equal(suggestDeviceName(platform, "pks-macbook"), "pks-macbook");

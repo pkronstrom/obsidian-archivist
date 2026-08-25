@@ -82,11 +82,8 @@ export function formatVaultStats(fileCount: number, totalBytes: number): string 
 	return `${fileCount} file${fileCount === 1 ? "" : "s"}, ${formatBytes(totalBytes)}`;
 }
 
-export function formatPermissions(scopes: string[] | undefined, label?: string): string {
+export function formatPermissions(scopes: string[], label?: string): string {
 	const who = label ? ` ("${label}")` : "";
-	if (scopes === undefined) {
-		return `Read + write, assumed${who} — this server doesn't report scopes`;
-	}
 	const hasRead = scopes.includes("read");
 	const hasWrite = scopes.includes("write");
 	if (hasRead && hasWrite) return `Read + write${who}`;
@@ -108,4 +105,3 @@ export function suggestDeviceName(platform: DevicePlatform, hostname: string | n
 	if (platform.isAndroidApp) return platform.isTablet ? "Android tablet" : "Android phone";
 	return "This device";
 }
-

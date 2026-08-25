@@ -100,7 +100,7 @@ test("turning the level DOWN does not delete the config off the server", async (
 	const pushes = [];
 	const client = {
 		async index() {
-			return { service: "archivist", version: "t", protocol: 1, vault: "personal" };
+			return { service: "archivist", version: "t", protocol: 2, vault: "personal" };
 		},
 		async head() {
 			return "serverhead";

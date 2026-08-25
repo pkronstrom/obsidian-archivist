@@ -2,9 +2,6 @@
  * Scope names the server understands. Kept here rather than imported so this
  * file stays free of Obsidian and can be unit-tested in the Node harness.
  */
-/** The protocol version that introduced the move op. */
-export const MOVE_PROTOCOL = 2;
-
 export const SCOPE_READ = "read";
 export const SCOPE_WRITE = "write";
 
@@ -16,18 +13,13 @@ export const SCOPE_WRITE = "write";
  * of them syncs partway and then fails at the worst possible moment -- on a
  * save, with the note already edited and nowhere to put it.
  *
- * An older server omits `scopes` entirely. That is not "holds no scopes": it
- * predates them, when every token could do everything, so an absent list means
- * nothing is missing. Treating undefined as empty would lock every device out
- * of a server that is working perfectly well.
  */
-export function missingPluginScopes(scopes: string[] | undefined): string[] {
-	if (scopes === undefined) return [];
+export function missingPluginScopes(scopes: string[]): string[] {
 	return [SCOPE_READ, SCOPE_WRITE].filter((s) => !scopes.includes(s));
 }
 
 /** A sentence for a Notice, or "" when the token is fine. */
-export function scopeWarning(scopes: string[] | undefined, label?: string): string {
+export function scopeWarning(scopes: string[], label?: string): string {
 	const missing = missingPluginScopes(scopes);
 	if (missing.length === 0) return "";
 	const who = label ? ` "${label}"` : "";
@@ -63,12 +55,7 @@ export type Pending = {
  * The content is dropped from a paired put, because the server already has it —
  * that is what makes a move preserving rather than destructive.
  */
-export function pairRenames(changes: Pending[], serverProtocol = 0): Pending[] {
-	// A server that predates move rejects the unknown op and fails the WHOLE
-	// push, so a rename would take the vault down rather than just failing to
-	// be a rename. Emitting del+put there is the correct fallback: it is what
-	// this client did before move existed, and it still works.
-	if (serverProtocol < MOVE_PROTOCOL) return changes;
+export function pairRenames(changes: Pending[]): Pending[] {
 	const deletes = changes.filter((c) => c.op === "del");
 	const puts = changes.filter((c) => c.op === "put" && c.hash);
 	if (deletes.length === 0 || puts.length === 0) return changes;
@@ -131,16 +118,13 @@ export const STEP_UP_VAULT = "vault";
  * forever. An `ops:` posture is the opposite -- confirming a destructive
  * operation triggered from the plugin is worth having.
  *
- * Both fields are absent on a server predating step-up. Absent is not "gated on
- * everything": treating it that way would refuse every device on a server that
- * is working perfectly well.
  */
 export function stepUpWarning(
-	protectedVaults: string[] | undefined,
-	posture: string[] | undefined,
+	protectedVaults: string[],
+	posture: string[],
 	label?: string,
 ): string {
-	if (!protectedVaults?.length || !posture?.length) return "";
+	if (!protectedVaults.length || !posture.length) return "";
 	const gated = protectedVaults.filter((v) => posture.includes(`${STEP_UP_VAULT}:${v}`));
 	if (gated.length === 0) return "";
 	const who = label ? ` "${label}"` : "";

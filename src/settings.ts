@@ -392,7 +392,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 							files: entries.length,
 							bytes: entries.reduce((sum, e) => sum + e.size, 0),
 						};
-						const name = idx.vault || "unnamed (older server)";
+						const name = idx.vault;
 						new Notice(
 							`archivist: connected to vault "${name}": ${entries.length} file(s), ` +
 								`server ${idx.version}`,

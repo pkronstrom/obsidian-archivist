@@ -81,7 +81,6 @@ export class WrongVaultError extends Error {
  * merge proceeds; the whole point is that the damage happens on the first sync.
  */
 export function checkVault(state: SyncState, serverVault: string): void {
-	if (!serverVault) return; // older server: nothing to compare against
 	if (!state.vault) return; // older state, or first run: adopt below
 	if (state.vault !== serverVault) throw new WrongVaultError(state.vault, serverVault);
 }

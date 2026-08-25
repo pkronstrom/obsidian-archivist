@@ -1,5 +1,5 @@
 import type { App, DataAdapter } from "obsidian";
-import { Client, UnknownBaseError, type Change, type Result } from "./client";
+import { Client, UnknownBaseError, requireCurrentIndex, type Change, type Result } from "./client";
 import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
 import {
@@ -165,9 +165,6 @@ export class Sync {
 	 * cycle `state.base` is non-empty so the check cannot fire again anyway.
 	 */
 	private pairingResolved = false;
-	/** Protocol the server reported at the last cycle. 0 until one runs. */
-	private serverProtocol = 0;
-
 	constructor(
 		private app: App,
 		private client: () => Client,
@@ -217,12 +214,8 @@ export class Sync {
 		// damage lands on the very first cycle, so a check anywhere later is too
 		// late. Throwing here surfaces it as a Notice and leaves both vaults
 		// untouched.
-		const idx = await client.index();
+		const idx = requireCurrentIndex(await client.index());
 		checkVault(state, idx.vault);
-		// Remembered for pairRenames: a server that predates move rejects the
-		// unknown op and fails the whole push, so a rename must degrade to
-		// del+put there rather than take the sync cycle down with it.
-		this.serverProtocol = idx.protocol ?? 0;
 
 		// Then the first-connect hazard, which the identity check cannot see:
 		// it compares an ADOPTED vault name, and there is not one yet.
@@ -550,7 +543,7 @@ export class Sync {
 		// A deletion plus an addition of identical content is a rename. Folding
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
-		return pairRenames(out as Pending[], this.serverProtocol) as PendingChange[];
+		return pairRenames(out as Pending[]) as PendingChange[];
 	}
 
 	/**
