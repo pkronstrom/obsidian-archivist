@@ -47,11 +47,8 @@ Archivist is not yet in the Obsidian community store. Install it through
 [BRAT](https://github.com/TfTHacker/obsidian42-brat):
 
 1. In Obsidian, open **Community plugins → Browse** and install BRAT.
-2. On BRAT's main settings page, add a fine-grained GitHub token restricted to
-   this repository with read-only **Contents** access. The token is needed
-   while the repository is private.
-3. Run **BRAT: Add a beta plugin for testing** from the command palette.
-4. Enter `pkronstrom/obsidian-archivist`.
+2. Run **BRAT: Add a beta plugin for testing** from the command palette.
+3. Enter `pkronstrom/obsidian-archivist`.
 
 Open **Community plugins → Archivist → Options** and set:
 
@@ -118,3 +115,7 @@ Funnel makes the service public.
   Obsidian configuration sync
 - [Internals](docs/INTERNALS.md) — protocol, storage, merging and development
 - [Design notes](docs/) — the decisions behind the implementation
+
+## License
+
+[MIT](LICENSE)

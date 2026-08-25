@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Published credential-detection test vectors"
+regexTarget = "match"
+regexes = [
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''', # RFC 6238 appendix B
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk''', # jwt.io example
+  '''ZXlKaGJHY2lPaUpJVXpJMU5pSjkuYWJj''', # deliberately synthetic scanner input
+]

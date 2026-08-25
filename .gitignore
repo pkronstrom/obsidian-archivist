@@ -18,6 +18,12 @@ data.json
 # Worktrees for isolated implementation branches.
 .worktrees/
 
+# Local agent planning artifacts. Product documentation belongs in docs/, but
+# execution plans and session specs do not belong in the public repository.
+/docs/superpowers/
+/docs/plans/
+/docs/**/*-plan.md
+
 # Credentials, none of which have ever been committed. Listed so that stays
 # true once other people start sending pull requests.
 .env

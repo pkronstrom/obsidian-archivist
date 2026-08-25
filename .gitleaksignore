@@ -1,8 +1,4 @@
-# Test vectors and documentation examples, not credentials.
-#
-# The base32 string is the RFC 6238 test key ("12345678901234567890"), which
-# every TOTP implementation tests against, and the JWT is the example token
-# from jwt.io. Both are published in the specs they come from, and both are
-# here precisely so the credential scanner has something realistic to detect.
-56ef92721f3c3d026397484787e82f3d59a6c878:test/unit/secrets.test.mjs:jwt:20
-3c0da4f46b689ba061ffd9ee41a29308e7f0b400:docs/2026-08-18-config-sync-plan.md:jwt:2221
+# This line deliberately exercises detection of a base64-looking auth value.
+# Gitleaks reports the decoded match, so an exact source regex cannot allow it.
+a8951cc43e1b5ba01d0d7e6c414c7d99b54a2efe:test/unit/secrets.test.mjs:generic-api-key:83
+test/unit/secrets.test.mjs:generic-api-key:83
