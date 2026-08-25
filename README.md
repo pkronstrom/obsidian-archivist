@@ -6,9 +6,9 @@ Archivist gives Obsidian real-time, self-hosted sync without turning your vault
 into a database or an opaque server format. Markdown, images and PDFs live in a
 normal directory, with every change kept in git history.
 
-- **`archivist-server`** owns the vault and its history.
-- **Archivist for Obsidian** syncs desktop and mobile vaults.
-- **`archivist-relay`** adds MCP tools, a simple file API and webhooks.
+- **Server** (`archivist-server`) owns the vault and its history.
+- **Obsidian plugin** syncs desktop and mobile vaults.
+- **Relay** (`archivist-relay`) adds MCP tools, a simple file API and webhooks.
 
 The directory on the server is the real vault, not a cache or export. Tools on
 that machine can search, read, edit, serve and back up the same files.
