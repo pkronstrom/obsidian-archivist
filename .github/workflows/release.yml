@@ -8,7 +8,7 @@ name: Release
 #   main.js + manifest.json   the plugin, installed by BRAT and the store
 #   archivist-<os>-<arch>     the server, for hosts without a Go toolchain
 #
-# the server is linux/amd64 and has no Go installed, which is the whole reason the
+# The deploy target is linux/amd64 and has no Go installed, which is the whole reason the
 # server binaries are cross-compiled here rather than built on the target.
 on:
   push:

@@ -25,7 +25,7 @@ wanted.
 change buys nothing. Adding Work is when the multiplication is paid for real.
 
 **Discovery is the filesystem: `$ROOT/vaults/<name>`, flat.** Git state stays
-at `$ROOT/.archivist/<name>`. This is the layout **as deployed on the server**,
+at `$ROOT/.archivist/<name>`. This is the layout **as deployed in production**,
 where compose sets `ARCHIVIST_GIT=/data/.archivist/${VAULT_NAME}` — it is not
 the binary's default, which is `/var/lib/archivist/git`
 (`internal/config/config.go`). Multi-vault makes the per-vault layout the
