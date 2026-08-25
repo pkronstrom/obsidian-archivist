@@ -1,9 +1,10 @@
-# A working starting point. Copy it, adjust the two paths, and run:
+# Local-first Archivist stack. Create data/vaults/personal, put
+# ARCHIVIST_TOKEN and RELAY_BG_TOKEN in .env, then run:
 #
 #   docker compose up -d --build
 #
-# One vault named "personal" lives at ./data/vaults/personal, and its history
-# at ./data/.archivist/personal.
+# The server and relay listen on loopback only. See docs/OPERATIONS.md before
+# making them reachable from another device.
 
 services:
   archivist:
@@ -59,10 +60,9 @@ services:
 
       - ARCHIVIST_LOG_LEVEL=${ARCHIVIST_LOG_LEVEL:-info}
 
-  # Optional. Only needed to reach the vault from somewhere that is not this
-  # machine: MCP tools, webhooks, a friendlier API. See docs/INTEGRATIONS.md.
+  # Starts with the server and stays idle until something uses its MCP tools,
+  # file API or webhooks. See docs/INTEGRATIONS.md.
   relay:
-    profiles: ["relay"]
     build:
       context: .
       dockerfile: Dockerfile.relay
