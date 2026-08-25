@@ -161,6 +161,7 @@ standard-library consumer that reconnects and resumes from its cursor.
 Set one or more comma-separated targets in `.env`:
 
 ```dotenv
+ARCHIVIST_RELAY_VAULT=personal
 ARCHIVIST_WEBHOOKS=https://n8n.example.ts.net/webhook/archivist
 ```
 
@@ -175,8 +176,10 @@ The relay posts each commit to every target. Delivery has no retry or dead
 letter queue. Make the receiver idempotent, store its cursor, and use
 `/personal/v1/changes?since=` to recover anything missed while it was down.
 
-Webhook fan-out uses the relay's read-only background token and covers the
-vaults that token can read.
+Webhook fan-out uses the relay's read-only background token. It follows one
+vault's event stream, selected by `ARCHIVIST_RELAY_VAULT`; that token must have
+read access to the selected vault. MCP callers can still select any vault their
+own token opens.
 
 ## Sync Obsidian configuration
 
