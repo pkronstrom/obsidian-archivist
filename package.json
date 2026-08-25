@@ -1,8 +1,7 @@
 {
   "name": "obsidian-archivist",
   "version": "0.14.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Self-hosted sync. Your vault stays plain Markdown files on a server you own, with full history.",
   "scripts": {
     "test": "npm run test:unit",
     "test:unit": "npm run build:test && node --test 'test/unit/*.test.mjs'",
@@ -15,9 +14,15 @@
     "type": "git",
     "url": "git+https://github.com/pkronstrom/obsidian-archivist.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "sync",
+    "self-hosted",
+    "git"
+  ],
+  "author": "pkronstrom",
+  "license": "MIT",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/pkronstrom/obsidian-archivist/issues"

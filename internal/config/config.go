@@ -44,12 +44,17 @@ type Config struct {
 	// Watch enables the filesystem watcher. Off is useful in tests and for a
 	// read-only replica.
 	Watch bool
-	// NormalizeNFC renames files on disk whose names are not composed.
+	// NormalizeNFC composes the paths of incoming changes before they are
+	// applied.
 	//
-	// Off by default because it MODIFIES the vault. macOS writes filenames
-	// decomposed and iOS writes them composed, and on Linux those are two
-	// different paths -- so the same note arrives twice, or devices rename it
-	// back and forth. Turn it on once and one spelling wins.
+	// macOS writes filenames decomposed and iOS writes them composed, and on
+	// Linux those are two different paths -- so the same note arrives twice, or
+	// devices rename it back and forth. Canonicalising every push makes the
+	// writers converge on one spelling.
+	//
+	// It does NOT rename anything already on disk. A vault that already carries
+	// both spellings keeps both until a person picks a winner; turning this on
+	// stops the divergence rather than repairing it.
 	NormalizeNFC bool
 	// LogLevel is debug, info, warn or error.
 	LogLevel string
@@ -162,7 +167,7 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&c.Debounce, "debounce", debounce,
 		"quiet period before a filesystem change is acted on")
 	fs.BoolVar(&c.NormalizeNFC, "normalize-nfc", env("ARCHIVIST_NORMALIZE_NFC", "false") == "true",
-		"rename files whose names are not Unicode NFC, so macOS and iOS agree on one spelling")
+		"compose incoming paths to Unicode NFC, so macOS and iOS agree on one spelling")
 	fs.BoolVar(&c.Watch, "watch", env("ARCHIVIST_WATCH", "true") != "false",
 		"watch the vault for local edits")
 	fs.StringVar(&c.LogLevel, "log-level", env("ARCHIVIST_LOG_LEVEL", "info"),
