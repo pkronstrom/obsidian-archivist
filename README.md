@@ -74,10 +74,29 @@ That single token opens every vault, which is fine to start with and the server
 warns about it. For real use, mint one per device: see
 [OPERATIONS](docs/OPERATIONS.md#minting-tokens).
 
-**Plugin.** Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from
-Community Plugins, add `pkronstrom/obsidian-archivist` as a beta plugin, then
-put the server URL and token into Archivist's settings and press **Test
-connection**.
+**Plugin.** Archivist is not in the community plugin store, so it installs
+through [BRAT](https://github.com/TfTHacker/obsidian42-brat), which tracks a
+GitHub repository and keeps the plugin updated from its releases.
+
+1. **Community plugins → Browse**, search **BRAT**, install and enable it.
+2. Run **BRAT: Add a beta plugin for testing** from the command palette (or
+   *BRAT settings → Add beta plugin*).
+3. Paste `pkronstrom/obsidian-archivist`, leave the version as **latest**, and
+   confirm. Leave *Enable after installing* ticked.
+4. **Community plugins → Archivist → Options**, set the server URL and token,
+   and press **Test connection**.
+
+Repeat on every device, phone included: BRAT works the same on mobile.
+
+While this repository is private, BRAT also needs a GitHub personal access
+token with `repo` scope, set in its settings. That requirement goes away when
+the repository is public.
+
+To update later, run **BRAT: Check for updates to all beta plugins**, or turn on
+*Auto-update plugins at startup* in BRAT's settings. Two things worth knowing
+when an update seems not to arrive: BRAT installs from a release's attached
+files, so a version with no release is invisible to it, and BRAT can quietly
+lose its link to a repository, in which case re-add it with the same steps.
 
 If the vault you are connecting **already has notes** and the server does too,
 the plugin stops and asks rather than merging two unrelated vaults. That is
