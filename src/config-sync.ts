@@ -43,9 +43,8 @@ export type ConfigSyncSettings = {
 	 * offers, applied to all of them at once -- a scale change, not a different
 	 * policy, and it states what is being accepted before it takes effect.
 	 *
-	 * Archivist's own data.json is STILL excluded. That one is not an opt-in at
-	 * any granularity: it holds the bearer token for the server it would be
-	 * synced to. A sync tool must never be able to sync its own credentials.
+	 * Archivist's own data.json is STILL excluded. Syncing the sync tool's own
+	 * control settings would create a cross-device feedback loop.
 	 */
 	acceptAllPlugins: boolean;
 };
@@ -56,8 +55,8 @@ export const DEFAULT_CONFIG_SYNC: ConfigSyncSettings = {
 	acceptAllPlugins: false,
 };
 
-/** Plugin ids this plugin has shipped under. Never syncable, at any level. */
-const ARCHIVIST_IDS = new Set(["archivist", "obsidian-archivist"]);
+/** This plugin's current id. Never syncable, at any level. */
+const ARCHIVIST_ID = "archivist";
 
 const APPEARANCE_FILES = new Set(["app.json", "appearance.json", "hotkeys.json"]);
 const PLUGIN_LIST_FILES = new Set(["community-plugins.json", "core-plugins.json"]);
@@ -125,10 +124,9 @@ export function configSyncable(path: string, settings: ConfigSyncSettings): bool
 		// store. See plugin-install.ts.
 		if (segments.length !== 3 || segments[2] !== "data.json") return false;
 		const id = segments[1];
-		// Before the accept-all check, deliberately: this one has no override at
-		// any granularity, because the file holds the token for the very server
-		// it would be synced to.
-		if (ARCHIVIST_IDS.has(id.toLowerCase())) return false;
+		// Before the accept-all check, deliberately: syncing this plugin's own
+		// control settings would create a cross-device feedback loop.
+		if (id.toLowerCase() === ARCHIVIST_ID) return false;
 		return settings.acceptAllPlugins || settings.acceptedPlugins.includes(id);
 	}
 

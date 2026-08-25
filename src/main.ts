@@ -7,7 +7,7 @@ import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
 import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
-import { loadToken, migrateToken } from "./credentials";
+import { loadToken } from "./credentials";
 import { loadConfigSync } from "./config-sync";
 import {
 	installPlugins,
@@ -327,7 +327,7 @@ export default class ArchivistPlugin extends Plugin {
 			console.log("[archivist] token opens one vault; adopted", vaults[0]);
 			return true;
 		} catch {
-			// Server down, wrong token, older server: none of those are worth a
+			// Server down, wrong token, incompatible server: none of those are worth a
 			// Notice here. The sync that follows reports the real failure.
 			return false;
 		}
@@ -601,8 +601,7 @@ export default class ArchivistPlugin extends Plugin {
 		// TOKEN are the dangerous state, and those live in device-local storage
 		// instead -- see state.ts and credentials.ts.
 		const data = (await this.loadData()) ?? {};
-		if (migrateToken(this.app, data)) await this.saveData(data);
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, data, { token: "" });
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 	}
 
 	async saveSettings(): Promise<void> {

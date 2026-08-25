@@ -37,8 +37,8 @@ export type InstallPlan = {
 	deferredMobileCheck: boolean;
 };
 
-/** Ids this plugin ships under. Never installed from a synced list. */
-const ARCHIVIST_IDS = new Set(["archivist", "obsidian-archivist"]);
+/** This plugin's current id. Never installed from a synced list. */
+const ARCHIVIST_ID = "archivist";
 
 /**
  * plannedInstalls diffs the synced list against what is installed here.
@@ -58,7 +58,7 @@ export function plannedInstalls(
 	const have = new Set(installed);
 	const plan: InstallPlan = { install: [], skipped: [], deferredMobileCheck: false };
 	for (const id of wanted) {
-		if (ARCHIVIST_IDS.has(id.toLowerCase())) continue;
+		if (id.toLowerCase() === ARCHIVIST_ID) continue;
 		if (have.has(id)) continue;
 		const manifest = manifests[id];
 		if (isMobile && manifest?.isDesktopOnly) {

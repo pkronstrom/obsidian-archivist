@@ -41,7 +41,7 @@ test("plugin data.json is off until that plugin is opted in", () => {
 test("archivist's own data.json cannot be opted in", () => {
 	const opted = { ...plugins, acceptedPlugins: ["archivist", "obsidian-archivist"] };
 	assert.equal(configSyncable(".obsidian/plugins/archivist/data.json", opted), false);
-	assert.equal(configSyncable(".obsidian/plugins/obsidian-archivist/data.json", opted), false);
+	assert.equal(configSyncable(".obsidian/plugins/obsidian-archivist/data.json", opted), true);
 });
 
 test("nothing outside the allowlist syncs at any level", () => {
@@ -142,7 +142,7 @@ test("accept-all still cannot sync archivist's own data.json", () => {
 		acceptedPlugins: ["archivist", "obsidian-archivist"],
 	};
 	assert.equal(configSyncable(".obsidian/plugins/archivist/data.json", all), false);
-	assert.equal(configSyncable(".obsidian/plugins/obsidian-archivist/data.json", all), false);
+	assert.equal(configSyncable(".obsidian/plugins/obsidian-archivist/data.json", all), true);
 });
 
 test("accept-all does not widen anything beyond plugin data", () => {

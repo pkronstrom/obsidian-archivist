@@ -366,7 +366,7 @@ check("both devices' disjoint key edits survived",
 	JSON.stringify(finalAppearance));
 
 // Archivist's own data.json is refused even if a device tries to push it.
-const sneaky = await configDevice("sneaky", "plugins", ["archivist", "obsidian-archivist"]);
+const sneaky = await configDevice("sneaky", "plugins", ["archivist"]);
 await fs.mkdir(path.join(sneaky.root, ".obsidian/plugins/archivist"), { recursive: true });
 await fs.writeFile(path.join(sneaky.root, ".obsidian/plugins/archivist/data.json"),
 	'{"token":"THE-BEARER-TOKEN"}\n');

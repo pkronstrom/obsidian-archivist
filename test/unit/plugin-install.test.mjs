@@ -49,5 +49,5 @@ test("on desktop nothing is deferred", () => {
 
 test("archivist is never installed by the list, whatever the list says", () => {
 	const plan = plannedInstalls(["archivist", "obsidian-archivist"], [], manifests, false);
-	assert.deepEqual(plan.install, []);
+	assert.deepEqual(plan.install, ["obsidian-archivist"]);
 });

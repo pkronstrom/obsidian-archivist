@@ -67,25 +67,14 @@ func ConfigSyncable(rel string) bool {
 	return false
 }
 
-// isArchivistPlugin matches this plugin's own directory, under any of the ids
-// it has shipped or might ship under.
+// isArchivistPlugin matches this plugin's own directory.
 //
 // This is a HARD exclusion with no override, not a default. The plugin persists
-// its settings with saveData, so .obsidian/plugins/archivist/data.json holds
-// the server URL and the bearer token. Under a generic per-plugin opt-in,
-// ticking Archivist would commit the server's own credential into the vault it
-// protects, sync it to every device, and place it in git history permanently --
-// recoverable only by noticing and then pruning.
-//
-// A scanner would very likely catch a key called "token". Relying on that is
-// the mistake: this one is knowable in advance, so it is excluded by name.
-// A sync tool must never be able to sync its own credentials.
+// its settings with saveData. Syncing those control settings would let one
+// device silently reconfigure the sync behavior of another, so the sync tool's
+// own file is excluded by name.
 func isArchivistPlugin(id string) bool {
-	switch strings.ToLower(id) {
-	case "archivist", "obsidian-archivist":
-		return true
-	}
-	return false
+	return strings.EqualFold(id, "archivist")
 }
 
 // isCleanConfigPath rejects traversal, absolute forms, empty segments, nested

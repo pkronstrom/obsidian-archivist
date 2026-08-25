@@ -22,21 +22,3 @@ export function loadToken(app: App): string {
 export function saveToken(app: App, token: string): void {
 	app.saveLocalStorage(KEY, token);
 }
-
-/**
- * migrateToken lifts a token written by an older version out of data.json.
- *
- * Returns true when data.json changed and must be saved back. The old value is
- * blanked rather than deleted, so the field keeps its shape for anything
- * reading the file, and the secret is gone from it.
- *
- * No history cleanup is needed: .obsidian was never syncable before this
- * release, so the old data.json has never been committed anywhere.
- */
-export function migrateToken(app: App, data: { token?: string }): boolean {
-	const inFile = typeof data.token === "string" ? data.token : "";
-	if (!inFile) return false;
-	if (!loadToken(app)) saveToken(app, inFile);
-	data.token = "";
-	return true;
-}

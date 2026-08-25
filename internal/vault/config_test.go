@@ -41,17 +41,19 @@ func TestConfigAllowlist(t *testing.T) {
 	}
 }
 
-// The one exclusion with no override anywhere: the plugin's own data.json holds
-// the bearer token for this very server.
+// The one exclusion with no override anywhere: the sync tool must not sync its
+// own control settings.
 func TestArchivistDataIsNeverSyncable(t *testing.T) {
 	for _, p := range []string{
 		".obsidian/plugins/archivist/data.json",
 		".obsidian/plugins/Archivist/data.json",
-		".obsidian/plugins/obsidian-archivist/data.json",
 	} {
 		if ConfigSyncable(p) {
 			t.Errorf("ConfigSyncable(%q) = true; this file holds the server's own credential", p)
 		}
+	}
+	if !ConfigSyncable(".obsidian/plugins/obsidian-archivist/data.json") {
+		t.Error("the historical id is no longer a special exclusion")
 	}
 }
 

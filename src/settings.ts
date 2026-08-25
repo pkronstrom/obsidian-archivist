@@ -33,11 +33,6 @@ export type Settings = {
 	 * the vault is part of the base URL.
 	 */
 	vault: string;
-	/**
-	 * Kept for migration only. The live token is in device-local storage; see
-	 * credentials.ts. Anything reading the token must call loadToken.
-	 */
-	token: string;
 	device: string;
 	intervalSeconds: number;
 	syncOnChange: boolean;
@@ -61,7 +56,6 @@ export type Settings = {
 export const DEFAULT_SETTINGS: Settings = {
 	serverUrl: "",
 	vault: "",
-	token: "",
 	device: "",
 	intervalSeconds: 300,
 	syncOnChange: true,
@@ -738,7 +732,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			// per plugin, so a re-render can easily land mid-loop.
 			if (generation !== this.renderGeneration) return;
 			const id = folder.slice(dir.length + 1);
-			if (id.toLowerCase() === "archivist" || id.toLowerCase() === "obsidian-archivist") continue;
+			if (id.toLowerCase() === "archivist") continue;
 
 			const dataPath = `${folder}/data.json`;
 			if (!(await adapter.exists(dataPath))) continue;
