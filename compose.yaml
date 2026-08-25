@@ -21,7 +21,7 @@ services:
     # without this every note the server writes lands root-owned in your
     # directory: you cannot edit them, and host-side git refuses the repository
     # with "detected dubious ownership".
-    user: "1000:1000"
+    user: "${ARCHIVIST_UID:-1000}:${ARCHIVIST_GID:-1000}"
 
     ports:
       - "127.0.0.1:8090:8090"

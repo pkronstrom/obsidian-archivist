@@ -16,7 +16,8 @@ cd obsidian-archivist
 mkdir -p data/vaults/personal
 
 TOKEN="$(openssl rand -hex 32)"
-printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\n' "$TOKEN" "$TOKEN" > .env
+printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\nARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' \
+  "$TOKEN" "$TOKEN" "$(id -u)" "$(id -g)" > .env
 docker compose up -d --build
 ```
 
@@ -24,8 +25,8 @@ Check both services:
 
 ```bash
 docker compose ps
-curl -fsS http://127.0.0.1:8090/healthz
-curl -fsS http://127.0.0.1:8091/healthz
+curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8090/healthz
+curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
 ```
 
 The initial `ARCHIVIST_TOKEN` opens every vault. That is useful for getting a
@@ -123,7 +124,8 @@ docker compose exec -e ARCHIVIST_TOKENS=/data/.archivist/tokens.json archivist \
   -vaults personal -profile relay-background
 ```
 
-Edit `.env` to contain the token-file path and the relay token:
+Keep `ARCHIVIST_UID` and `ARCHIVIST_GID` in `.env`. Remove the bootstrap entries
+and add the token-file path and new relay token:
 
 ```dotenv
 ARCHIVIST_TOKENS=/data/.archivist/tokens.json
@@ -317,11 +319,37 @@ docker compose exec archivist /archivist-server token add \
   -profile relay-background -no-step-up work
 ```
 
-Update the plugin, agent and relay with those credentials. Then create the
-marker:
+Update the plugin and agent with their new credentials. Save the relay token in
+a shell variable and verify that it can see `work` before changing the vault:
+
+```bash
+NEW_RELAY_TOKEN=arch_replace_with_the_new_relay_token
+curl -fsS -H "Authorization: Bearer $NEW_RELAY_TOKEN" \
+  http://127.0.0.1:8090/v1/vaults
+```
+
+Put the same value in `.env`, recreate the relay, and verify that the container
+received it:
+
+```dotenv
+RELAY_BG_TOKEN=arch_replace_with_the_new_relay_token
+```
+
+```bash
+docker compose up -d relay
+curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  "$(docker compose ps -q relay)" | \
+  grep -Fqx "ARCHIVIST_TOKEN=$NEW_RELAY_TOKEN"
+```
+
+Only then create the marker and make a vault-scoped read. A successful response
+proves that the relay token's `-no-step-up work` posture is active:
 
 ```bash
 touch data/.archivist/work/step-up
+curl -fsS -H "Authorization: Bearer $NEW_RELAY_TOKEN" \
+  http://127.0.0.1:8090/work/v1/head
 ```
 
 Once the marker exists, old tokens are refused because they have no explicit
@@ -380,12 +408,12 @@ docker compose exec archivist /archivist-server reclaim \
 If the total is small, stop. Reclaiming rewrites history and is deliberately
 manual. Deleted paths newer than 90 days are excluded by default.
 
-Before pruning, back up `data/.archivist/personal`, stop the server and preview
+Before pruning, stop the server, back up `data/.archivist/personal` and preview
 the exact one-off Compose command:
 
 ```bash
-cp -a data/.archivist/personal data/.archivist/personal.pre-prune
 docker compose stop archivist
+cp -a data/.archivist/personal data/.archivist/personal.pre-prune
 
 docker compose run --rm --no-deps archivist \
   reclaim -root /data -name personal --prune

@@ -24,11 +24,12 @@ cd obsidian-archivist
 mkdir -p data/vaults/personal
 
 TOKEN="$(openssl rand -hex 32)"
-printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\n' "$TOKEN" "$TOKEN" > .env
+printf 'ARCHIVIST_TOKEN=%s\nRELAY_BG_TOKEN=%s\nARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' \
+  "$TOKEN" "$TOKEN" "$(id -u)" "$(id -g)" > .env
 docker compose up -d --build
 
-curl -fsS http://127.0.0.1:8090/healthz
-curl -fsS http://127.0.0.1:8091/healthz
+curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8090/healthz
+curl --retry 20 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8091/healthz
 printf '%s\n' "$TOKEN"
 ```
 
@@ -43,11 +44,11 @@ Archivist is not yet in the Obsidian community store. Install it through
 [BRAT](https://github.com/TfTHacker/obsidian42-brat):
 
 1. In Obsidian, open **Community plugins → Browse** and install BRAT.
-2. Run **BRAT: Add a beta plugin for testing** from the command palette.
-3. Enter `pkronstrom/obsidian-archivist`.
-
-While this repository is private, give BRAT a fine-grained, read-only GitHub
-token for this repository.
+2. On BRAT's main settings page, add a fine-grained GitHub token restricted to
+   this repository with read-only **Contents** access. The token is needed
+   while the repository is private.
+3. Run **BRAT: Add a beta plugin for testing** from the command palette.
+4. Enter `pkronstrom/obsidian-archivist`.
 
 Open **Community plugins → Archivist → Options** and set:
 
@@ -87,8 +88,8 @@ Funnel makes the service public.
 
 ## Add more
 
-- [Give Claude Code MCP access](docs/INTEGRATIONS.md#claude-code-over-mcp)
 - [Replace the bootstrap token and add devices](docs/OPERATIONS.md#replace-the-bootstrap-credential)
+- [Give Claude Code MCP access](docs/INTEGRATIONS.md#claude-code-over-mcp)
 - [Edit or serve notes on the server](docs/INTEGRATIONS.md#edit-notes-on-the-server-or-web)
 - [Run webhooks and event consumers](docs/INTEGRATIONS.md#react-to-changes)
 - [Keep several vaults](docs/OPERATIONS.md#more-than-one-vault)

@@ -8,6 +8,10 @@ For deployment and credentials, see [Running Archivist](OPERATIONS.md).
 
 ## Claude Code over MCP
 
+First [replace the bootstrap credential](OPERATIONS.md#replace-the-bootstrap-credential).
+The token command below requires the server to be using `ARCHIVIST_TOKENS`; it
+will fail while the bootstrap-only configuration is still active.
+
 The Compose stack already runs `archivist-relay`. Give Claude Code its own
 credential so the server can enforce and record that caller's access:
 
@@ -83,8 +87,8 @@ For a browser editor, choose one that:
 
 - reads and writes the directory directly instead of importing it into a
   database;
-- runs with the UID and GID that own `./data` (the supplied Compose file uses
-  `1000:1000`);
+- runs with the UID and GID that own `./data` (the supplied Compose file reads
+  them from `ARCHIVIST_UID` and `ARCHIVIST_GID`);
 - can be kept private behind the same Tailscale or VPN boundary.
 
 [NoteDiscovery](https://github.com/gamosoft/notediscovery) is one possible

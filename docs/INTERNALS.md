@@ -76,6 +76,7 @@ version.
 | `GET` | `/personal/v1/wait?since=&timeout=` | long-poll until head moves |
 | `POST` | `/personal/v1/unlock` | spend a one-time code on a protected vault |
 | `GET` | `/v1/vaults` | which vaults this token opens, and what it may do |
+| `POST` | `/v1/vaults` | create a vault; requires write scope and `canCreateVaults` |
 | `GET` | `/personal/v1` | the endpoint list, plus `protocol` and `version` |
 
 Content is addressed by **git object hash**, so a client can compute an address
