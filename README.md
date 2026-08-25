@@ -2,10 +2,9 @@
 
 Keep using Obsidian. Keep your notes as ordinary files on your own server.
 
-Obsidian is a good editor and a bad place to store the only copy of a decade of
-thinking. Its own sync is a subscription, and most self-hosted alternatives give
-up at least one of: plain files on the server, real-time sync, working mobile,
-or a single copy of your vault.
+Obsidian is a good editor and a bad place to keep the only copy of a decade of
+thinking. Its own sync is a subscription; the self-hosted options each give up
+plain files, real-time sync, or mobile.
 
 Archivist is a small Go server and an Obsidian plugin. Your vault lives on your
 server as **plain Markdown, images and PDFs in a normal directory**, the real
