@@ -269,6 +269,47 @@ describes the rest.
 
 The server's own HTTP API remains directly usable; `GET /v1` describes it.
 
+## The same note appearing twice
+
+macOS writes a filename containing `ä` decomposed, iOS writes it composed, and
+on Linux those are two different paths. Left alone, the same note arrives twice
+or two devices rename it back and forth forever.
+
+```bash
+ARCHIVIST_NORMALIZE_NFC=true    # or -normalize-nfc
+```
+
+One spelling then wins and stays won. It is off by default because it RENAMES
+files on disk, and a flag that rewrites your vault should be chosen rather than
+inherited. Turn it on before adding an iPhone to a vault built on a Mac, which
+is when the problem shows up.
+
+## When sync looks wrong
+
+Work down this list; each step is cheaper than the one after it.
+
+**Ask the server what it thinks.** `check` compares the working tree against
+history and exits non-zero on drift:
+
+```bash
+archivist-server check -name personal
+```
+
+`missing` is a file history has and the vault does not, `extra` is the reverse,
+and `stranded` is a path that is tracked but excluded by today's rules, which
+nothing will ever clear on its own. All three are quiet in a healthy vault.
+
+**Look at what the device thinks.** The plugin's Status card reports the last
+successful sync and which vault it reached. *Test connection* re-checks the URL
+and token without touching content.
+
+**Re-bootstrap, last.** *Settings → Troubleshooting → Re-bootstrap* discards
+this device's sync state and rebuilds it from the server. It deletes nothing and
+never touches `.local` files, but a note that differs from the server's is
+renamed aside as a conflict copy, and many files may be re-sent. It is the right
+move after restoring a vault from a backup, after editing files outside sync, or
+when a device is stuck; it is the wrong move for "it feels slow".
+
 ## Write guards
 
 Git keeps every revision, and for binary content every revision is a full

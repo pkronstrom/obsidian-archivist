@@ -241,6 +241,28 @@ Or over HTTP. Routes are vault-qualified, so `GET /personal/v1` lists every
 endpoint with a one-line description, generated from the same table that builds
 the routes.
 
+## Common tasks
+
+| I want to | Where |
+| --- | --- |
+| get back a note I deleted | [Recovering a deleted note](#recovering-a-deleted-note) |
+| go back to an earlier version | [the revision browser](#in-obsidian-the-revision-browser) |
+| keep a note on one device only | [Files that never sync](#files-that-never-sync) |
+| mark a version worth keeping | pins, in [the revision browser](#in-obsidian-the-revision-browser) |
+| understand a `.conflict-` file | [Caveats](#caveats) |
+| add another device | [minting tokens](docs/OPERATIONS.md#minting-tokens) |
+| let an agent read and write notes | [agents over MCP](docs/INTEGRATIONS.md#agents-over-mcp) |
+| require a code before a vault opens | [protecting a vault](docs/OPERATIONS.md#protecting-a-vault) |
+| keep work and personal apart | [more than one vault](docs/OPERATIONS.md#more-than-one-vault) |
+| start from a vault that already has notes | [connecting an existing vault](docs/OPERATIONS.md#connecting-a-vault-that-already-has-notes) |
+| run something when a note changes | [reacting to changes](docs/INTEGRATIONS.md#reacting-to-changes) |
+| sync Obsidian's own settings and plugins | [Obsidian config](docs/INTEGRATIONS.md#syncing-obsidians-own-config) |
+| stop the same note arriving twice | [the same note appearing twice](docs/OPERATIONS.md#the-same-note-appearing-twice) |
+| work out why sync looks wrong | [when sync looks wrong](docs/OPERATIONS.md#when-sync-looks-wrong) |
+| remove a huge file or a leaked secret from history | [reclaiming space](docs/OPERATIONS.md#reclaiming-space) |
+| reach the server from another machine | [reaching it from elsewhere](docs/OPERATIONS.md#reaching-it-from-elsewhere) |
+| back the whole thing up | [backups](docs/OPERATIONS.md#backups) |
+
 ## Alternatives
 
 | | Cost | Server copy | Real-time | Mobile |
