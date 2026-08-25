@@ -75,5 +75,6 @@ services:
       # forwards rather than standing in for them.
       - ARCHIVIST_TOKEN=${RELAY_BG_TOKEN:-}
       - ARCHIVIST_RELAY_LISTEN=:8091
+      - ARCHIVIST_WEBHOOKS=${ARCHIVIST_WEBHOOKS:-}
     depends_on:
       - archivist
