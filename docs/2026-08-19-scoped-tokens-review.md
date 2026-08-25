@@ -1,6 +1,6 @@
 # Scoped Tokens — Decisions
 
-The answered design review that `docs/2026-08-19-scoped-tokens-plan.md` implements. Recorded so the plan's choices can be traced to a reason rather than re-argued.
+The answered design review that `the scoped-tokens work (plan since removed)` implements. Recorded so the plan's choices can be traced to a reason rather than re-argued.
 
 ## Where the work splits
 

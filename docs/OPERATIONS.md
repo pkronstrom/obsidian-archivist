@@ -326,7 +326,7 @@ a 9 MB PDF added and then deleted costs 9 MB forever.
 Start with the report. It changes nothing:
 
 ```bash
-archivist-server reclaim
+archivist-server reclaim -name personal
 ```
 
 ```
@@ -344,8 +344,8 @@ the server would be committing against a history being replaced underneath it:
 
 ```bash
 docker compose stop archivist
-archivist-server reclaim --prune          # explains, changes nothing
-archivist-server reclaim --prune --yes    # does it
+archivist-server reclaim -name personal --prune          # explains, changes nothing
+archivist-server reclaim -name personal --prune --yes    # does it
 docker compose start archivist
 ```
 
@@ -393,6 +393,15 @@ never runs `gc` and the image has no `git` binary, so objects otherwise stay
 loose forever; `--prune` collects and repacks as part of the same pass.
 
 ## Backups
+
+`export` also works with the server stopped, which is the one that matters for
+a backup script: it reads the repository directly rather than over HTTP, so it
+needs no token and no running process.
+
+```bash
+archivist-server export -name personal > vault.tar
+```
+
 
 ```bash
 curl -sf -H "Authorization: Bearer $TOKEN" https://vault.example/v1/export \

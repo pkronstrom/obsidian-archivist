@@ -21,7 +21,8 @@ One Go binary that owns a plain Markdown vault on disk, keeps its history in a
 real git repository, and syncs it to Obsidian over HTTP.
 
 **No database. No git binary. No runtime dependencies at all** — the container
-image is `FROM scratch` and 8 MB.
+image is distroless (`static-debian12:nonroot`); scratch was tried and
+abandoned, for the reasons written in the `Dockerfile`.
 
 ```
 Obsidian (Mac, iPhone)        SilverBullet / scripts / Claude
@@ -56,25 +57,40 @@ Or build it yourself:
 
 ```bash
 go build -o archivist-server ./cmd/archivist-server
-ARCHIVIST_TOKEN=secret ./archivist-server -vault ~/knowledge/personal
+
+export ARCHIVIST_ROOT=~/archivist            # holds vaults/ and .archivist/
+mkdir -p "$ARCHIVIST_ROOT/vaults/personal"
+ARCHIVIST_TOKEN=secret ./archivist-server
 ```
 
 | Flag | Environment | Default |
 | --- | --- | --- |
-| `-vault` | `ARCHIVIST_VAULT` | *(required)* |
-| `-git` | `ARCHIVIST_GIT` | `~/archivist/git` |
+| `-root` | `ARCHIVIST_ROOT` | *(required)* — holds `vaults/` and `.archivist/` |
+| `-tokens` | `ARCHIVIST_TOKENS` | *(none)* — falls back to `-token`, which opens every vault |
+| `-token` | `ARCHIVIST_TOKEN` | *(none)* |
 | `-listen` | `ARCHIVIST_LISTEN` | `:8090` |
-| `-token` | `ARCHIVIST_TOKEN` | *(required)* |
+| `-max-vaults` | `ARCHIVIST_MAX_VAULTS` | `5` |
 | `-debounce` | `ARCHIVIST_DEBOUNCE` | `1s` |
 | `-watch` | `ARCHIVIST_WATCH` | `true` |
+| `-normalize-nfc` | `ARCHIVIST_NORMALIZE_NFC` | `false` — see below |
+
+`-vault` and `-git` still exist, but only for the offline subcommands
+(`history`, `show`, `restore`, `check`, `export`, `deleted`, `reclaim`) against
+a single repository. Serving requires `-root`.
 
 Flags beat the environment: the environment is the deployment's baseline, a
 flag is a deliberate override of it.
 
+**`-normalize-nfc` MODIFIES the vault.** macOS writes filenames decomposed and
+iOS writes them composed; on Linux those are two different paths, so the same
+note arrives twice or two devices rename it back and forth. Turning this on
+renames non-composed paths on disk so one spelling wins. Off by default because
+a flag that renames files should be chosen, not inherited.
+
 ```bash
 docker build -t archivist .
-docker run -e ARCHIVIST_TOKEN=secret -e ARCHIVIST_VAULT=/vault -e ARCHIVIST_GIT=/git \
-  -v ~/knowledge/personal:/vault -v ~/archivist:/git -p 8090:8090 archivist
+docker run -e ARCHIVIST_TOKEN=secret -e ARCHIVIST_ROOT=/data \
+  -v ~/archivist:/data -p 8090:8090 archivist
 ```
 
 ## API
@@ -83,14 +99,14 @@ Seven routes, all behind `Authorization: Bearer <token>`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/head` | current commit |
-| `GET` | `/v1/snapshot` | full manifest — the bootstrap |
-| `GET` | `/v1/changes?since=<sha>` | incremental delta; **409** if the cursor is unknown |
+| `GET` | `/personal/v1/head` | current commit |
+| `GET` | `/personal/v1/snapshot` | full manifest — the bootstrap |
+| `GET` | `/personal/v1/changes?since=<sha>` | incremental delta; **409** if the cursor is unknown |
 | `POST` | `/v1/have` | which of these hashes are missing |
-| `PUT` | `/v1/content/{hash}` | upload; 400 if the bytes do not hash to `{hash}` |
-| `GET` | `/v1/content/{hash}` | download |
-| `POST` | `/v1/push` | apply a change set against a base |
-| `GET` | `/v1/export` | consistent archive of the git directory |
+| `PUT` | `/personal/v1/content/{hash}` | upload; 400 if the bytes do not hash to `{hash}` |
+| `GET` | `/personal/v1/content/{hash}` | download |
+| `POST` | `/personal/v1/push` | apply a change set against a base |
+| `GET` | `/personal/v1/export` | consistent archive of the git directory |
 | `GET` | `/v1` | the endpoint list, plus `protocol` and `version` |
 
 Content is addressed by **git object hash**, so a client can compute an address
@@ -98,9 +114,9 @@ with plain `git hash-object` and nothing bespoke:
 
 ```bash
 HASH=$(printf '%s' "$CONTENT" | git hash-object --stdin)
-curl -X PUT -H "$AUTH" --data-binary @- localhost:8090/v1/content/$HASH <<<"$CONTENT"
+curl -X PUT -H "$AUTH" --data-binary @- localhost:8090/personal/v1/content/$HASH <<<"$CONTENT"
 curl -H "$AUTH" -d "{\"base\":\"$BASE\",\"device\":\"mac\",\"changes\":[
-      {\"path\":\"notes/a.md\",\"op\":\"put\",\"hash\":\"$HASH\"}]}" localhost:8090/v1/push
+      {\"path\":\"notes/a.md\",\"op\":\"put\",\"hash\":\"$HASH\"}]}" localhost:8090/personal/v1/push
 ```
 
 `/changes` answers **409** rather than 500 when it does not recognise a cursor —
@@ -114,8 +130,8 @@ A token carries the vaults it opens and the verbs it holds. Verbs are `read`,
 
 | verb | covers |
 |---|---|
-| `read` | every GET, plus `POST /v1/have`. Includes `/v1/export`, which hands over the entire history in one call. |
-| `write` | `POST /v1/push` and `PUT /v1/content/{hash}`. Staging a blob counts: an unreferenced blob still consumes disk, and the write guards count writes per path at push time — they never see an orphan. |
+| `read` | every GET, plus `POST /v1/have`. Includes `/personal/v1/export`, which hands over the entire history in one call. |
+| `write` | `POST /personal/v1/push` and `PUT /personal/v1/content/{hash}`. Staging a blob counts: an unreferenced blob still consumes disk, and the write guards count writes per path at push time — they never see an orphan. |
 | `delete` | a `del` op inside a push. Not a route — checked in the push handler over the whole change set, before anything is staged. |
 
 The scope a route needs is a field on the `routes()` table, which is also what
@@ -145,7 +161,7 @@ all three verbs, no vault creation. It holds delete because withholding it would
 be theatre — a write token can already blank a note — while breaking the plugin,
 which renames and deletes routinely.
 
-Streams re-check their token. `/v1/events` authenticates once at connect but a
+Streams re-check their token. `/personal/v1/events` authenticates once at connect but a
 stream can outlive that by days, so it re-resolves the principal on every
 keepalive tick and closes if the token was revoked, expired or narrowed. That
 bounds exposure after a revocation to one interval rather than forever.
@@ -177,7 +193,7 @@ The plugin folds a deletion and an addition of identical content into one move,
 strictly one-to-one. Two deletions of the same content are ambiguous and
 guessing would rename the wrong file, so those stay del+put.
 
-**Older clients are unaffected on the read side.** `/v1/changes` diffs trees, so
+**Older clients are unaffected on the read side.** `/personal/v1/changes` diffs trees, so
 a move reaches other devices as a deletion and an addition; they never see the
 op. Only a client that *emits* `move` needs a server that knows it, which is why
 the protocol went to 2 and why servers upgrade before plugins do.
@@ -259,7 +275,7 @@ repository under continuous commits: **1 in 8 naive copies** restored as
 error: refs/heads/master: invalid sha1 pointer 9da131df...
 ```
 
-Use `/v1/export` instead. It builds the archive while commits are frozen, so
+Use `/personal/v1/export` instead. It builds the archive while commits are frozen, so
 the objects and refs are always consistent with each other. **8 of 8 exports
 taken under the identical workload restored `fsck`-clean.**
 

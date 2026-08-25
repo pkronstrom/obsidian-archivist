@@ -34,7 +34,7 @@ The one thing to get right is the first connect on a device that *already* has
 notes. Pairing a populated, never-synced vault against a populated server is the
 case that silently merges two unrelated vaults, so the plugin refuses it and
 offers three explicit recoveries. See [Connecting a vault that already has
-notes](#connecting-a-vault-that-already-has-notes).
+notes](OPERATIONS.md#connecting-a-vault-that-already-has-notes).
 
 ### Agents over MCP
 
@@ -85,14 +85,14 @@ Three surfaces, none of them a websocket.
 
 | surface | shape | use it for |
 |---|---|---|
-| `GET /v1/events` | SSE, one message per commit | a long-lived consumer on the box |
-| `GET /v1/wait` | long-poll until head moves | a shell script, a poller with no SSE client |
+| `GET /personal/v1/events` | SSE, one message per commit | a long-lived consumer on the box |
+| `GET /personal/v1/wait` | long-poll until head moves | a shell script, a poller with no SSE client |
 | relay webhooks | best-effort POST per commit | n8n, memo-ai, anything with an HTTP endpoint |
 
 All three tell you *that* something changed and roughly what. None of them is a
 durable queue — webhook delivery has no retry and no dead-letter on purpose.
 Durability comes from the cursor instead: a consumer that was down for a week
-asks `/v1/changes?since=<commit>` and gets exactly what it missed. Keep the
+asks `/personal/v1/changes?since=<commit>` and gets exactly what it missed. Keep the
 cursor, treat the notification as a hint to go look.
 
 ## Hooking things up to it
@@ -117,7 +117,7 @@ data: {"head":"4ff143d6..."}
 
 It carries a **notification, not the change** — "something moved, go look". A
 missed event costs nothing, because the cursor still says what changed. Use the
-stream to know *when*, and `/v1/changes` to know *what*.
+stream to know *when*, and `/personal/v1/changes` to know *what*.
 
 Each event carries enough to triage without a follow-up call:
 
@@ -129,12 +129,12 @@ Each event carries enough to triage without a follow-up call:
 
 `kind` is sniffed from the content, not guessed from the name, so an agent can
 skip what it cannot read. A commit touching more than 100 files is truncated
-with a count — read `/v1/changes` for those.
+with a count — read `/personal/v1/changes` for those.
 
-`/v1/changes` returns the **same shape**, so a consumer can use the stream and
+`/personal/v1/changes` returns the **same shape**, so a consumer can use the stream and
 the catch-up path interchangeably.
 
-[`examples/watch-vault.py`](examples/watch-vault.py) is a working consumer in
+[`../examples/watch-vault.py`](../examples/watch-vault.py) is a working consumer in
 ~120 lines of standard library — subscribe, triage, act, reconnect, resume from
 the cursor. Adapt the `handle()` function and you have an agent.
 

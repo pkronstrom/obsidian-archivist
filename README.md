@@ -25,19 +25,18 @@ directory, and opening a file beats calling an API.
 
 ## Why that matters
 
-Because a directory of files is useful to everything else you own.
+A directory of files is useful to everything else you own:
 
 ```bash
-grep -ri "that idea from 2019" ~/knowledge/personal
+grep -ri "that idea from 2019" ~/archivist/vaults/personal
 ```
 
-Point a web viewer at it. Let an AI agent read and write notes in it. Run a
-script over it. Serve it. Back it up with the same tool as everything else. None
-of that needs an adapter, an API client, or an export step, because there is
-nothing to adapt — they are just files.
+Point a web viewer at it, let an agent read and write it, run a script over it,
+back it up with the same tool as everything else. None of that needs an
+adapter or an export step, because there is nothing to adapt.
 
-Every change is committed to git, so you get history and point-in-time restore
-for free, and can recover a note you mangled three weeks ago.
+Every change the server syncs is committed to git, so history and point-in-time
+restore come for free.
 
 ## How it flows
 
@@ -59,7 +58,8 @@ stays the only authority wherever the relay sits.
 
 ## Getting started
 
-**Server.** Grab a binary from [releases](../../releases) or run the container.
+**Server.** Grab a binary from [releases](../../releases), or build the image
+from the `Dockerfile`.
 A vault is a directory under `$ARCHIVIST_ROOT/vaults/`:
 
 ```bash
@@ -107,12 +107,17 @@ deliberate; the choices are explained in
 
 Once connected, syncing is the part you stop thinking about: edits go up a few
 seconds after you stop typing, and changes from other devices arrive within
-about a second. The rest of this section is what the plugin gives you beyond
-that.
+about a second. That is **Automatic** mode; *Sync behavior* also offers
+**Periodic** (a fixed interval, no connection held open) and **Manual** (the
+ribbon icon, the *Sync now* command, or when Obsidian regains focus).
+
+Everything below is reachable from the command palette, and from the ribbon on
+mobile — a phone has no status bar.
 
 ### In Obsidian: the revision browser
 
-The status bar carries a history icon scoped to the note you are looking at.
+The status bar carries a history icon scoped to the note you are looking at,
+and on mobile the same thing is *Archivist: Show versions* in the ribbon.
 It groups the note's revisions into **editing sessions** rather than listing
 every commit — a vault commits whenever you pause, so one evening's drafting is
 twenty entries that all say the same thing.
@@ -135,7 +140,7 @@ Deleting a note has never removed it from the server — a delete is just a comm
 where the path stops existing, and every version stays in the repository. What
 was missing was a way to *find* one without already knowing its filename.
 
-**Settings → Maintenance → Restore a deleted note** lists them, newest first,
+**Settings → History and recovery → Deleted notes → Browse deleted** lists them, newest first,
 with who deleted each and when. Restoring writes the file back where it was and
 it syncs like any new note. On the server, `archivist-server deleted` prints the
 same list along with the exact `restore` command for each row.
@@ -157,14 +162,15 @@ was never lost and "restoring" it would leave you with two copies.
 If you want something *actually* gone, this is not the feature — that needs
 `reclaim`, which rewrites history and drops the objects.
 
-**Plugin settings.** A plugin's `data.json` often holds an API key, so it is
-scanned before it can sync. Two modes: leave *Sync settings for all plugins*
-off and enable each plugin yourself, or turn it on and every plugin syncs
-except the ones the scan flags. Either way, a flagged plugin needs an explicit
-decision from you, and the scan runs again at the push rather than only in the
-settings pane, so a blanket default can never send a credential nobody looked
-at. Scanning is best-effort: it reads names and values it recognises, and it
-cannot recognise everything.
+### Syncing plugin settings
+
+A plugin's `data.json` often holds an API key, so it is scanned before it can
+sync. Leave *Sync settings for all plugins* off and enable each plugin
+yourself, or turn it on and every plugin syncs except the ones the scan flags.
+Either way a flagged plugin needs an explicit decision, and the scan runs again
+at the push rather than only in the settings pane, so a blanket default cannot
+send a credential nobody looked at. Scanning is best-effort: it reads names and
+values it recognises, and cannot recognise everything.
 
 ### Files that never sync
 
@@ -193,59 +199,44 @@ copies it writes land in that namespace by construction.
 On the server, without git installed:
 
 ```bash
-archivist-server history notes/idea.md        # revisions that touched it
-archivist-server deleted                      # notes history holds that the vault does not
-archivist-server show notes/idea.md 4f3538ca  # print an old version, changing nothing
-archivist-server restore notes/idea.md 4f3538ca
-archivist-server check                        # working tree versus history; non-zero on drift
+export ARCHIVIST_ROOT=~/archivist          # -name picks the vault under it
+
+archivist-server history -name personal notes/idea.md   # revisions that touched it
+archivist-server deleted -name personal                 # notes history holds, the vault does not
+archivist-server show -name personal notes/idea.md 4f3538ca
+archivist-server restore -name personal notes/idea.md 4f3538ca
+archivist-server check -name personal                   # tree versus history; non-zero on drift
 ```
 
-Or over HTTP: `GET /v1` lists every endpoint with a one-line description,
-generated from the same table that builds the routes, so it cannot describe
-something that does not exist.
+Or over HTTP. Routes are vault-qualified, so `GET /personal/v1` lists every
+endpoint with a one-line description, generated from the same table that builds
+the routes.
 
-## What this is good for
+## What people use it for
 
-**Capture anywhere, file it later.** Jot into a capture app on your phone; a
-small job on the server writes the keepers into `Inbox/` as Markdown. Your
-laptop has them the next time you open Obsidian.
-
-**Let an AI agent actually use your notes.** An agent on the server reads and
-writes the vault as files — no API client, no export, no sync SDK. It can answer
-"what did I decide about X in 2019" by grepping, and file its own notes back
-into the vault where you will see them on your phone.
-
-**React to changes.** Subscribe to `/v1/events`, and when a note changes,
-re-embed it, update an index, run a linter, post to a channel. The cursor in
-`/v1/changes` means a consumer that was down for a week catches up correctly.
-
-**Read and write your notes on the web** without another sync system. Point an
-editor at the directory — this repo's own server runs NoteDiscovery that way. A
-server-side edit is committed by the watcher like any other, and a concurrent
-edit from a device is merged rather than lost.
-
-**Generate notes from scripts.** A cron job writing a daily note, a job pulling
-in your calendar, a script filing receipts. Write a file, and it is on your
-phone a second later.
-
-**Search across everything, with normal tools.** `grep`, `rg`, `fzf`, and every
-Unix thing you already know, over the actual files.
-
-**Keep history without thinking about it.** Every change is a commit, so
-"restore the version from before I deleted half of it" is always available.
+Because the server copy is a directory, anything already on that machine can
+use it without an adapter: an AI agent reading and writing notes as files, a
+cron job filing a daily note, a web editor pointed at the same directory, `rg`
+across everything. Changes made that way are committed by the watcher and reach
+your phone a second later. Subscribing to `/personal/v1/events` covers the rest
+— re-embed a note, update an index, post to a channel — and the cursor in
+`/personal/v1/changes` lets a consumer that was down for a week catch up
+correctly.
 
 ## Caveats — read these before trusting it
 
-**Single user.** No accounts, no sharing, no permissions. One person, one token
-per vault.
+**Single user.** No accounts, no sharing, no identity model. Tokens are minted
+per device and carry read/write/delete scopes and a vault list, but they say
+what a device may do, not who anyone is.
 
 **Not for the public internet.** It expects to sit behind Tailscale, a VPN, or
-a private network. There is one bearer token and no rate limiting, lockout, or
-audit log.
+a private network. There is no rate limiting, lockout or audit log.
 
 **Conflicts are resolved, not prevented.** Edit the same lines on two devices and
 you get both versions — the server's, plus yours in a `.conflict-<device>-<fragment>`
-file next to it. Nothing is lost, but you resolve it by hand.
+file next to it. Where a three-way merge was possible that parked file contains
+git-style conflict markers rather than a clean copy. Nothing is lost, but you
+resolve it by hand.
 
 **Editing on the server is last-writer-wins.** A push from Obsidian carries a
 base version, so it can be merged. A program writing directly to the directory
@@ -268,34 +259,21 @@ actually tried restoring, which is true of any sync tool and especially this one
 | **Archivist** | free | **plain files, 1×** | yes | good |
 
 **Obsidian Sync** is the right answer if you want it to just work and do not
-care where the notes live. It is genuinely excellent.
-
-**Self-hosted LiveSync** is the mature self-hosted option and does more than
-this: end-to-end encryption, peer-to-peer, several storage backends. Choose it
-if you want a project with many users behind it. The trade is that CouchDB is
-the real store and the filesystem copy is a projection maintained by a separate
-daemon — measured at about 4× the vault size across the three copies, and the
-server cannot arbitrate conflicts because every client is a full replica.
-
-**Obsidian Git** is the closest in spirit and the simplest thing that works. It
-syncs on a timer rather than on save, every device carries the full history, and
-iOS support is its weakest point.
-
-**Syncthing** is excellent and has no iOS client, which ends the discussion if
-you have an iPhone.
+care where the notes live. **LiveSync** is the mature self-hosted option and
+does more than this — end-to-end encryption, peer-to-peer, several backends —
+at the cost of CouchDB being the real store and the files being a projection of
+it. **Obsidian Git** is the closest in spirit and the simplest thing that
+works, on a timer rather than on save. **Syncthing** has no iOS client, which
+ends the discussion if you have an iPhone.
 
 ## Philosophy
 
-**Small enough to read in an afternoon.** ~3,000 lines across both halves. If it
-grows past what one person can hold in their head, it has failed at its purpose.
-
-**One static binary. No database, no dependencies.** The container image is
-`FROM scratch` and 8 MB. Nothing to install on the server, nothing to keep
+**One static binary, no database.** Nothing to install on the server, nothing
 running alongside it. The relay is a separate binary precisely so a laptop never
 carries a git implementation it will not use.
 
-**The server-side files are real and yours to modify.** Edit them with anything.
-The changes sync back to your devices.
+**The server-side files are real and yours to modify.** Edit them with anything;
+the changes sync back.
 
 **Boring where it counts.** Git stores the history. Standard three-way merge
 resolves conflicts. Content is addressed by git's own object hash, so you can
