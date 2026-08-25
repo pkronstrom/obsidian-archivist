@@ -5,7 +5,7 @@ measurements that shaped them.
 
 **One repository, two counterparts:**
 
-| | |
+| Half | What it is |
 | --- | --- |
 | **Server** — `cmd/`, `internal/` | one static Go binary; owns the vault, keeps history in git |
 | **Plugin** — `src/`, `manifest.json` | the Obsidian client, for desktop and mobile |

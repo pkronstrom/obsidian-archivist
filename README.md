@@ -13,11 +13,11 @@ server as **plain Markdown, images and PDFs in a normal directory** — the real
 thing, not an export — while Obsidian on your laptop and phone syncs against it
 in the background.
 
-| | | |
-| --- | --- | --- |
-| `archivist-server` | owns the vault, keeps the history | **working** |
-| Obsidian plugin | syncs your laptop and phone | **working** |
-| `archivist-relay` | optional sidecar: MCP tools, webhooks, a friendlier API | **working** |
+| Piece | What it does |
+| --- | --- |
+| `archivist-server` | owns the vault, keeps the history |
+| Obsidian plugin | syncs your laptop and phone |
+| `archivist-relay` | optional: MCP tools, webhooks, a friendlier API |
 
 The relay is for reaching the vault from somewhere that is *not* the server. If
 your tools run on the same machine, you do not need it — the vault is a
@@ -177,7 +177,7 @@ values it recognises, and cannot recognise everything.
 **Anything marked `.local` stays on the device that made it** — never
 uploaded, by either side:
 
-| | |
+| Name | Effect |
 |---|---|
 | `Scratch.local.md` | a file, marked before its extension |
 | `Journal.local/` | a **folder** — nothing inside it ever syncs |
@@ -281,7 +281,7 @@ verify it with `git hash-object`.
 
 ## Going further
 
-| | |
+| Doc | Covers |
 | --- | --- |
 | [Running a server](docs/OPERATIONS.md) | tokens, multiple vaults, TOTP-protected vaults, exposing it beyond localhost, write guards, reclaiming space, backups |
 | [Other tools](docs/INTEGRATIONS.md) | MCP for agents, webhooks, editing on the server, syncing Obsidian's own config |
