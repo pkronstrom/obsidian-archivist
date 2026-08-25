@@ -17,3 +17,12 @@ data.json
 
 # Worktrees for isolated implementation branches.
 .worktrees/
+
+# Credentials, none of which have ever been committed. Listed so that stays
+# true once other people start sending pull requests.
+.env
+.env.*
+tokens.json
+*.pem
+*.key
+gitleaks-report.json
