@@ -439,16 +439,14 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[readInput, readOutput] {
 		if isBinary(body) {
 			// An agent cannot use raw bytes and would waste a large amount of
 			// context discovering that. Say so instead.
-			return nil, readOutput{}, fmt.Errorf(
-				"%s is a binary file (%d bytes); read_note only returns text. "+
-					"Use read_attachment to get it as base64", in.Path, len(body))
+			return nil, readOutput{}, nonTextReadError("read_note", in.Path, len(body), nil)
 		}
-		out, err := pageReadNote(body, base, in)
+		out, err := pageReadNote(body, base, "read_note", in)
 		return nil, out, err
 	}
 }
 
-func pageReadNote(body []byte, repositoryRevision string, in readInput) (readOutput, error) {
+func pageReadNote(body []byte, repositoryRevision, tool string, in readInput) (readOutput, error) {
 	if in.Cursor != "" && in.StartLine != nil {
 		return readOutput{}, fmt.Errorf("cursor and start_line are mutually exclusive")
 	}
@@ -463,9 +461,7 @@ func pageReadNote(body []byte, repositoryRevision string, in readInput) (readOut
 
 	note, err := validateNoteText(body)
 	if err != nil {
-		return readOutput{}, fmt.Errorf(
-			"%s is not a text file (%d bytes); read_note only returns text. "+
-				"Use read_attachment to get it as base64: %w", in.Path, len(body), err)
+		return readOutput{}, nonTextReadError(tool, in.Path, len(body), err)
 	}
 	contentRevision := protocol.HashContent(body)
 
@@ -515,6 +511,23 @@ func pageReadNote(body []byte, repositoryRevision string, in readInput) (readOut
 		out.Note = "pass next_cursor as cursor to continue"
 	}
 	return out, nil
+}
+
+func nonTextReadError(tool, path string, size int, cause error) error {
+	var message string
+	if tool == "read_note_at" {
+		message = fmt.Sprintf(
+			"%s is not a text file (%d bytes); read_note_at only returns text; "+
+				"historical attachment retrieval is unavailable", path, size)
+	} else {
+		message = fmt.Sprintf(
+			"%s is not a text file (%d bytes); read_note only returns text. "+
+				"Use read_attachment to get it as base64", path, size)
+	}
+	if cause != nil {
+		return fmt.Errorf("%s: %w", message, cause)
+	}
+	return errors.New(message)
 }
 
 type writeInput struct {
@@ -861,11 +874,9 @@ func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
 			return nil, readOutput{}, err
 		}
 		if isBinary(body) {
-			return nil, readOutput{}, fmt.Errorf(
-				"%s is a binary file (%d bytes); read_note_at only returns text. "+
-					"Use read_attachment to get the current file as base64", in.Path, len(body))
+			return nil, readOutput{}, nonTextReadError("read_note_at", in.Path, len(body), nil)
 		}
-		out, err := pageReadNote(body, in.Revision, readInput{
+		out, err := pageReadNote(body, in.Revision, "read_note_at", readInput{
 			Vault: in.Vault, Path: in.Path, StartLine: in.StartLine,
 			Cursor: in.Cursor, MaxChars: in.MaxChars,
 		})

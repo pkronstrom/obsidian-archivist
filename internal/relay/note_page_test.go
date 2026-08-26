@@ -433,24 +433,85 @@ func TestNotePageRejectsNonPositiveOrBeyondLastLine(t *testing.T) {
 	}
 }
 
-func TestReadNotePageWholeBodyTextRefusalKeepsAttachmentGuidance(t *testing.T) {
+func TestReadNotePageWholeBodyTextRefusalKeepsContextualGuidance(t *testing.T) {
 	validPrefix := []byte(strings.Repeat("a", 8_001))
-	for _, tc := range []struct {
+	invalidBodies := []struct {
 		name string
 		tail byte
 	}{
 		{name: "NUL after binary heuristic window", tail: 0},
 		{name: "invalid UTF-8 after binary heuristic window", tail: 0xff},
+	}
+	contexts := []struct {
+		tool      string
+		want      []string
+		forbidden []string
+	}{
+		{
+			tool: "read_note",
+			want: []string{"read_note only returns text", "read_attachment"},
+		},
+		{
+			tool:      "read_note_at",
+			want:      []string{"read_note_at", "historical attachment retrieval is unavailable"},
+			forbidden: []string{"read_attachment"},
+		},
+	}
+
+	for _, contextCase := range contexts {
+		for _, bodyCase := range invalidBodies {
+			t.Run(contextCase.tool+"/"+bodyCase.name, func(t *testing.T) {
+				body := append(append([]byte(nil), validPrefix...), bodyCase.tail)
+				_, err := pageReadNote(body, "repository-revision", contextCase.tool, readInput{Path: "notes/raw.md"})
+				if err == nil {
+					t.Fatal("pageReadNote returned a page from an invalid text snapshot")
+				}
+				got := err.Error()
+				for _, want := range contextCase.want {
+					if !strings.Contains(got, want) {
+						t.Errorf("refusal = %q, want %q", got, want)
+					}
+				}
+				for _, forbidden := range contextCase.forbidden {
+					if strings.Contains(got, forbidden) {
+						t.Errorf("refusal = %q, must not suggest %q", got, forbidden)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestNonTextReadErrorGuidanceMatchesToolContextWithoutCause(t *testing.T) {
+	for _, tc := range []struct {
+		tool      string
+		want      []string
+		forbidden []string
+	}{
+		{
+			tool: "read_note",
+			want: []string{"read_note only returns text", "read_attachment"},
+		},
+		{
+			tool:      "read_note_at",
+			want:      []string{"read_note_at", "historical attachment retrieval is unavailable"},
+			forbidden: []string{"read_attachment"},
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			body := append(append([]byte(nil), validPrefix...), tc.tail)
-			_, err := pageReadNote(body, "repository-revision", readInput{Path: "notes/raw.md"})
-			if err == nil {
-				t.Fatal("pageReadNote returned a page from an invalid text snapshot")
+		t.Run(tc.tool, func(t *testing.T) {
+			got := nonTextReadError(tc.tool, "notes/raw.md", 9_001, nil).Error()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("refusal = %q, want %q", got, want)
+				}
 			}
-			if got := err.Error(); !strings.Contains(got, "read_attachment") ||
-				!strings.Contains(got, "read_note only returns text") {
-				t.Fatalf("refusal = %q, want read_note text refusal with read_attachment guidance", got)
+			for _, forbidden := range tc.forbidden {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("refusal = %q, must not suggest %q", got, forbidden)
+				}
+			}
+			if strings.Contains(got, "<nil>") {
+				t.Errorf("refusal exposes an absent cause: %q", got)
 			}
 		})
 	}
