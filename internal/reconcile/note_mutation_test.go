@@ -3,6 +3,8 @@ package reconcile
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
@@ -162,6 +164,62 @@ func TestAppendNoteRefusesNonTextCurrentFile(t *testing.T) {
 	}
 }
 
+func TestAppendNoteRefusesNULAfterSniffPrefix(t *testing.T) {
+	rc, v, r := newRec(t)
+	body := append(bytes.Repeat([]byte{'x'}, 8001), 0)
+	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+
+	_, _, err := rc.AppendNote(
+		"Triage.md",
+		[]byte("suffix\n"),
+		revision,
+		Origin{Device: "agent"},
+	)
+	requireProtocolCode(t, err, protocol.CodeNotText)
+	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+}
+
+func TestAppendNotePreflightsOversizedExistingFile(t *testing.T) {
+	rc, v, r := newRec(t)
+	head, _ := seedMutationNote(t, rc, r, "Triage.md", []byte("start\n"))
+
+	// The logical file is just over the limit, but only its prefix and final
+	// marker occupy disk blocks. A correct preflight rejects its size before
+	// attempting to read or allocate the sparse body.
+	filePath := filepath.Join(v.Dir(), "Triage.md")
+	f, err := os.OpenFile(filePath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte{'Z'}, int64(protocol.MaxUploadBytes)); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = rc.AppendNote(
+		"Triage.md",
+		[]byte("suffix\n"),
+		"",
+		Origin{Device: "agent"},
+	)
+	requireProtocolCode(t, err, protocol.CodeTooLarge)
+	assertSparseNoteAtHead(
+		t,
+		v,
+		r,
+		"Triage.md",
+		[]byte("start\n"),
+		int64(protocol.MaxUploadBytes),
+		'Z',
+		int64(protocol.MaxUploadBytes)+1,
+		head,
+	)
+}
+
+
 func TestEditNoteReplacesOneExactMatchAndReturnsRevisions(t *testing.T) {
 	rc, v, r := newRec(t)
 	before := []byte("before\ntarget\nafter\n")
@@ -260,6 +318,39 @@ func TestEditNoteRefusesMultipleMatches(t *testing.T) {
 	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
+
+func TestEditNoteRefusesOverlappingMatches(t *testing.T) {
+	rc, v, r := newRec(t)
+	body := []byte("aaa")
+	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+
+	_, _, err := rc.EditNote(
+		"Triage.md",
+		revision,
+		[]byte("aa"),
+		[]byte("changed"),
+		Origin{Device: "agent"},
+	)
+	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
+	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+}
+
+func TestEditNoteRefusesNoOpReplacement(t *testing.T) {
+	rc, v, r := newRec(t)
+	body := []byte("before\ntarget\nafter\n")
+	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+
+	_, _, err := rc.EditNote(
+		"Triage.md",
+		revision,
+		[]byte("target"),
+		[]byte("target"),
+		Origin{Device: "agent"},
+	)
+	requireProtocolCode(t, err, protocol.CodeMalformed)
+	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+}
+
 
 func TestEditNoteRefusesNonTextCurrentFile(t *testing.T) {
 	tests := []struct {
@@ -384,6 +475,47 @@ func assertMissingPathAtHead(t *testing.T, v *vault.Vault, r *repo.Repo, path, w
 	t.Helper()
 	if exists(v, path) {
 		t.Errorf("%s exists, want it absent", path)
+	}
+	assertRepoHead(t, r, wantHead)
+}
+
+func assertSparseNoteAtHead(
+	t *testing.T,
+	v *vault.Vault,
+	r *repo.Repo,
+	path string,
+	wantPrefix []byte,
+	markerOffset int64,
+	wantMarker byte,
+	wantSize int64,
+	wantHead string,
+) {
+	t.Helper()
+	info, err := v.Stat(path)
+	if err != nil {
+		t.Fatalf("stating %s: %v", path, err)
+	}
+	if info.Size() != wantSize {
+		t.Errorf("%s size = %d, want %d", path, info.Size(), wantSize)
+	}
+	f, err := os.Open(filepath.Join(v.Dir(), path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	prefix := make([]byte, len(wantPrefix))
+	if n, err := f.ReadAt(prefix, 0); err != nil || n != len(prefix) {
+		t.Fatalf("reading %s prefix: read %d bytes: %v", path, n, err)
+	}
+	if !bytes.Equal(prefix, wantPrefix) {
+		t.Errorf("%s prefix = %q, want %q", path, prefix, wantPrefix)
+	}
+	var marker [1]byte
+	if n, err := f.ReadAt(marker[:], markerOffset); err != nil || n != 1 {
+		t.Fatalf("reading %s marker: read %d bytes: %v", path, n, err)
+	}
+	if marker[0] != wantMarker {
+		t.Errorf("%s marker = %q, want %q", path, marker[0], wantMarker)
 	}
 	assertRepoHead(t, r, wantHead)
 }

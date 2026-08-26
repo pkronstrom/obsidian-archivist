@@ -71,12 +71,15 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 	if len(oldText) == 0 {
 		return "", "", mutationError(protocol.CodeMalformed, "old text is empty")
 	}
+	if bytes.Equal(oldText, newText) {
+		return "", "", mutationError(protocol.CodeMalformed, "old text and new text are identical")
+	}
 
 	body, err := currentText(rc.v, path, expectedHash)
 	if err != nil {
 		return "", "", err
 	}
-	switch matches := bytes.Count(body, oldText); matches {
+	switch matches := overlappingMatchCount(body, oldText); matches {
 	case 0:
 		return "", "", mutationError(protocol.CodeNoMatch, "old text was not found")
 	case 1:
@@ -118,21 +121,42 @@ func validateMutationPath(path string) error {
 }
 
 func currentText(v *vault.Vault, path, expectedHash string) ([]byte, error) {
+	info, err := v.Stat(path)
+	if err != nil {
+		return nil, mutationError(protocol.CodeNotFound, "no such note: "+path)
+	}
+	if info.Size() > int64(protocol.MaxUploadBytes) {
+		return nil, mutationError(protocol.CodeTooLarge, "note is too large")
+	}
 	body, err := v.Read(path)
 	if err != nil {
 		return nil, mutationError(protocol.CodeNotFound, "no such note: "+path)
 	}
-	sniff := body
-	if len(sniff) > 8000 {
-		sniff = sniff[:8000]
-	}
-	if bytes.IndexByte(sniff, 0) >= 0 || !utf8.Valid(body) {
+	if bytes.IndexByte(body, 0) >= 0 || !utf8.Valid(body) {
 		return nil, mutationError(protocol.CodeNotText, path+" is not UTF-8 text")
 	}
 	if expectedHash != "" && protocol.HashContent(body) != expectedHash {
 		return nil, mutationError(protocol.CodeStale, path+" changed since it was read")
 	}
 	return body, nil
+}
+
+// overlappingMatchCount returns 0, 1, or 2, where 2 means multiple.
+// Advancing one byte after a match includes overlapping occurrences.
+func overlappingMatchCount(body, oldText []byte) int {
+	matches := 0
+	for offset := 0; offset+len(oldText) <= len(body); {
+		index := bytes.Index(body[offset:], oldText)
+		if index < 0 {
+			return matches
+		}
+		matches++
+		if matches == 2 {
+			return matches
+		}
+		offset += index + 1
+	}
+	return matches
 }
 
 func mutationError(code, message string) error {
