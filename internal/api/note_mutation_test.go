@@ -250,6 +250,75 @@ func TestNoteMutationRouteRejectsMalformedJSONWithoutChangingBytes(t *testing.T)
 	requireVaultBytes(t, v, "Triage.md", before)
 }
 
+func TestNoteMutationRoutesRejectTrailingJSONWithoutChangingState(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+		body func(contentRevision string) any
+	}{
+		{
+			name: "append",
+			path: "/v1/note/append",
+			body: func(contentRevision string) any {
+				return protocol.AppendNoteRequest{
+					Path: "Triage.md", Content: "after\n", ContentRevision: contentRevision,
+				}
+			},
+		},
+		{
+			name: "edit",
+			path: "/v1/note/edit",
+			body: func(contentRevision string) any {
+				return protocol.EditNoteRequest{
+					Path: "Triage.md", ContentRevision: contentRevision,
+					OldText: "target", NewText: "changed",
+				}
+			},
+		},
+	}
+	trailers := []struct {
+		name string
+		body string
+	}{
+		{name: "second JSON value", body: "\n{}"},
+		{name: "non-whitespace garbage", body: " trailing-garbage"},
+	}
+
+	for _, route := range routes {
+		for _, trailer := range trailers {
+			t.Run(route.name+"/"+trailer.name, func(t *testing.T) {
+				h, v, r := newServer(t)
+				before := []byte("before\ntarget\nafter\n")
+				head, contentRevision := seedAPINote(t, h, "Triage.md", before)
+				body, err := json.Marshal(route.body(contentRevision))
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/personal"+route.path,
+					strings.NewReader(string(body)+trailer.body),
+				)
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, req)
+
+				requireMutationError(t, w, http.StatusBadRequest, protocol.CodeMalformed)
+				requireVaultBytes(t, v, "Triage.md", before)
+				gotHead, err := r.Head()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if gotHead != head {
+					t.Errorf("head = %q, want unchanged %q", gotHead, head)
+				}
+			})
+		}
+	}
+}
+
 func TestAppendNoteRouteMapsTooLargeWithoutChangingFile(t *testing.T) {
 	h, v, _ := newServer(t)
 	before := []byte("start\n")

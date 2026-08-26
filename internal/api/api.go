@@ -565,9 +565,24 @@ func failNoteMutation(w http.ResponseWriter, err error) {
 	fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 }
 
+func decodeOneJSON(body io.Reader, dst any) error {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.AppendNoteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeOneJSON(r.Body, &req); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
@@ -591,7 +606,7 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 
 func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.EditNoteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeOneJSON(r.Body, &req); err != nil {
 		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 		return
 	}
