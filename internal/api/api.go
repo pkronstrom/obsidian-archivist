@@ -417,6 +417,23 @@ func statusFor(code string) int {
 	}
 }
 
+func noteMutationStatusFor(code string) int {
+	switch code {
+	case protocol.CodeMalformed, protocol.CodeNotText, protocol.CodeInvalidPath:
+		return http.StatusBadRequest
+	case protocol.CodeNotFound:
+		return http.StatusNotFound
+	case protocol.CodeStale, protocol.CodeNoMatch, protocol.CodeMultipleMatches:
+		return http.StatusConflict
+	case protocol.CodeTooLarge:
+		return http.StatusRequestEntityTooLarge
+	case protocol.CodeForbidden:
+		return http.StatusForbidden
+	default:
+		return statusFor(code)
+	}
+}
+
 func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	claimed := r.PathValue("hash")
 	// protocol.MaxUploadBytes+1 so an oversized body is DETECTED rather than silently
@@ -524,6 +541,77 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 		return
 	}
 	writeJSON(w, protocol.PushResponse{Head: head, Results: results})
+}
+
+func noteMutationOrigin(r *http.Request) reconcile.Origin {
+	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
+	via := r.Header.Get(protocol.HeaderVia)
+	if via == "" {
+		via = "api"
+	}
+	return reconcile.Origin{
+		Device: p.Label,
+		Token:  p.Label,
+		Via:    sanitiseVia(via),
+	}
+}
+
+func failNoteMutation(w http.ResponseWriter, err error) {
+	var pe *protocol.Error
+	if errors.As(err, &pe) {
+		fail(w, noteMutationStatusFor(pe.Code), pe.Code, pe.Message)
+		return
+	}
+	fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+}
+
+func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	var req protocol.AppendNoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+		return
+	}
+	head, contentRevision, err := inst.Reconciler.AppendNote(
+		req.Path,
+		[]byte(req.Content),
+		req.ContentRevision,
+		noteMutationOrigin(r),
+	)
+	if err != nil {
+		failNoteMutation(w, err)
+		return
+	}
+	writeJSON(w, protocol.NoteMutationResponse{
+		Path:            req.Path,
+		Status:          protocol.StatusApplied,
+		Revision:        head,
+		ContentRevision: contentRevision,
+	})
+}
+
+func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	var req protocol.EditNoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+		return
+	}
+	head, contentRevision, err := inst.Reconciler.EditNote(
+		req.Path,
+		req.ContentRevision,
+		[]byte(req.OldText),
+		[]byte(req.NewText),
+		noteMutationOrigin(r),
+	)
+	if err != nil {
+		failNoteMutation(w, err)
+		return
+	}
+	writeJSON(w, protocol.NoteMutationResponse{
+		Path:            req.Path,
+		Status:          protocol.StatusApplied,
+		Revision:        head,
+		ContentRevision: contentRevision,
+	})
 }
 
 // events is a Server-Sent Events stream of commit hashes, for anything that
@@ -932,6 +1020,8 @@ func (s *Server) routes() []route {
 		// Delete is an op INSIDE the change set, so this route needs write and
 		// the handler additionally checks delete. See push.
 		{Method: "POST", Path: "/v1/push", Does: "{base,device,changes:[...]} apply a change set", Scope: auth.ScopeWrite, handle: s.push},
+		{Method: "POST", Path: "/v1/note/append", Does: "{path,content,content_revision?} atomically append text to a note", Scope: auth.ScopeWrite, handle: s.appendNote},
+		{Method: "POST", Path: "/v1/note/edit", Does: "{path,content_revision,old_text,new_text} atomically replace one exact match", Scope: auth.ScopeWrite, handle: s.editNote},
 		{Method: "GET", Path: "/v1/events", Does: "SSE:one per commit with changed paths, kind, size", Scope: auth.ScopeRead, handle: s.events},
 		{Method: "GET", Path: "/v1/wait", Does: "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", Scope: auth.ScopeRead, handle: s.wait},
 		{Method: "GET", Path: "/v1/history", Does: "?path=&limit= revisions that touched a path", Scope: auth.ScopeRead, handle: s.history},

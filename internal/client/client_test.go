@@ -218,3 +218,128 @@ func TestUnlockPostsTheCodeToTheVault(t *testing.T) {
 		t.Errorf("expiresAt = %d", until)
 	}
 }
+
+func TestAppendNotePostsTypedJSONAndDecodesBothRevisions(t *testing.T) {
+	request := protocol.AppendNoteRequest{
+		Path:            "Notes/Triage.md",
+		Content:         "after\n",
+		ContentRevision: "old-content-revision",
+	}
+	response := protocol.NoteMutationResponse{
+		Path:            request.Path,
+		Status:          protocol.StatusApplied,
+		Revision:        "new-vault-revision",
+		ContentRevision: "new-content-revision",
+	}
+	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			writeJSON(w, protocol.HealthResponse{Status: "ok", Protocol: protocol.Version})
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/personal/v1/note/append" {
+			t.Errorf("path = %q, want /personal/v1/note/append", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		gotBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBody, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotBody) != string(wantBody) {
+			t.Errorf("body = %s, want %s", gotBody, wantBody)
+		}
+		writeJSON(w, response)
+	}).WithVault("personal")
+
+	got, err := c.AppendNote(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != response.Path ||
+		got.Status != response.Status ||
+		got.Revision != response.Revision ||
+		got.ContentRevision != response.ContentRevision {
+		t.Errorf("AppendNote response = %+v, want %+v", got, response)
+	}
+}
+
+func TestEditNotePostsTypedJSONAndDecodesBothRevisions(t *testing.T) {
+	request := protocol.EditNoteRequest{
+		Path:            "Notes/Triage.md",
+		ContentRevision: "old-content-revision",
+		OldText:         "target",
+		NewText:         "changed",
+	}
+	response := protocol.NoteMutationResponse{
+		Path:            request.Path,
+		Status:          protocol.StatusApplied,
+		Revision:        "new-vault-revision",
+		ContentRevision: "new-content-revision",
+	}
+	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			writeJSON(w, protocol.HealthResponse{Status: "ok", Protocol: protocol.Version})
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if r.URL.Path != "/personal/v1/note/edit" {
+			t.Errorf("path = %q, want /personal/v1/note/edit", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		gotBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBody, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotBody) != string(wantBody) {
+			t.Errorf("body = %s, want %s", gotBody, wantBody)
+		}
+		writeJSON(w, response)
+	}).WithVault("personal")
+
+	got, err := c.EditNote(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != response.Path ||
+		got.Status != response.Status ||
+		got.Revision != response.Revision ||
+		got.ContentRevision != response.ContentRevision {
+		t.Errorf("EditNote response = %+v, want %+v", got, response)
+	}
+}
+
+func TestEditNotePreservesStructuredStaleErrorCode(t *testing.T) {
+	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			writeJSON(w, protocol.HealthResponse{Status: "ok", Protocol: protocol.Version})
+			return
+		}
+		writeErr(w, http.StatusConflict, protocol.CodeStale, "note changed")
+	}).WithVault("personal")
+
+	_, err := c.EditNote(context.Background(), protocol.EditNoteRequest{
+		Path:            "Notes/Triage.md",
+		ContentRevision: "stale-content-revision",
+		OldText:         "target",
+		NewText:         "changed",
+	})
+	if !IsCode(err, protocol.CodeStale) {
+		t.Errorf("err = %v, want IsCode(stale)", err)
+	}
+}
