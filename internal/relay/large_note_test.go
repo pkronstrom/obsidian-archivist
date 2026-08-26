@@ -471,17 +471,17 @@ func TestEditNoteRefusalsDoNotMutate(t *testing.T) {
 		{
 			name: "stale content revision", initial: "one target\n", oldText: "target",
 			revision: func(string) string { return protocol.HashContent([]byte("older bytes\n")) },
-			code: protocol.CodeStale,
+			code:     protocol.CodeStale,
 		},
 		{
 			name: "zero matches", initial: "nothing here\n", oldText: "absent",
 			revision: func(content string) string { return protocol.HashContent([]byte(content)) },
-			code: protocol.CodeNoMatch,
+			code:     protocol.CodeNoMatch,
 		},
 		{
 			name: "duplicate matches", initial: "target then target\n", oldText: "target",
 			revision: func(content string) string { return protocol.HashContent([]byte(content)) },
-			code: protocol.CodeMultipleMatches,
+			code:     protocol.CodeMultipleMatches,
 		},
 	}
 

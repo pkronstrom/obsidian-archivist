@@ -597,8 +597,8 @@ type writeOutput struct {
 	Status          string `json:"status"`
 	Revision        string `json:"revision,omitempty"`
 	ContentRevision string `json:"content_revision,omitempty"`
-	ConflictPath     string `json:"conflictPath,omitempty"`
-	Note             string `json:"note,omitempty"`
+	ConflictPath    string `json:"conflictPath,omitempty"`
+	Note            string `json:"note,omitempty"`
 
 	// Current* carry the note as it now stands, sent only when the write did NOT
 	// land exactly as given.
