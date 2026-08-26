@@ -85,6 +85,10 @@ const (
 	CodeQuarantined    = "path_quarantined" // repeated writes to one path
 	CodeThrottled      = "throttled"        // vault-wide write rate exceeded
 	CodeDiskLow        = "disk_low"         // free disk below the floor
+	CodeNotText         = "not_text"
+	CodeStale           = "stale"
+	CodeNoMatch         = "no_match"
+	CodeMultipleMatches = "multiple_matches"
 	// CodeStaleHead is a precondition failure: the caller named a head that is
 	// no longer the tip. Distinct from a conflict inside a push, because the
 	// fix is different -- flush, re-read head, retry once -- and a client that
@@ -230,6 +234,26 @@ type PushRequest struct {
 type PushResponse struct {
 	Head    string   `json:"head"`
 	Results []Result `json:"results"`
+}
+
+type AppendNoteRequest struct {
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	ContentRevision string `json:"content_revision,omitempty"`
+}
+
+type EditNoteRequest struct {
+	Path            string `json:"path"`
+	ContentRevision string `json:"content_revision"`
+	OldText         string `json:"old_text"`
+	NewText         string `json:"new_text"`
+}
+
+type NoteMutationResponse struct {
+	Path            string `json:"path"`
+	Status          string `json:"status"`
+	Revision        string `json:"revision"`
+	ContentRevision string `json:"content_revision"`
 }
 
 type HistoryResponse struct {
