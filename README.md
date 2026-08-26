@@ -6,10 +6,6 @@ Archivist gives Obsidian real-time, self-hosted sync without turning your vault
 into a database or an opaque server format. Markdown, images and PDFs live in a
 normal directory, with every change kept in git history.
 
-- **Server** (`archivist-server`) owns the vault and its history.
-- **Obsidian plugin** syncs desktop and mobile vaults.
-- **Relay** (`archivist-relay`) adds MCP tools, a simple file API and webhooks.
-
 The directory on the server is the real vault, not a cache or export. Tools on
 that machine can search, read, edit, serve and back up the same files.
 
@@ -17,14 +13,17 @@ that machine can search, read, edit, serve and back up the same files.
 
 | Feature | What it means |
 |---|---|
-| **Live sync** | Desktop and mobile, a few seconds after you stop typing. |
-| **Files stay files** | Markdown, images and PDFs in a normal directory. Nothing to export. |
-| **Full history** | Every change is a commit. Browse a note's revisions and open any one beside the current version. |
-| **Undelete** | A note deleted last week is still in history, with the revision to restore it from. |
-| **Conflicts keep both sides** | Two devices editing the same note produces a merge, or both versions plus an explanation. Nothing is silently overwritten. |
-| **Scoped device tokens** | Each device and agent gets its own token, limited to named vaults and revocable on its own. |
-| **Agent access** | The relay exposes the vault to Claude Code and other MCP clients, with the same tokens and the same history. |
-| **`.local` never syncs** | Any file named `notes.local.md`, or anything under a `scratch.local/` folder, stays on the device that made it. |
+| **Single-binary server** | `archivist-server` owns the vault and its history. Static binaries for Linux and macOS, or a container. Host it anywhere. |
+| **Relay binary** | `archivist-relay` adds MCP tools for agents, a simple file API and webhooks. |
+| **Obsidian plugin** | Connects desktop and mobile to the server and keeps the local vault synced. |
+| **Notes stay ordinary files** | Markdown, images and PDFs in a normal directory on the server. Not a database, not an export. |
+| **Whole history** | Every change is a commit. Browse a note's revisions, open one beside the current version, restore something deleted last week. |
+| **Conflicts keep both sides** | Two devices editing one note merges, or keeps both versions with an explanation. Nothing is silently overwritten. |
+| **Several vaults** | One server process serves them all, each with its own history. Tokens scope to the vaults you name. |
+| **Granular tokens** | Each device and agent gets its own, scoped to named vaults, revocable on its own. |
+| **Private vaults** | Mark a vault protected and an agent that reaches it gets `step_up_required`. You approve with a six-digit code from your authenticator, opening a window that expires on a clock and is never extended by use. |
+| **Obsidian settings sync too** | Themes, hotkeys, snippets and your plugin list, if you want them. |
+| **`.local` never syncs** | `notes.local.md`, or anything under `scratch.local/`, stays on the device that made it. |
 
 ## Quick start
 
