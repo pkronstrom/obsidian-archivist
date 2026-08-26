@@ -598,7 +598,7 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 		failNoteMutationDecode(w, err)
 		return
 	}
-	head, contentRevision, err := inst.Reconciler.AppendNote(
+	effectivePath, head, contentRevision, err := inst.Reconciler.AppendNote(
 		req.Path,
 		[]byte(req.Content),
 		req.ContentRevision,
@@ -609,7 +609,7 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 		return
 	}
 	writeJSON(w, protocol.NoteMutationResponse{
-		Path:            req.Path,
+		Path:            effectivePath,
 		Status:          protocol.StatusApplied,
 		Revision:        head,
 		ContentRevision: contentRevision,
@@ -622,7 +622,7 @@ func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.I
 		failNoteMutationDecode(w, err)
 		return
 	}
-	head, contentRevision, err := inst.Reconciler.EditNote(
+	effectivePath, head, contentRevision, err := inst.Reconciler.EditNote(
 		req.Path,
 		req.ContentRevision,
 		[]byte(req.OldText),
@@ -634,7 +634,7 @@ func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.I
 		return
 	}
 	writeJSON(w, protocol.NoteMutationResponse{
-		Path:            req.Path,
+		Path:            effectivePath,
 		Status:          protocol.StatusApplied,
 		Revision:        head,
 		ContentRevision: contentRevision,

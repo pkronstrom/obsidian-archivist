@@ -11,7 +11,7 @@ import (
 
 // AppendNote appends suffix to the current text at path in one locked mutation.
 // An empty expectedHash intentionally means "append to whatever is current".
-func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string, origin Origin) (head, contentHash string, err error) {
+func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string, origin Origin) (effectivePath, head, contentHash string, err error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
@@ -19,47 +19,47 @@ func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string
 		path = vault.ToNFC(path)
 	}
 	if err := validateMutationPath(path); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if len(suffix) == 0 {
-		return "", "", mutationError(protocol.CodeMalformed, "append content is empty")
+		return "", "", "", mutationError(protocol.CodeMalformed, "append content is empty")
 	}
 	if !validMutationText(suffix) {
-		return "", "", mutationError(protocol.CodeNotText, "append content is not UTF-8 text")
+		return "", "", "", mutationError(protocol.CodeNotText, "append content is not UTF-8 text")
 	}
 
 	body, err := currentText(rc.v, path, expectedHash)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if len(body) > protocol.MaxUploadBytes || len(suffix) > protocol.MaxUploadBytes-len(body) {
-		return "", "", mutationError(protocol.CodeTooLarge, "resulting note is too large")
+		return "", "", "", mutationError(protocol.CodeTooLarge, "resulting note is too large")
 	}
 
 	next := make([]byte, len(body)+len(suffix))
 	copy(next, body)
 	copy(next[len(body):], suffix)
 	if err := rc.admit(path, int64(len(next))); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	previousHead, err := rc.r.Head()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err := rc.write(path, next); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	head, err = rc.commitMutation(path, body, origin.message("append from"))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	rc.notify(previousHead, head)
-	return head, protocol.HashContent(next), nil
+	return path, head, protocol.HashContent(next), nil
 }
 
 // EditNote replaces the one exact occurrence of oldText in the current text at
 // path. expectedHash is required so the replacement cannot land on unseen text.
-func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byte, origin Origin) (head, contentHash string, err error) {
+func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byte, origin Origin) (effectivePath, head, contentHash string, err error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
@@ -67,54 +67,54 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 		path = vault.ToNFC(path)
 	}
 	if err := validateMutationPath(path); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if expectedHash == "" {
-		return "", "", mutationError(protocol.CodeMalformed, "content revision is required")
+		return "", "", "", mutationError(protocol.CodeMalformed, "content revision is required")
 	}
 	if len(oldText) == 0 {
-		return "", "", mutationError(protocol.CodeMalformed, "old text is empty")
+		return "", "", "", mutationError(protocol.CodeMalformed, "old text is empty")
 	}
 	if !validMutationText(newText) {
-		return "", "", mutationError(protocol.CodeNotText, "new text is not UTF-8 text")
+		return "", "", "", mutationError(protocol.CodeNotText, "new text is not UTF-8 text")
 	}
 	if bytes.Equal(oldText, newText) {
-		return "", "", mutationError(protocol.CodeMalformed, "old text and new text are identical")
+		return "", "", "", mutationError(protocol.CodeMalformed, "old text and new text are identical")
 	}
 
 	body, err := currentText(rc.v, path, expectedHash)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	switch matches := overlappingMatchCount(body, oldText); matches {
 	case 0:
-		return "", "", mutationError(protocol.CodeNoMatch, "old text was not found")
+		return "", "", "", mutationError(protocol.CodeNoMatch, "old text was not found")
 	case 1:
 	default:
-		return "", "", mutationError(protocol.CodeMultipleMatches, "old text occurs more than once")
+		return "", "", "", mutationError(protocol.CodeMultipleMatches, "old text occurs more than once")
 	}
 
 	remaining := len(body) - len(oldText)
 	if remaining > protocol.MaxUploadBytes || len(newText) > protocol.MaxUploadBytes-remaining {
-		return "", "", mutationError(protocol.CodeTooLarge, "resulting note is too large")
+		return "", "", "", mutationError(protocol.CodeTooLarge, "resulting note is too large")
 	}
 	next := bytes.Replace(body, oldText, newText, 1)
 	if err := rc.admit(path, int64(len(next))); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	previousHead, err := rc.r.Head()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if err := rc.write(path, next); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	head, err = rc.commitMutation(path, body, origin.message("edit from"))
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	rc.notify(previousHead, head)
-	return head, protocol.HashContent(next), nil
+	return path, head, protocol.HashContent(next), nil
 }
 
 func validateMutationPath(path string) error {

@@ -12,18 +12,21 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
+const (
+	decomposedMutationPath = "Notes/Cafe\u0301.md"
+	composedMutationPath   = "Notes/Caf\u00e9.md"
+)
+
 func TestAppendNoteAppendsToExistingNoteAndReturnsRevisions(t *testing.T) {
 	rc, v, r := newRec(t)
 	before := []byte("before\n")
 	oldHead, revision := seedMutationNote(t, rc, r, "Triage.md", before)
 	want := []byte("before\nafter\n")
 
-	head, contentHash, err := rc.AppendNote(
-		"Triage.md",
+	_, head, contentHash, err := rc.AppendNote("Triage.md",
 		[]byte("after\n"),
 		revision,
-		Origin{Device: "agent", Via: "mcp"},
-	)
+		Origin{Device: "agent", Via: "mcp"},)
 	if err != nil {
 		t.Fatalf("AppendNote: %v", err)
 	}
@@ -34,12 +37,10 @@ func TestAppendNoteRefusesMissingPath(t *testing.T) {
 	rc, v, r := newRec(t)
 	head, _ := seedMutationNote(t, rc, r, "kept.md", []byte("kept\n"))
 
-	_, _, err := rc.AppendNote(
-		"missing.md",
+	_, _, _, err := rc.AppendNote("missing.md",
 		[]byte("new\n"),
 		"",
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "missing.md", head)
 	assertNoteAtHead(t, v, r, "kept.md", []byte("kept\n"), head)
@@ -51,12 +52,10 @@ func TestAppendNoteRequiresFullCurrentBlobWhenGuarded(t *testing.T) {
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
 	// A matching prefix is still stale: the guard is the full Git blob ID.
-	_, _, err := rc.AppendNote(
-		"Triage.md",
+	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("after\n"),
 		revision[:12],
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeStale)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -66,12 +65,10 @@ func TestAppendNoteRefusesEmptySuffix(t *testing.T) {
 	body := []byte("before\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.AppendNote(
-		"Triage.md",
+	_, _, _, err := rc.AppendNote("Triage.md",
 		nil,
 		revision,
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -92,7 +89,7 @@ func TestConcurrentAppendsBothSurviveExactlyOnce(t *testing.T) {
 		suffix := suffix
 		go func() {
 			<-start
-			head, hash, err := rc.AppendNote("Triage.md", suffix, "", origin)
+			_, head, hash, err := rc.AppendNote("Triage.md", suffix, "", origin)
 			results <- result{head: head, hash: hash, err: err}
 		}()
 	}
@@ -152,12 +149,10 @@ func TestAppendNoteRefusesNonTextCurrentFile(t *testing.T) {
 			rc, v, r := newRec(t)
 			head, revision := seedMutationNote(t, rc, r, "Triage.md", tt.body)
 
-			_, _, err := rc.AppendNote(
-				"Triage.md",
+			_, _, _, err := rc.AppendNote("Triage.md",
 				[]byte("suffix\n"),
 				revision,
-				Origin{Device: "agent"},
-			)
+				Origin{Device: "agent"},)
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", tt.body, head)
 		})
@@ -179,12 +174,10 @@ func TestAppendNoteRefusesNonTextSuffix(t *testing.T) {
 			body := []byte("before\n")
 			head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-			_, _, err := rc.AppendNote(
-				"Triage.md",
+			_, _, _, err := rc.AppendNote("Triage.md",
 				tt.suffix,
 				revision,
-				Origin{Device: "agent"},
-			)
+				Origin{Device: "agent"},)
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", body, head)
 		})
@@ -197,12 +190,10 @@ func TestAppendNoteRestoresContentWhenCommitFails(t *testing.T) {
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 	restoreRepo := makeRepoCommitFail(t, r)
 
-	_, _, err := rc.AppendNote(
-		"Triage.md",
+	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	restoreRepo()
 	if err == nil {
 		t.Fatal("AppendNote succeeded despite the broken repository index")
@@ -215,12 +206,10 @@ func TestAppendNoteRefusesNULAfterSniffPrefix(t *testing.T) {
 	body := append(bytes.Repeat([]byte{'x'}, 8001), 0)
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.AppendNote(
-		"Triage.md",
+	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeNotText)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -245,12 +234,10 @@ func TestAppendNotePreflightsOversizedExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = rc.AppendNote(
-		"Triage.md",
+	_, _, _, err = rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		"",
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeTooLarge)
 	assertSparseNoteAtHead(
 		t,
@@ -271,13 +258,11 @@ func TestEditNoteReplacesOneExactMatchAndReturnsRevisions(t *testing.T) {
 	oldHead, revision := seedMutationNote(t, rc, r, "Triage.md", before)
 	want := []byte("before\nchanged\nafter\n")
 
-	head, contentHash, err := rc.EditNote(
-		"Triage.md",
+	_, head, contentHash, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent", Via: "mcp"},
-	)
+		Origin{Device: "agent", Via: "mcp"},)
 	if err != nil {
 		t.Fatalf("EditNote: %v", err)
 	}
@@ -289,13 +274,11 @@ func TestEditNoteRequiresRevision(t *testing.T) {
 	body := []byte("before\ntarget\nafter\n")
 	head, _ := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		"",
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -305,13 +288,11 @@ func TestEditNoteRequiresFullCurrentBlob(t *testing.T) {
 	body := []byte("before\ntarget\nafter\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision[:12],
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeStale)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -321,13 +302,11 @@ func TestEditNoteRefusesEmptyOldText(t *testing.T) {
 	body := []byte("before\ntarget\nafter\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		nil,
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -337,13 +316,11 @@ func TestEditNoteRefusesZeroMatches(t *testing.T) {
 	body := []byte("before\ntarget\nafter\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("missing"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeNoMatch)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -353,13 +330,11 @@ func TestEditNoteRefusesMultipleMatches(t *testing.T) {
 	body := []byte("target\nbetween\ntarget\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -369,13 +344,11 @@ func TestEditNoteRefusesOverlappingMatches(t *testing.T) {
 	body := []byte("aaa")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("aa"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -385,13 +358,11 @@ func TestEditNoteRefusesNoOpReplacement(t *testing.T) {
 	body := []byte("before\ntarget\nafter\n")
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("target"),
 		[]byte("target"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -410,13 +381,11 @@ func TestEditNoteRefusesNonTextCurrentFile(t *testing.T) {
 			rc, v, r := newRec(t)
 			head, revision := seedMutationNote(t, rc, r, "Triage.md", tt.body)
 
-			_, _, err := rc.EditNote(
-				"Triage.md",
+			_, _, _, err := rc.EditNote("Triage.md",
 				revision,
 				[]byte("target"),
 				[]byte("changed"),
-				Origin{Device: "agent"},
-			)
+				Origin{Device: "agent"},)
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", tt.body, head)
 		})
@@ -438,13 +407,11 @@ func TestEditNoteRefusesNonTextReplacement(t *testing.T) {
 			body := []byte("before\ntarget\nafter\n")
 			head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 
-			_, _, err := rc.EditNote(
-				"Triage.md",
+			_, _, _, err := rc.EditNote("Triage.md",
 				revision,
 				[]byte("target"),
 				tt.newText,
-				Origin{Device: "agent"},
-			)
+				Origin{Device: "agent"},)
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", body, head)
 		})
@@ -457,13 +424,11 @@ func TestEditNoteRestoresContentWhenCommitFails(t *testing.T) {
 	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
 	restoreRepo := makeRepoCommitFail(t, r)
 
-	_, _, err := rc.EditNote(
-		"Triage.md",
+	_, _, _, err := rc.EditNote("Triage.md",
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	restoreRepo()
 	if err == nil {
 		t.Fatal("EditNote succeeded despite the broken repository index")
@@ -489,26 +454,67 @@ func TestEditAndAppendDoNotRecreateMovedSource(t *testing.T) {
 	assertMissingPathAtHead(t, v, r, "old.md", movedHead)
 	assertNoteAtHead(t, v, r, "new.md", body, movedHead)
 
-	_, _, err = rc.EditNote(
-		"old.md",
+	_, _, _, err = rc.EditNote("old.md",
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "old.md", movedHead)
 	assertNoteAtHead(t, v, r, "new.md", body, movedHead)
 
-	_, _, err = rc.AppendNote(
-		"old.md",
+	_, _, _, err = rc.AppendNote("old.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},
-	)
+		Origin{Device: "agent"},)
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "old.md", movedHead)
 	assertNoteAtHead(t, v, r, "new.md", body, movedHead)
+}
+
+func TestAppendNoteReturnsNormalizedEffectivePath(t *testing.T) {
+	rc, v, r := newRec(t)
+	rc.SetNormalizeNFC(true)
+	before := []byte("before\n")
+	oldHead, revision := seedMutationNote(t, rc, r, decomposedMutationPath, before)
+	want := []byte("before\nafter\n")
+
+	effectivePath, head, contentHash, err := rc.AppendNote(
+		decomposedMutationPath,
+		[]byte("after\n"),
+		revision,
+		Origin{Device: "agent", Via: "mcp"},
+	)
+	if err != nil {
+		t.Fatalf("AppendNote: %v", err)
+	}
+	if effectivePath != composedMutationPath {
+		t.Errorf("effective path = %q, want stored NFC path %q", effectivePath, composedMutationPath)
+	}
+	assertMutationResult(t, v, r, composedMutationPath, oldHead, head, contentHash, want)
+}
+
+func TestEditNoteReturnsNormalizedEffectivePath(t *testing.T) {
+	rc, v, r := newRec(t)
+	rc.SetNormalizeNFC(true)
+	before := []byte("before\ntarget\nafter\n")
+	oldHead, revision := seedMutationNote(t, rc, r, decomposedMutationPath, before)
+	want := []byte("before\nchanged\nafter\n")
+
+	effectivePath, head, contentHash, err := rc.EditNote(
+		decomposedMutationPath,
+		revision,
+		[]byte("target"),
+		[]byte("changed"),
+		Origin{Device: "agent", Via: "mcp"},
+	)
+	if err != nil {
+		t.Fatalf("EditNote: %v", err)
+	}
+	if effectivePath != composedMutationPath {
+		t.Errorf("effective path = %q, want stored NFC path %q", effectivePath, composedMutationPath)
+	}
+	assertMutationResult(t, v, r, composedMutationPath, oldHead, head, contentHash, want)
 }
 
 func seedMutationNote(t *testing.T, rc *Reconciler, r *repo.Repo, path string, body []byte) (head, contentHash string) {

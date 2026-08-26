@@ -29,6 +29,11 @@ const token = "test-token"
 // therefore /personal/v1/... -- there is deliberately no unqualified alias.
 func singleVaultRegistry(t *testing.T, tok string) (*vaults.Registry, *auth.Set, string) {
 	t.Helper()
+	return singleVaultRegistryWithNormalizeNFC(t, tok, false)
+}
+
+func singleVaultRegistryWithNormalizeNFC(t *testing.T, tok string, normalizeNFC bool) (*vaults.Registry, *auth.Set, string) {
+	t.Helper()
 	root := t.TempDir()
 	work := filepath.Join(root, "vaults", "personal")
 	if err := os.MkdirAll(work, 0o755); err != nil {
@@ -36,7 +41,7 @@ func singleVaultRegistry(t *testing.T, tok string) (*vaults.Registry, *auth.Set,
 	}
 	reg, err := vaults.NewRegistry(vaults.Layout{Root: root}, vaults.Options{
 		MaxVaults:    5,
-		NormalizeNFC: false,
+		NormalizeNFC: normalizeNFC,
 		Log:          slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
@@ -55,6 +60,16 @@ func singleVaultRegistry(t *testing.T, tok string) (*vaults.Registry, *auth.Set,
 func newServer(t *testing.T) (http.Handler, *vault.Vault, *repo.Repo) {
 	t.Helper()
 	reg, set, _ := singleVaultRegistry(t, token)
+	inst, err := reg.Get("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(reg, set), inst.Vault, inst.Repo
+}
+
+func newServerWithNormalizeNFC(t *testing.T) (http.Handler, *vault.Vault, *repo.Repo) {
+	t.Helper()
+	reg, set, _ := singleVaultRegistryWithNormalizeNFC(t, token, true)
 	inst, err := reg.Get("personal")
 	if err != nil {
 		t.Fatal(err)

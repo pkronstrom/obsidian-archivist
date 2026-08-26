@@ -56,6 +56,38 @@ func TestNoteMutationRoutesApplyAndReturnBothRevisions(t *testing.T) {
 	}
 }
 
+func TestNoteMutationResponsesUseNormalizedStoredPath(t *testing.T) {
+	h, v, _ := newServerWithNormalizeNFC(t)
+	const (
+		decomposedPath = "Notes/Cafe\u0301.md"
+		composedPath   = "Notes/Caf\u00e9.md"
+	)
+	before := []byte("before\ntarget\n")
+	_, contentRevision := seedAPINote(t, h, decomposedPath, before)
+
+	appended := requireMutationSuccess(t, do(t, h, http.MethodPost, "/v1/note/append", protocol.AppendNoteRequest{
+		Path:            decomposedPath,
+		Content:         "after\n",
+		ContentRevision: contentRevision,
+	}, true))
+	if appended.Path != composedPath {
+		t.Errorf("append response path = %q, want stored NFC path %q", appended.Path, composedPath)
+	}
+	afterAppend := []byte("before\ntarget\nafter\n")
+	requireVaultBytes(t, v, appended.Path, afterAppend)
+
+	edited := requireMutationSuccess(t, do(t, h, http.MethodPost, "/v1/note/edit", protocol.EditNoteRequest{
+		Path:            decomposedPath,
+		ContentRevision: appended.ContentRevision,
+		OldText:         "target",
+		NewText:         "changed",
+	}, true))
+	if edited.Path != composedPath {
+		t.Errorf("edit response path = %q, want stored NFC path %q", edited.Path, composedPath)
+	}
+	requireVaultBytes(t, v, edited.Path, []byte("before\nchanged\nafter\n"))
+}
+
 func TestNoteMutationRoutesRequireWriteScopeWithoutChangingBytes(t *testing.T) {
 	const readToken = "read-only-token"
 	reg, _, _ := singleVaultRegistry(t, readToken)
