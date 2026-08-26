@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -319,6 +320,164 @@ func TestNoteMutationRoutesRejectTrailingJSONWithoutChangingState(t *testing.T) 
 	}
 }
 
+func TestNoteMutationRoutesRejectUnknownFieldsWithoutChangingState(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		payload func(contentRevision string) any
+	}{
+		{
+			name: "append misspelled content revision",
+			path: "/v1/note/append",
+			payload: func(contentRevision string) any {
+				return map[string]any{
+					"path": "Triage.md", "content": "after\n",
+					"content_revison": contentRevision,
+				}
+			},
+		},
+		{
+			name: "edit unknown field",
+			path: "/v1/note/edit",
+			payload: func(contentRevision string) any {
+				return map[string]any{
+					"path": "Triage.md", "content_revision": contentRevision,
+					"old_text": "target", "new_text": "changed", "unexpected": true,
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, v, r := newServer(t)
+			before := []byte("before\ntarget\nafter\n")
+			head, contentRevision := seedAPINote(t, h, "Triage.md", before)
+			body, err := json.Marshal(tt.payload(contentRevision))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			w := doRawNoteMutation(t, h, tt.path, strings.NewReader(string(body)))
+			requireMutationError(t, w, http.StatusBadRequest, protocol.CodeMalformed)
+			requireVaultBytes(t, v, "Triage.md", before)
+			gotHead, err := r.Head()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotHead != head {
+				t.Errorf("head = %q, want unchanged %q", gotHead, head)
+			}
+		})
+	}
+}
+
+func TestNoteMutationRoutesRejectOverLimitStreamingBodiesWithoutChangingState(t *testing.T) {
+	routes := []struct {
+		name string
+		path string
+		body func(contentRevision string) any
+	}{
+		{
+			name: "append",
+			path: "/v1/note/append",
+			body: func(contentRevision string) any {
+				return protocol.AppendNoteRequest{
+					Path: "Triage.md", Content: "after\n", ContentRevision: contentRevision,
+				}
+			},
+		},
+		{
+			name: "edit",
+			path: "/v1/note/edit",
+			body: func(contentRevision string) any {
+				return protocol.EditNoteRequest{
+					Path: "Triage.md", ContentRevision: contentRevision,
+					OldText: "target", NewText: "changed",
+				}
+			},
+		},
+	}
+
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			h, v, r := newServer(t)
+			before := []byte("before\ntarget\nafter\n")
+			head, contentRevision := seedAPINote(t, h, "Triage.md", before)
+			body, err := json.Marshal(route.body(contentRevision))
+			if err != nil {
+				t.Fatal(err)
+			}
+			padding := int64(protocol.MaxUploadBytes) + 1 - int64(len(body))
+			reader := io.MultiReader(
+				strings.NewReader(string(body)),
+				&repeatedByteReader{remaining: padding, value: ' '},
+			)
+
+			w := doRawNoteMutation(t, h, route.path, reader)
+			requireMutationError(t, w, http.StatusRequestEntityTooLarge, protocol.CodeTooLarge)
+			requireVaultBytes(t, v, "Triage.md", before)
+			gotHead, err := r.Head()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotHead != head {
+				t.Errorf("head = %q, want unchanged %q", gotHead, head)
+			}
+		})
+	}
+}
+
+func TestNoteMutationHistoryRecordsRequestDeviceAndVerifiedToken(t *testing.T) {
+	h, _, r := newServer(t)
+	before := []byte("before\n")
+	_, contentRevision := seedAPINote(t, h, "Triage.md", before)
+
+	w := do(t, h, http.MethodPost, "/v1/note/append", protocol.AppendNoteRequest{
+		Path:            "Triage.md",
+		Content:         "after\n",
+		ContentRevision: contentRevision,
+		Device:          "direct-agent",
+	}, true)
+	mutation := requireMutationSuccess(t, w)
+
+	w = do(t, h, http.MethodGet, "/v1/history?path=Triage.md", nil, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var history protocol.HistoryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	var found *protocol.Revision
+	for i := range history.Revisions {
+		if history.Revisions[i].Commit == mutation.Revision {
+			found = &history.Revisions[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("history does not contain mutation revision %q", mutation.Revision)
+	}
+	if found.Device != "direct-agent" {
+		t.Errorf("history device = %q, want direct-agent", found.Device)
+	}
+	if found.Via != "api" {
+		t.Errorf("history via = %q, want api", found.Via)
+	}
+
+	message, err := r.Message(mutation.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, "Token: test") {
+		t.Errorf("commit message does not contain verified token label:\n%s", message)
+	}
+	if strings.Contains(message, "Token: direct-agent") {
+		t.Errorf("request device replaced verified token provenance:\n%s", message)
+	}
+}
+
 func TestAppendNoteRouteMapsTooLargeWithoutChangingFile(t *testing.T) {
 	h, v, _ := newServer(t)
 	before := []byte("start\n")
@@ -458,4 +617,38 @@ func requireVaultBytes(t *testing.T, v *vault.Vault, path string, want []byte) {
 	if string(got) != string(want) {
 		t.Errorf("%s bytes = %q, want %q", path, got, want)
 	}
+}
+
+type repeatedByteReader struct {
+	remaining int64
+	value     byte
+}
+
+func (r *repeatedByteReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if int64(n) > r.remaining {
+		n = int(r.remaining)
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	p[0] = r.value
+	for filled := 1; filled < n; {
+		filled += copy(p[filled:n], p[:filled])
+	}
+	r.remaining -= int64(n)
+	return n, nil
+}
+
+func doRawNoteMutation(t *testing.T, h http.Handler, path string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/personal"+path, body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
 }

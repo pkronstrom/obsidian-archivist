@@ -240,6 +240,7 @@ type AppendNoteRequest struct {
 	Path            string `json:"path"`
 	Content         string `json:"content"`
 	ContentRevision string `json:"content_revision,omitempty"`
+	Device          string `json:"device,omitempty"`
 }
 
 type EditNoteRequest struct {
@@ -247,6 +248,7 @@ type EditNoteRequest struct {
 	ContentRevision string `json:"content_revision"`
 	OldText         string `json:"old_text"`
 	NewText         string `json:"new_text"`
+	Device          string `json:"device,omitempty"`
 }
 
 type NoteMutationResponse struct {

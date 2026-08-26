@@ -223,6 +223,10 @@ func originOf(msg string) (device, via string) {
 	switch {
 	case strings.HasPrefix(first, "sync from "):
 		device = strings.TrimSpace(strings.TrimPrefix(first, "sync from "))
+	case strings.HasPrefix(first, "append from "):
+		device = strings.TrimSpace(strings.TrimPrefix(first, "append from "))
+	case strings.HasPrefix(first, "edit from "):
+		device = strings.TrimSpace(strings.TrimPrefix(first, "edit from "))
 	case strings.HasPrefix(first, "local edit"), strings.HasPrefix(first, "startup scan"),
 		strings.HasPrefix(first, "pin:"):
 		// Made in the vault directory rather than pushed by a client.

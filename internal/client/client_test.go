@@ -258,6 +258,7 @@ func TestAppendNotePostsTypedJSONAndDecodesBothRevisions(t *testing.T) {
 		}
 		writeJSON(w, response)
 	}).WithVault("personal")
+	c.device = ""
 
 	got, err := c.AppendNote(context.Background(), request)
 	if err != nil {
@@ -311,6 +312,7 @@ func TestEditNotePostsTypedJSONAndDecodesBothRevisions(t *testing.T) {
 		}
 		writeJSON(w, response)
 	}).WithVault("personal")
+	c.device = ""
 
 	got, err := c.EditNote(context.Background(), request)
 	if err != nil {
@@ -342,4 +344,59 @@ func TestEditNotePreservesStructuredStaleErrorCode(t *testing.T) {
 	if !IsCode(err, protocol.CodeStale) {
 		t.Errorf("err = %v, want IsCode(stale)", err)
 	}
+}
+
+func TestTypedNoteMutationClientsSendConfiguredDevice(t *testing.T) {
+	t.Run("append", func(t *testing.T) {
+		var received protocol.AppendNoteRequest
+		c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				writeJSON(w, protocol.HealthResponse{Status: "ok", Protocol: protocol.Version})
+				return
+			}
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(w, protocol.NoteMutationResponse{})
+		})
+		c.device = "configured-device"
+		c = c.WithVault("personal")
+
+		_, err := c.AppendNote(context.Background(), protocol.AppendNoteRequest{
+			Path: "Triage.md", Content: "after\n",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if received.Device != "configured-device" {
+			t.Errorf("device = %q, want configured-device", received.Device)
+		}
+	})
+
+	t.Run("edit", func(t *testing.T) {
+		var received protocol.EditNoteRequest
+		c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" {
+				writeJSON(w, protocol.HealthResponse{Status: "ok", Protocol: protocol.Version})
+				return
+			}
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatal(err)
+			}
+			writeJSON(w, protocol.NoteMutationResponse{})
+		})
+		c.device = "configured-device"
+		c = c.WithVault("personal")
+
+		_, err := c.EditNote(context.Background(), protocol.EditNoteRequest{
+			Path: "Triage.md", ContentRevision: "content-revision",
+			OldText: "target", NewText: "changed",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if received.Device != "configured-device" {
+			t.Errorf("device = %q, want configured-device", received.Device)
+		}
+	})
 }

@@ -543,14 +543,14 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	writeJSON(w, protocol.PushResponse{Head: head, Results: results})
 }
 
-func noteMutationOrigin(r *http.Request) reconcile.Origin {
+func noteMutationOrigin(r *http.Request, device string) reconcile.Origin {
 	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
 	via := r.Header.Get(protocol.HeaderVia)
 	if via == "" {
 		via = "api"
 	}
 	return reconcile.Origin{
-		Device: p.Label,
+		Device: device,
 		Token:  p.Label,
 		Via:    sanitiseVia(via),
 	}
@@ -565,8 +565,18 @@ func failNoteMutation(w http.ResponseWriter, err error) {
 	fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 }
 
+func failNoteMutationDecode(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		fail(w, http.StatusRequestEntityTooLarge, protocol.CodeTooLarge, "request body is too large")
+		return
+	}
+	fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+}
+
 func decodeOneJSON(body io.Reader, dst any) error {
 	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
@@ -582,15 +592,15 @@ func decodeOneJSON(body io.Reader, dst any) error {
 
 func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.AppendNoteRequest
-	if err := decodeOneJSON(r.Body, &req); err != nil {
-		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, protocol.MaxUploadBytes), &req); err != nil {
+		failNoteMutationDecode(w, err)
 		return
 	}
 	head, contentRevision, err := inst.Reconciler.AppendNote(
 		req.Path,
 		[]byte(req.Content),
 		req.ContentRevision,
-		noteMutationOrigin(r),
+		noteMutationOrigin(r, req.Device),
 	)
 	if err != nil {
 		failNoteMutation(w, err)
@@ -606,8 +616,8 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 
 func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.EditNoteRequest
-	if err := decodeOneJSON(r.Body, &req); err != nil {
-		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, protocol.MaxUploadBytes), &req); err != nil {
+		failNoteMutationDecode(w, err)
 		return
 	}
 	head, contentRevision, err := inst.Reconciler.EditNote(
@@ -615,7 +625,7 @@ func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.I
 		req.ContentRevision,
 		[]byte(req.OldText),
 		[]byte(req.NewText),
-		noteMutationOrigin(r),
+		noteMutationOrigin(r, req.Device),
 	)
 	if err != nil {
 		failNoteMutation(w, err)
