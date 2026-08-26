@@ -103,6 +103,17 @@ func TestPageCursorRejectsMalformedTokensWithTypedError(t *testing.T) {
 	}
 }
 
+func TestPageCursorEncodedLengthIsExactly23(t *testing.T) {
+	for _, length := range []int{0, 22, 24, math.MaxInt} {
+		if validNoteCursorEncodedLength(length) {
+			t.Errorf("length %d was accepted, want only 23", length)
+		}
+	}
+	if !validNoteCursorEncodedLength(23) {
+		t.Error("length 23 was rejected")
+	}
+}
+
 func TestPageCursorRejectsInvalidGitHashes(t *testing.T) {
 	for _, hash := range []string{
 		"",
@@ -283,6 +294,24 @@ func TestNotePageRejectsOutOfRangeAndMidRuneOffsets(t *testing.T) {
 func TestNotePageRejectsInvalidUTF8(t *testing.T) {
 	if _, err := pageNote([]byte{'a', 0xff, 'b'}, 0, 10); err == nil {
 		t.Fatal("invalid UTF-8 body was accepted")
+	}
+}
+
+func TestNotePageValidatesOnlyTheBoundedPage(t *testing.T) {
+	body := append([]byte("αβ"), 0xff)
+
+	first, err := pageNote(body, 0, 2)
+	if err != nil {
+		t.Fatalf("valid first page was rejected because of later bytes: %v", err)
+	}
+	if first.content != "αβ" || !first.hasMore {
+		t.Fatalf("first page = %+v, want valid content and hasMore", first)
+	}
+	if first.nextOffset != uint32(len([]byte("αβ"))) {
+		t.Fatalf("first next offset = %d, want %d", first.nextOffset, len([]byte("αβ")))
+	}
+	if _, err := pageNote(body, first.nextOffset, 1); err == nil {
+		t.Fatal("paging into invalid UTF-8 bytes succeeded")
 	}
 }
 

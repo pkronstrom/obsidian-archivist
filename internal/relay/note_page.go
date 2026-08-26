@@ -46,7 +46,15 @@ func encodeNoteCursor(contentHash string, offset uint32) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
+func validNoteCursorEncodedLength(n int) bool {
+	return n == base64.RawURLEncoding.EncodedLen(noteCursorBytes)
+}
+
 func decodeNoteCursor(token string) (noteCursor, error) {
+	if !validNoteCursorEncodedLength(len(token)) {
+		return noteCursor{}, fmt.Errorf("%w: encoded length is %d, want %d",
+			errInvalidCursor, len(token), base64.RawURLEncoding.EncodedLen(noteCursorBytes))
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
 		return noteCursor{}, fmt.Errorf("%w: malformed base64url", errInvalidCursor)
@@ -109,16 +117,17 @@ func pageNote(body []byte, start uint32, maxChars int) (notePage, error) {
 	if err != nil {
 		return notePage{}, err
 	}
-	if !utf8.Valid(body) {
-		return notePage{}, fmt.Errorf("note body is not valid UTF-8")
-	}
+
 	if start < uint32(len(body)) && !utf8.RuneStart(body[start]) {
 		return notePage{}, fmt.Errorf("%w: byte offset %d is not on a UTF-8 boundary", errInvalidCursor, start)
 	}
 
 	end := int(start)
 	for chars := 0; chars < maxChars && end < len(body); chars++ {
-		_, size := utf8.DecodeRune(body[end:])
+		r, size := utf8.DecodeRune(body[end:])
+		if r == utf8.RuneError && size == 1 {
+			return notePage{}, fmt.Errorf("note body is not valid UTF-8 at byte offset %d", end)
+		}
 		end += size
 	}
 
