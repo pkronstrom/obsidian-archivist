@@ -14,6 +14,15 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
+func mustValidateNoteText(t *testing.T, body []byte) validatedNote {
+	t.Helper()
+	note, err := validateNoteText(body)
+	if err != nil {
+		t.Fatalf("validateNoteText: %v", err)
+	}
+	return note
+}
+
 func TestPageCursorIsShortURLSafeAndDeterministic(t *testing.T) {
 	hash := "000102030405060708090a0b0c0d0e0f10111213"
 	const offset = uint32(0x89abcdef)
@@ -169,6 +178,7 @@ func TestPageCursorDetectsChangedContentAsStale(t *testing.T) {
 
 func TestPageCursorOffsetBeyondBodyIsInvalid(t *testing.T) {
 	body := []byte("short")
+	note := mustValidateNoteText(t, body)
 	token, err := encodeNoteCursor(protocol.HashContent(body), uint32(len(body)+1))
 	if err != nil {
 		t.Fatal(err)
@@ -177,14 +187,15 @@ func TestPageCursorOffsetBeyondBodyIsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pageNote(body, cursor.offset, 10); !errors.Is(err, errInvalidCursor) {
+	if _, err := pageNote(note, cursor.offset, 10); !errors.Is(err, errInvalidCursor) {
 		t.Fatalf("pageNote error = %v, want errInvalidCursor", err)
 	}
 }
 
 func TestNotePageCountsUnicodeCodePointsAndEndsOnBoundary(t *testing.T) {
 	body := []byte("aβ🙂界z")
-	page, err := pageNote(body, 0, 4)
+	note := mustValidateNoteText(t, body)
+	page, err := pageNote(note, 0, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +218,7 @@ func TestNotePageCountsUnicodeCodePointsAndEndsOnBoundary(t *testing.T) {
 
 func TestNotePagesConcatenateExactlyAcrossChangingSizes(t *testing.T) {
 	body := []byte("Aβ🙂\nsecond 界 line\n끝")
+	note := mustValidateNoteText(t, body)
 	sizes := []int{1, 4, 2, 5, 3}
 	var joined []byte
 	var start uint32
@@ -216,7 +228,7 @@ func TestNotePagesConcatenateExactlyAcrossChangingSizes(t *testing.T) {
 			t.Fatal("pagination did not terminate")
 		}
 		maxChars := sizes[pageNumber%len(sizes)]
-		page, err := pageNote(body, start, maxChars)
+		page, err := pageNote(note, start, maxChars)
 		if err != nil {
 			t.Fatalf("page %d: %v", pageNumber, err)
 		}
@@ -263,7 +275,8 @@ func TestNotePageAtEmptyBodyOrEndIsEmpty(t *testing.T) {
 		{name: "end of body", body: []byte("aβ"), start: uint32(len([]byte("aβ")))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			page, err := pageNote(tc.body, tc.start, 10)
+			note := mustValidateNoteText(t, tc.body)
+			page, err := pageNote(note, tc.start, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -276,6 +289,7 @@ func TestNotePageAtEmptyBodyOrEndIsEmpty(t *testing.T) {
 
 func TestNotePageRejectsOutOfRangeAndMidRuneOffsets(t *testing.T) {
 	body := []byte("aβc")
+	note := mustValidateNoteText(t, body)
 	for _, tc := range []struct {
 		name   string
 		offset uint32
@@ -284,25 +298,35 @@ func TestNotePageRejectsOutOfRangeAndMidRuneOffsets(t *testing.T) {
 		{name: "middle of beta", offset: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := pageNote(body, tc.offset, 1); !errors.Is(err, errInvalidCursor) {
+			if _, err := pageNote(note, tc.offset, 1); !errors.Is(err, errInvalidCursor) {
 				t.Fatalf("pageNote error = %v, want errInvalidCursor", err)
 			}
 		})
 	}
 }
 
-func TestNotePageRejectsInvalidUTF8(t *testing.T) {
-	if _, err := pageNote([]byte{'a', 0xff, 'b'}, 0, 10); err == nil {
-		t.Fatal("invalid UTF-8 body was accepted")
+func TestValidateNoteTextRejectsInvalidUTF8Anywhere(t *testing.T) {
+	body := append([]byte(strings.Repeat("valid ", 100)), 0xff)
+	if _, err := validateNoteText(body); err == nil {
+		t.Fatal("invalid UTF-8 beyond the first page was accepted as text")
 	}
 }
 
-func TestNotePageValidatesOnlyTheBoundedPage(t *testing.T) {
-	body := append([]byte("αβ"), 0xff)
+func TestValidateNoteTextRejectsNULAnywhere(t *testing.T) {
+	body := append([]byte(strings.Repeat("valid ", 100)), 0)
+	if _, err := validateNoteText(body); err == nil {
+		t.Fatal("NUL beyond the first page was accepted as text")
+	}
+}
 
-	first, err := pageNote(body, 0, 2)
+func TestNotePageWalksOnlyBoundedPartOfValidatedSnapshot(t *testing.T) {
+	body := []byte("αβx")
+	note := mustValidateNoteText(t, body)
+	body[len([]byte("αβ"))] = 0xff
+
+	first, err := pageNote(note, 0, 2)
 	if err != nil {
-		t.Fatalf("valid first page was rejected because of later bytes: %v", err)
+		t.Fatalf("bounded first page inspected later bytes: %v", err)
 	}
 	if first.content != "αβ" || !first.hasMore {
 		t.Fatalf("first page = %+v, want valid content and hasMore", first)
@@ -310,7 +334,7 @@ func TestNotePageValidatesOnlyTheBoundedPage(t *testing.T) {
 	if first.nextOffset != uint32(len([]byte("αβ"))) {
 		t.Fatalf("first next offset = %d, want %d", first.nextOffset, len([]byte("αβ")))
 	}
-	if _, err := pageNote(body, first.nextOffset, 1); err == nil {
+	if _, err := pageNote(note, first.nextOffset, 1); err == nil {
 		t.Fatal("paging into invalid UTF-8 bytes succeeded")
 	}
 }
@@ -339,6 +363,7 @@ func TestNotePageOffsetGuardRejectsValuesBeyondUint32WithoutAllocating(t *testin
 
 func TestNotePageStartLineIsOneBased(t *testing.T) {
 	body := []byte("first\nβeta\nthird\nlast")
+	_ = mustValidateNoteText(t, body)
 	for _, tc := range []struct {
 		line int
 		want uint32
@@ -360,6 +385,7 @@ func TestNotePageStartLineIsOneBased(t *testing.T) {
 
 func TestNotePageLineAfterTrailingNewlineIsValid(t *testing.T) {
 	body := []byte("first\n")
+	note := mustValidateNoteText(t, body)
 	got, err := offsetForLine(body, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +393,7 @@ func TestNotePageLineAfterTrailingNewlineIsValid(t *testing.T) {
 	if got != uint32(len(body)) {
 		t.Errorf("line 2 offset = %d, want EOF offset %d", got, len(body))
 	}
-	page, err := pageNote(body, got, 10)
+	page, err := pageNote(note, got, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,6 +415,7 @@ func TestNotePageRejectsNonPositiveOrBeyondLastLine(t *testing.T) {
 		{name: "after sole empty line", body: nil, line: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			_ = mustValidateNoteText(t, tc.body)
 			if _, err := offsetForLine(tc.body, tc.line); err == nil {
 				t.Fatalf("offsetForLine(%q, %d) succeeded", tc.body, tc.line)
 			}

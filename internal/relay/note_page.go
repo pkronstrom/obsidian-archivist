@@ -33,6 +33,10 @@ type notePage struct {
 	hasMore    bool
 }
 
+type validatedNote struct {
+	body []byte
+}
+
 func encodeNoteCursor(contentHash string, offset uint32) (string, error) {
 	prefix, err := noteHashPrefix(contentHash)
 	if err != nil {
@@ -109,7 +113,22 @@ func checkedNoteOffset(bodyLen, offset uint64) (uint32, error) {
 	return uint32(offset), nil
 }
 
-func pageNote(body []byte, start uint32, maxChars int) (notePage, error) {
+func validateNoteText(body []byte) (validatedNote, error) {
+	for offset := 0; offset < len(body); {
+		if body[offset] == 0 {
+			return validatedNote{}, fmt.Errorf("note body contains NUL at byte offset %d", offset)
+		}
+		r, size := utf8.DecodeRune(body[offset:])
+		if r == utf8.RuneError && size == 1 {
+			return validatedNote{}, fmt.Errorf("note body is not valid UTF-8 at byte offset %d", offset)
+		}
+		offset += size
+	}
+	return validatedNote{body: body}, nil
+}
+
+func pageNote(note validatedNote, start uint32, maxChars int) (notePage, error) {
+	body := note.body
 	if maxChars <= 0 {
 		return notePage{}, fmt.Errorf("max_chars must be positive")
 	}
