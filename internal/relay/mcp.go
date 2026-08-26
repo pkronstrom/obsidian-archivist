@@ -463,7 +463,9 @@ func pageReadNote(body []byte, repositoryRevision string, in readInput) (readOut
 
 	note, err := validateNoteText(body)
 	if err != nil {
-		return readOutput{}, err
+		return readOutput{}, fmt.Errorf(
+			"%s is not a text file (%d bytes); read_note only returns text. "+
+				"Use read_attachment to get it as base64: %w", in.Path, len(body), err)
 	}
 	contentRevision := protocol.HashContent(body)
 

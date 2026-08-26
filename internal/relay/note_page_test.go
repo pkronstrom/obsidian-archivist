@@ -432,3 +432,26 @@ func TestNotePageRejectsNonPositiveOrBeyondLastLine(t *testing.T) {
 		})
 	}
 }
+
+func TestReadNotePageWholeBodyTextRefusalKeepsAttachmentGuidance(t *testing.T) {
+	validPrefix := []byte(strings.Repeat("a", 8_001))
+	for _, tc := range []struct {
+		name string
+		tail byte
+	}{
+		{name: "NUL after binary heuristic window", tail: 0},
+		{name: "invalid UTF-8 after binary heuristic window", tail: 0xff},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := append(append([]byte(nil), validPrefix...), tc.tail)
+			_, err := pageReadNote(body, "repository-revision", readInput{Path: "notes/raw.md"})
+			if err == nil {
+				t.Fatal("pageReadNote returned a page from an invalid text snapshot")
+			}
+			if got := err.Error(); !strings.Contains(got, "read_attachment") ||
+				!strings.Contains(got, "read_note only returns text") {
+				t.Fatalf("refusal = %q, want read_note text refusal with read_attachment guidance", got)
+			}
+		})
+	}
+}
