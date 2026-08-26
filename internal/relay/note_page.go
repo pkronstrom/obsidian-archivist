@@ -160,15 +160,13 @@ func pageNote(note validatedNote, start uint32, maxChars int) (notePage, error) 
 	}, nil
 }
 
-func offsetForLine(body []byte, line int) (uint32, error) {
+func offsetForLine(note validatedNote, line int) (uint32, error) {
+	body := note.body
 	if line < 1 {
 		return 0, fmt.Errorf("start_line must be one-based")
 	}
 	if _, err := checkedNoteOffset(uint64(len(body)), 0); err != nil {
 		return 0, err
-	}
-	if !utf8.Valid(body) {
-		return 0, fmt.Errorf("note body is not valid UTF-8")
 	}
 	if line == 1 {
 		return 0, nil

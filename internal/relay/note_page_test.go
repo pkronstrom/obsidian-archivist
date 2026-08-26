@@ -373,7 +373,7 @@ func TestNotePageOffsetGuardRejectsValuesBeyondUint32WithoutAllocating(t *testin
 
 func TestNotePageStartLineIsOneBased(t *testing.T) {
 	body := []byte("first\nβeta\nthird\nlast")
-	_ = mustValidateNoteText(t, body)
+	note := mustValidateNoteText(t, body)
 	for _, tc := range []struct {
 		line int
 		want uint32
@@ -383,7 +383,7 @@ func TestNotePageStartLineIsOneBased(t *testing.T) {
 		{line: 3, want: uint32(len([]byte("first\nβeta\n")))},
 		{line: 4, want: uint32(len([]byte("first\nβeta\nthird\n")))},
 	} {
-		got, err := offsetForLine(body, tc.line)
+		got, err := offsetForLine(note, tc.line)
 		if err != nil {
 			t.Fatalf("offsetForLine(line %d): %v", tc.line, err)
 		}
@@ -396,7 +396,7 @@ func TestNotePageStartLineIsOneBased(t *testing.T) {
 func TestNotePageLineAfterTrailingNewlineIsValid(t *testing.T) {
 	body := []byte("first\n")
 	note := mustValidateNoteText(t, body)
-	got, err := offsetForLine(body, 2)
+	got, err := offsetForLine(note, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,8 +425,8 @@ func TestNotePageRejectsNonPositiveOrBeyondLastLine(t *testing.T) {
 		{name: "after sole empty line", body: nil, line: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_ = mustValidateNoteText(t, tc.body)
-			if _, err := offsetForLine(tc.body, tc.line); err == nil {
+			note := mustValidateNoteText(t, tc.body)
+			if _, err := offsetForLine(note, tc.line); err == nil {
 				t.Fatalf("offsetForLine(%q, %d) succeeded", tc.body, tc.line)
 			}
 		})

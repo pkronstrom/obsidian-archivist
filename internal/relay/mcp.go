@@ -11,6 +11,7 @@ package relay
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -60,7 +61,8 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "read_note",
 		Description: "Read the current content of one note by its vault path, " +
-			"e.g. 'notes/idea.md'.",
+			"e.g. 'notes/idea.md'. Returns at most 16,000 Unicode characters by " +
+			"default; when has_more is true, pass next_cursor as cursor to continue.",
 	}, readNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -120,7 +122,8 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "read_note_at",
 		Description: "Read a note as it was at a past revision. This does not " +
-			"restore or modify anything.",
+			"restore or modify anything. Returns at most 16,000 Unicode characters " +
+			"by default; when has_more is true, pass next_cursor as cursor to continue.",
 	}, readNoteAt(c))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -405,16 +408,26 @@ type pathInput struct {
 	Path  string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 }
 
-type readOutput struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-	// Revision is the vault revision this content was read at. Pass it back as
-	// write_note's `revision` to edit safely; see writeInput.
-	Revision string `json:"revision,omitempty"`
+type readInput struct {
+	Vault     string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path      string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
+	StartLine *int   `json:"start_line,omitempty" jsonschema:"one-based line to start at; valid only on the initial call without cursor"`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"next_cursor from the preceding page; mutually exclusive with start_line"`
+	MaxChars  *int   `json:"max_chars,omitempty" jsonschema:"maximum Unicode code points to return, default 16000, maximum 100000"`
 }
 
-func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in pathInput) (*mcp.CallToolResult, readOutput, error) {
+type readOutput struct {
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	Revision        string `json:"revision,omitempty"`
+	ContentRevision string `json:"content_revision"`
+	HasMore         bool   `json:"has_more"`
+	NextCursor      string `json:"next_cursor,omitempty"`
+	Note            string `json:"note,omitempty"`
+}
+
+func readNote(c *client.Client) mcp.ToolHandlerFor[readInput, readOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in readInput) (*mcp.CallToolResult, readOutput, error) {
 		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, readOutput{}, fmt.Errorf("path is required")
@@ -430,8 +443,76 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[pathInput, readOutput] {
 				"%s is a binary file (%d bytes); read_note only returns text. "+
 					"Use read_attachment to get it as base64", in.Path, len(body))
 		}
-		return nil, readOutput{Path: in.Path, Content: string(body), Revision: base}, nil
+		out, err := pageReadNote(body, base, in)
+		return nil, out, err
 	}
+}
+
+func pageReadNote(body []byte, repositoryRevision string, in readInput) (readOutput, error) {
+	if in.Cursor != "" && in.StartLine != nil {
+		return readOutput{}, fmt.Errorf("cursor and start_line are mutually exclusive")
+	}
+
+	maxChars := defaultNoteChars
+	if in.MaxChars != nil {
+		maxChars = *in.MaxChars
+		if maxChars <= 0 || maxChars > maxNoteChars {
+			return readOutput{}, fmt.Errorf("max_chars must be between 1 and %d", maxNoteChars)
+		}
+	}
+
+	note, err := validateNoteText(body)
+	if err != nil {
+		return readOutput{}, err
+	}
+	contentRevision := protocol.HashContent(body)
+
+	var start uint32
+	if in.Cursor != "" {
+		cursor, err := decodeNoteCursor(in.Cursor)
+		if err != nil {
+			return readOutput{}, fmt.Errorf("invalid_cursor: %w", err)
+		}
+		if err := validateNoteCursor(cursor, contentRevision); err != nil {
+			if errors.Is(err, errStaleCursor) {
+				return readOutput{}, fmt.Errorf("stale_cursor: %w", err)
+			}
+			return readOutput{}, fmt.Errorf("invalid_cursor: %w", err)
+		}
+		start = cursor.offset
+	} else {
+		line := 1
+		if in.StartLine != nil {
+			line = *in.StartLine
+		}
+		start, err = offsetForLine(note, line)
+		if err != nil {
+			return readOutput{}, err
+		}
+	}
+
+	page, err := pageNote(note, start, maxChars)
+	if err != nil {
+		if errors.Is(err, errInvalidCursor) {
+			return readOutput{}, fmt.Errorf("invalid_cursor: %w", err)
+		}
+		return readOutput{}, err
+	}
+	out := readOutput{
+		Path:            in.Path,
+		Content:         page.content,
+		Revision:        repositoryRevision,
+		ContentRevision: contentRevision,
+		HasMore:         page.hasMore,
+	}
+	if page.hasMore {
+		out.NextCursor, err = encodeNoteCursor(contentRevision, page.nextOffset)
+		if err != nil {
+			return readOutput{}, fmt.Errorf("invalid_cursor: %w", err)
+		}
+		out.Note = "pass next_cursor as cursor to continue"
+	}
+	return out, nil
 }
 
 type writeInput struct {
@@ -759,9 +840,12 @@ func noteHistory(c *client.Client) mcp.ToolHandlerFor[historyInput, historyOutpu
 }
 
 type readAtInput struct {
-	Vault    string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
-	Path     string `json:"path" jsonschema:"vault-relative path"`
-	Revision string `json:"revision" jsonschema:"a revision from note_history, e.g. '4f3538ca'"`
+	Vault     string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path      string `json:"path" jsonschema:"vault-relative path"`
+	Revision  string `json:"revision" jsonschema:"a revision from note_history, e.g. '4f3538ca'"`
+	StartLine *int   `json:"start_line,omitempty" jsonschema:"one-based line to start at; valid only on the initial call without cursor"`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"next_cursor from the preceding page; mutually exclusive with start_line"`
+	MaxChars  *int   `json:"max_chars,omitempty" jsonschema:"maximum Unicode code points to return, default 16000, maximum 100000"`
 }
 
 func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
@@ -774,7 +858,16 @@ func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
 		if err != nil {
 			return nil, readOutput{}, err
 		}
-		return nil, readOutput{Path: in.Path, Content: string(body)}, nil
+		if isBinary(body) {
+			return nil, readOutput{}, fmt.Errorf(
+				"%s is a binary file (%d bytes); read_note_at only returns text. "+
+					"Use read_attachment to get the current file as base64", in.Path, len(body))
+		}
+		out, err := pageReadNote(body, in.Revision, readInput{
+			Vault: in.Vault, Path: in.Path, StartLine: in.StartLine,
+			Cursor: in.Cursor, MaxChars: in.MaxChars,
+		})
+		return nil, out, err
 	}
 }
 
