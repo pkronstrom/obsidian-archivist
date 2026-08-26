@@ -47,12 +47,14 @@ The `mcp-client` profile has read and write but no delete scope.
 | `list_vaults` | read | list the vaults this token opens |
 | `list_notes` | read | list notes and attachments, cursor-paged |
 | `list_folders` | read | map folders and file counts |
-| `read_note` | read | read current Markdown and its revision |
+| `read_note` | read | page current Markdown with repository and content revisions |
 | `search_notes` | read | search content and paths |
 | `note_history` | read | list revisions of one note |
-| `read_note_at` | read | read a historical revision without restoring |
+| `read_note_at` | read | page a historical text revision without restoring |
 | `read_attachment` | read | read binary content as base64 |
-| `write_note` | write | write only if the supplied revision is current |
+| `write_note` | write | replace the whole document if its repository revision is current |
+| `append_note` | write | atomically append to existing text, optionally guarded by content revision |
+| `edit_note` | write | replace one unique literal match using a required content revision |
 | `write_attachment` | write | write base64 content with the same stale check |
 | `move_note` | write | move or rename without delete scope |
 | `delete_note` | delete | delete a path |
@@ -61,8 +63,25 @@ The `mcp-client` profile has read and write but no delete scope.
 Every tool accepts an optional `vault`. Omit it when the token opens exactly one
 vault. If it opens several, call `list_vaults` and name one explicitly.
 
-`read_note` returns the revision that `write_note` expects. Passing it prevents
-a stale agent from overwriting a change that landed after its read.
+### Large notes and safe updates
+
+`read_note` and `read_note_at` return at most 16,000 Unicode characters by
+default; set `max_chars` up to 100,000. Start at `start_line`, then, while
+`has_more` is true, pass `next_cursor` back as `cursor`. Continuation refuses
+rather than mix content if the note changed or moved.
+
+For a targeted update, use `search_notes` → `read_note(start_line, max_chars)` →
+`edit_note(path, content_revision, old_text, new_text)`. The repository
+`revision` identifies the snapshot and guards whole-document `write_note`;
+`content_revision` identifies the exact note body and guards `edit_note` and,
+when supplied, `append_note`. `edit_note` requires one unique literal
+`old_text` match and refuses stale content or a moved path.
+
+`append_note` works only on existing text notes and is atomic. Supply
+`content_revision` for a guarded append; omit it only for an intentional blind
+append to the current content. Mutation requests are limited to 16 MiB,
+separately from the 512 MiB resulting-note limit. Historical reads support text
+only; historical non-text attachments are unavailable.
 
 ## Edit notes on the server or web
 
