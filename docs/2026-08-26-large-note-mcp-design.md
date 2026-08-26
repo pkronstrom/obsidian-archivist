@@ -193,6 +193,8 @@ Mutations must not be implemented as relay-side read/concatenate/write sequences
 
 The client package exposes typed methods for those server operations. MCP handlers remain thin adapters that select the vault, validate tool-level input, call the client, and map protocol results.
 
+The JSON request body for each append or edit is capped at 16 MiB. This transport cap is distinct from the 512 MiB resulting-note cap: MCP mutations are targeted fragments and must not become an unbounded whole-note upload path. A body over the request cap is refused with HTTP 413 and `too_large` before the mutation runs.
+
 ## Errors
 
 Stable machine-readable codes:

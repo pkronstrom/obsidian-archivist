@@ -574,6 +574,8 @@ func failNoteMutationDecode(w http.ResponseWriter, err error) {
 	fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 }
 
+const maxNoteMutationRequestBytes = 16 << 20
+
 func decodeOneJSON(body io.Reader, dst any) error {
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
@@ -592,7 +594,7 @@ func decodeOneJSON(body io.Reader, dst any) error {
 
 func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.AppendNoteRequest
-	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, protocol.MaxUploadBytes), &req); err != nil {
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxNoteMutationRequestBytes), &req); err != nil {
 		failNoteMutationDecode(w, err)
 		return
 	}
@@ -616,7 +618,7 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 
 func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.EditNoteRequest
-	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, protocol.MaxUploadBytes), &req); err != nil {
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxNoteMutationRequestBytes), &req); err != nil {
 		failNoteMutationDecode(w, err)
 		return
 	}

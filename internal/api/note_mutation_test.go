@@ -373,6 +373,7 @@ func TestNoteMutationRoutesRejectUnknownFieldsWithoutChangingState(t *testing.T)
 }
 
 func TestNoteMutationRoutesRejectOverLimitStreamingBodiesWithoutChangingState(t *testing.T) {
+	const requestLimit = 16 << 20
 	routes := []struct {
 		name string
 		path string
@@ -408,7 +409,7 @@ func TestNoteMutationRoutesRejectOverLimitStreamingBodiesWithoutChangingState(t 
 			if err != nil {
 				t.Fatal(err)
 			}
-			padding := int64(protocol.MaxUploadBytes) + 1 - int64(len(body))
+			padding := int64(requestLimit) + 1 - int64(len(body))
 			reader := io.MultiReader(
 				strings.NewReader(string(body)),
 				&repeatedByteReader{remaining: padding, value: ' '},
