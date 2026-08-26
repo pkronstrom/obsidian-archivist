@@ -26,7 +26,7 @@ func TestAppendNoteAppendsToExistingNoteAndReturnsRevisions(t *testing.T) {
 	_, head, contentHash, err := rc.AppendNote("Triage.md",
 		[]byte("after\n"),
 		revision,
-		Origin{Device: "agent", Via: "mcp"},)
+		Origin{Device: "agent", Via: "mcp"})
 	if err != nil {
 		t.Fatalf("AppendNote: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestAppendNoteRefusesMissingPath(t *testing.T) {
 	_, _, _, err := rc.AppendNote("missing.md",
 		[]byte("new\n"),
 		"",
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "missing.md", head)
 	assertNoteAtHead(t, v, r, "kept.md", []byte("kept\n"), head)
@@ -55,7 +55,7 @@ func TestAppendNoteRequiresFullCurrentBlobWhenGuarded(t *testing.T) {
 	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("after\n"),
 		revision[:12],
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeStale)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -68,7 +68,7 @@ func TestAppendNoteRefusesEmptySuffix(t *testing.T) {
 	_, _, _, err := rc.AppendNote("Triage.md",
 		nil,
 		revision,
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -152,7 +152,7 @@ func TestAppendNoteRefusesNonTextCurrentFile(t *testing.T) {
 			_, _, _, err := rc.AppendNote("Triage.md",
 				[]byte("suffix\n"),
 				revision,
-				Origin{Device: "agent"},)
+				Origin{Device: "agent"})
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", tt.body, head)
 		})
@@ -177,7 +177,7 @@ func TestAppendNoteRefusesNonTextSuffix(t *testing.T) {
 			_, _, _, err := rc.AppendNote("Triage.md",
 				tt.suffix,
 				revision,
-				Origin{Device: "agent"},)
+				Origin{Device: "agent"})
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", body, head)
 		})
@@ -193,7 +193,7 @@ func TestAppendNoteRestoresContentWhenCommitFails(t *testing.T) {
 	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	restoreRepo()
 	if err == nil {
 		t.Fatal("AppendNote succeeded despite the broken repository index")
@@ -209,7 +209,7 @@ func TestAppendNoteRefusesNULAfterSniffPrefix(t *testing.T) {
 	_, _, _, err := rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeNotText)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -237,7 +237,7 @@ func TestAppendNotePreflightsOversizedExistingFile(t *testing.T) {
 	_, _, _, err = rc.AppendNote("Triage.md",
 		[]byte("suffix\n"),
 		"",
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeTooLarge)
 	assertSparseNoteAtHead(
 		t,
@@ -262,7 +262,7 @@ func TestEditNoteReplacesOneExactMatchAndReturnsRevisions(t *testing.T) {
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent", Via: "mcp"},)
+		Origin{Device: "agent", Via: "mcp"})
 	if err != nil {
 		t.Fatalf("EditNote: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestEditNoteRequiresRevision(t *testing.T) {
 		"",
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -292,7 +292,7 @@ func TestEditNoteRequiresFullCurrentBlob(t *testing.T) {
 		revision[:12],
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeStale)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -306,7 +306,7 @@ func TestEditNoteRefusesEmptyOldText(t *testing.T) {
 		revision,
 		nil,
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -320,7 +320,7 @@ func TestEditNoteRefusesZeroMatches(t *testing.T) {
 		revision,
 		[]byte("missing"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeNoMatch)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -334,7 +334,7 @@ func TestEditNoteRefusesMultipleMatches(t *testing.T) {
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -348,7 +348,7 @@ func TestEditNoteRefusesOverlappingMatches(t *testing.T) {
 		revision,
 		[]byte("aa"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMultipleMatches)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -362,7 +362,7 @@ func TestEditNoteRefusesNoOpReplacement(t *testing.T) {
 		revision,
 		[]byte("target"),
 		[]byte("target"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeMalformed)
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
@@ -385,7 +385,7 @@ func TestEditNoteRefusesNonTextCurrentFile(t *testing.T) {
 				revision,
 				[]byte("target"),
 				[]byte("changed"),
-				Origin{Device: "agent"},)
+				Origin{Device: "agent"})
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", tt.body, head)
 		})
@@ -411,7 +411,7 @@ func TestEditNoteRefusesNonTextReplacement(t *testing.T) {
 				revision,
 				[]byte("target"),
 				tt.newText,
-				Origin{Device: "agent"},)
+				Origin{Device: "agent"})
 			requireProtocolCode(t, err, protocol.CodeNotText)
 			assertNoteAtHead(t, v, r, "Triage.md", body, head)
 		})
@@ -428,7 +428,7 @@ func TestEditNoteRestoresContentWhenCommitFails(t *testing.T) {
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	restoreRepo()
 	if err == nil {
 		t.Fatal("EditNote succeeded despite the broken repository index")
@@ -458,7 +458,7 @@ func TestEditAndAppendDoNotRecreateMovedSource(t *testing.T) {
 		revision,
 		[]byte("target"),
 		[]byte("changed"),
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "old.md", movedHead)
 	assertNoteAtHead(t, v, r, "new.md", body, movedHead)
@@ -466,7 +466,7 @@ func TestEditAndAppendDoNotRecreateMovedSource(t *testing.T) {
 	_, _, _, err = rc.AppendNote("old.md",
 		[]byte("suffix\n"),
 		revision,
-		Origin{Device: "agent"},)
+		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeNotFound)
 	assertMissingPathAtHead(t, v, r, "old.md", movedHead)
 	assertNoteAtHead(t, v, r, "new.md", body, movedHead)
