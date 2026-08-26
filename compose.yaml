@@ -47,7 +47,11 @@ services:
       # macOS writes a filename containing "ä" decomposed and iOS writes it
       # composed; on Linux those are two different paths. Without this the same
       # note arrives twice, or two devices rename it back and forth forever.
-      # It MODIFIES filenames on disk, which is why it is opt-in.
+      #
+      # It composes the paths of INCOMING changes, so every writer converges on
+      # one spelling. It renames nothing already on disk: a vault that already
+      # holds both spellings keeps both until you pick a winner. On by default
+      # because it prevents the problem and touches no existing file.
       - ARCHIVIST_NORMALIZE_NFC=${ARCHIVIST_NORMALIZE_NFC:-true}
 
       # How long a file must sit quiet before a filesystem edit is committed.
