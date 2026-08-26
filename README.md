@@ -13,6 +13,19 @@ normal directory, with every change kept in git history.
 The directory on the server is the real vault, not a cache or export. Tools on
 that machine can search, read, edit, serve and back up the same files.
 
+## What it does
+
+| Feature | What it means |
+|---|---|
+| **Live sync** | Desktop and mobile, a few seconds after you stop typing. |
+| **Files stay files** | Markdown, images and PDFs in a normal directory. Nothing to export. |
+| **Full history** | Every change is a commit. Browse a note's revisions and open any one beside the current version. |
+| **Undelete** | A note deleted last week is still in history, with the revision to restore it from. |
+| **Conflicts keep both sides** | Two devices editing the same note produces a merge, or both versions plus an explanation. Nothing is silently overwritten. |
+| **Scoped device tokens** | Each device and agent gets its own token, limited to named vaults and revocable on its own. |
+| **Agent access** | The relay exposes the vault to Claude Code and other MCP clients, with the same tokens and the same history. |
+| **`.local` never syncs** | Any file named `notes.local.md`, or anything under a `scratch.local/` folder, stays on the device that made it. |
+
 ## Quick start
 
 This starts one vault named `personal` on your current computer. You need Git,
