@@ -144,6 +144,9 @@ func pageNote(note validatedNote, start uint32, maxChars int) (notePage, error) 
 	end := int(start)
 	for chars := 0; chars < maxChars && end < len(body); chars++ {
 		r, size := utf8.DecodeRune(body[end:])
+		if r == 0 {
+			return notePage{}, fmt.Errorf("note body contains NUL at byte offset %d", end)
+		}
 		if r == utf8.RuneError && size == 1 {
 			return notePage{}, fmt.Errorf("note body is not valid UTF-8 at byte offset %d", end)
 		}

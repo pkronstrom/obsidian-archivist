@@ -320,22 +320,32 @@ func TestValidateNoteTextRejectsNULAnywhere(t *testing.T) {
 }
 
 func TestNotePageWalksOnlyBoundedPartOfValidatedSnapshot(t *testing.T) {
-	body := []byte("αβx")
-	note := mustValidateNoteText(t, body)
-	body[len([]byte("αβ"))] = 0xff
+	for _, tc := range []struct {
+		name string
+		bad  byte
+	}{
+		{name: "invalid UTF-8", bad: 0xff},
+		{name: "NUL", bad: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte("αβx")
+			note := mustValidateNoteText(t, body)
+			body[len([]byte("αβ"))] = tc.bad
 
-	first, err := pageNote(note, 0, 2)
-	if err != nil {
-		t.Fatalf("bounded first page inspected later bytes: %v", err)
-	}
-	if first.content != "αβ" || !first.hasMore {
-		t.Fatalf("first page = %+v, want valid content and hasMore", first)
-	}
-	if first.nextOffset != uint32(len([]byte("αβ"))) {
-		t.Fatalf("first next offset = %d, want %d", first.nextOffset, len([]byte("αβ")))
-	}
-	if _, err := pageNote(note, first.nextOffset, 1); err == nil {
-		t.Fatal("paging into invalid UTF-8 bytes succeeded")
+			first, err := pageNote(note, 0, 2)
+			if err != nil {
+				t.Fatalf("bounded first page inspected later bytes: %v", err)
+			}
+			if first.content != "αβ" || !first.hasMore {
+				t.Fatalf("first page = %+v, want valid content and hasMore", first)
+			}
+			if first.nextOffset != uint32(len([]byte("αβ"))) {
+				t.Fatalf("first next offset = %d, want %d", first.nextOffset, len([]byte("αβ")))
+			}
+			if _, err := pageNote(note, first.nextOffset, 1); err == nil {
+				t.Fatalf("paging into post-validation %s byte succeeded", tc.name)
+			}
+		})
 	}
 }
 
