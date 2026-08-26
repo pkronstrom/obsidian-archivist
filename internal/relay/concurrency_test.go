@@ -57,11 +57,22 @@ func TestMCPReadEditWriteDoesNotLoseAConcurrentEdit(t *testing.T) {
 	concurrentEdit(t, c, strings.Replace(doc, "line5", "line5 THEIRS", 1))
 
 	// The agent writes its edit back, echoing the revision.
-	call(t, cs, "write_note", map[string]any{
+	writeResult := call(t, cs, "write_note", map[string]any{
 		"path":     "n.md",
 		"content":  strings.Replace(doc, "line1", "line1 MINE", 1),
 		"revision": rev,
 	})
+	if writeResult.IsError {
+		t.Fatalf("write_note failed: %s", text(writeResult))
+	}
+	var out struct {
+		Status          string `json:"status"`
+		Revision        string `json:"revision"`
+		ContentRevision string `json:"content_revision"`
+	}
+	if err := json.Unmarshal([]byte(text(writeResult)), &out); err != nil {
+		t.Fatalf("decode write_note result: %v (%s)", err, text(writeResult))
+	}
 
 	final, _ := c.Read(ctx, "n.md")
 	if !strings.Contains(string(final), "THEIRS") {
@@ -69,6 +80,19 @@ func TestMCPReadEditWriteDoesNotLoseAConcurrentEdit(t *testing.T) {
 	}
 	if !strings.Contains(string(final), "MINE") {
 		t.Errorf("the agent's own edit is gone: %q", final)
+	}
+	if out.Status != protocol.StatusMerged {
+		t.Errorf("status = %q, want merged", out.Status)
+	}
+	head, err := c.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Revision != head || out.Revision == "" {
+		t.Errorf("revision = %q, want merge commit head %q", out.Revision, head)
+	}
+	if want := protocol.HashContent(final); out.ContentRevision != want || len(out.ContentRevision) != 40 {
+		t.Errorf("content_revision = %q, want merged stored-path hash %q", out.ContentRevision, want)
 	}
 }
 

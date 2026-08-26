@@ -311,3 +311,227 @@ func TestReadNoteAtPagesHistoricalContentAndIgnoresCurrentChanges(t *testing.T) 
 	}
 	t.Fatal("read_note_at still had more content after the changing page-size sequence")
 }
+
+func noteMutation(t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) protocol.NoteMutationResponse {
+	t.Helper()
+	res := call(t, cs, tool, args)
+	if res.IsError {
+		t.Fatalf("%s returned an MCP error: %s", tool, text(res))
+	}
+	var out protocol.NoteMutationResponse
+	if err := json.Unmarshal([]byte(text(res)), &out); err != nil {
+		t.Fatalf("decode %s result: %v (%s)", tool, err, text(res))
+	}
+	return out
+}
+
+func requireStoredNote(t *testing.T, c *client.Client, path, wantContent, wantHead string) {
+	t.Helper()
+	got, err := c.Read(context.Background(), path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != wantContent {
+		t.Errorf("%s content = %q, want %q", path, got, wantContent)
+	}
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if head != wantHead {
+		t.Errorf("head changed on refused mutation: got %q, want %q", head, wantHead)
+	}
+}
+
+func requireMutationRevisions(t *testing.T, c *client.Client, out protocol.NoteMutationResponse, path string, stored []byte) {
+	t.Helper()
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if out.Path != path {
+		t.Errorf("path = %q, want %q", out.Path, path)
+	}
+	if out.Status != protocol.StatusApplied {
+		t.Errorf("status = %q, want applied", out.Status)
+	}
+	if out.Revision != head || out.Revision == "" {
+		t.Errorf("revision = %q, want current repository head %q", out.Revision, head)
+	}
+	wantContentRevision := protocol.HashContent(stored)
+	if out.ContentRevision != wantContentRevision || len(out.ContentRevision) != 40 {
+		t.Errorf("content_revision = %q, want full stored-content hash %q", out.ContentRevision, wantContentRevision)
+	}
+}
+
+func TestAppendNoteUnguardedAppendsExistingNoteAndReturnsRevisions(t *testing.T) {
+	cs, c := session(t)
+	const (
+		path    = "notes/append.md"
+		initial = "first line\n"
+		suffix  = "second line\n"
+	)
+	writeClientNote(t, c, path, initial)
+
+	out := noteMutation(t, cs, "append_note", map[string]any{
+		"path": path, "content": suffix,
+	})
+	stored, err := c.Read(context.Background(), path)
+	if err != nil {
+		t.Fatalf("read appended note: %v", err)
+	}
+	if want := initial + suffix; string(stored) != want {
+		t.Fatalf("appended content = %q, want %q", stored, want)
+	}
+	requireMutationRevisions(t, c, out, path, stored)
+}
+
+func TestAppendNoteGuardedStaleRevisionRefusesWithoutMutation(t *testing.T) {
+	cs, c := session(t)
+	const path = "notes/stale-append.md"
+	writeClientNote(t, c, path, "original\n")
+	stale := protocol.HashContent([]byte("original\n"))
+	writeClientNote(t, c, path, "human changed it\n")
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requireReadCode(t, cs, "append_note", map[string]any{
+		"path": path, "content": "agent suffix\n", "content_revision": stale,
+	}, protocol.CodeStale)
+	requireStoredNote(t, c, path, "human changed it\n", head)
+}
+
+func TestAppendNoteNeverCreatesAMissingPath(t *testing.T) {
+	cs, c := session(t)
+	const path = "notes/does-not-exist.md"
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requireReadCode(t, cs, "append_note", map[string]any{
+		"path": path, "content": "must not create\n",
+	}, protocol.CodeNotFound)
+	if _, err := c.Read(context.Background(), path); !client.IsCode(err, protocol.CodeNotFound) {
+		t.Fatalf("missing append source was created or returned the wrong error: %v", err)
+	}
+	after, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != head {
+		t.Errorf("missing append mutated repository head: got %q, want %q", after, head)
+	}
+}
+
+func TestEditNoteRequiresRevisionAndReplacesOneLiteralTarget(t *testing.T) {
+	cs, c := session(t)
+	const (
+		path    = "notes/exact-edit.md"
+		initial = "prefix literal target suffix\n"
+		final   = "prefix exact replacement suffix\n"
+	)
+	writeClientNote(t, c, path, initial)
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readRefusal(t, cs, "edit_note", map[string]any{
+		"path": path, "old_text": "literal target", "new_text": "exact replacement",
+	})
+	requireStoredNote(t, c, path, initial, head)
+
+	out := noteMutation(t, cs, "edit_note", map[string]any{
+		"path":             path,
+		"content_revision": protocol.HashContent([]byte(initial)),
+		"old_text":         "literal target",
+		"new_text":         "exact replacement",
+	})
+	stored, err := c.Read(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != final {
+		t.Fatalf("edited content = %q, want exact literal replacement %q", stored, final)
+	}
+	requireMutationRevisions(t, c, out, path, stored)
+}
+
+func TestEditNoteRefusalsDoNotMutate(t *testing.T) {
+	tests := []struct {
+		name     string
+		initial  string
+		oldText  string
+		revision func(string) string
+		code     string
+	}{
+		{
+			name: "stale content revision", initial: "one target\n", oldText: "target",
+			revision: func(string) string { return protocol.HashContent([]byte("older bytes\n")) },
+			code: protocol.CodeStale,
+		},
+		{
+			name: "zero matches", initial: "nothing here\n", oldText: "absent",
+			revision: func(content string) string { return protocol.HashContent([]byte(content)) },
+			code: protocol.CodeNoMatch,
+		},
+		{
+			name: "duplicate matches", initial: "target then target\n", oldText: "target",
+			revision: func(content string) string { return protocol.HashContent([]byte(content)) },
+			code: protocol.CodeMultipleMatches,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, c := session(t)
+			const path = "notes/refused-edit.md"
+			writeClientNote(t, c, path, tc.initial)
+			head, err := c.Head(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			requireReadCode(t, cs, "edit_note", map[string]any{
+				"path":             path,
+				"content_revision": tc.revision(tc.initial),
+				"old_text":         tc.oldText,
+				"new_text":         "replacement",
+			}, tc.code)
+			requireStoredNote(t, c, path, tc.initial, head)
+		})
+	}
+}
+
+func TestEditNoteDoesNotRecreateAMovedSource(t *testing.T) {
+	cs, c := session(t)
+	const (
+		from = "notes/before-edit-move.md"
+		to   = "archive/after-edit-move.md"
+		body = "move this target\n"
+	)
+	writeClientNote(t, c, from, body)
+	contentRevision := protocol.HashContent([]byte(body))
+	moved := call(t, cs, "move_note", map[string]any{"from": from, "to": to})
+	if moved.IsError {
+		t.Fatalf("move_note failed: %s", text(moved))
+	}
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requireReadCode(t, cs, "edit_note", map[string]any{
+		"path":             from,
+		"content_revision": contentRevision,
+		"old_text":         "target",
+		"new_text":         "replacement",
+	}, protocol.CodeNotFound)
+	if _, err := c.Read(context.Background(), from); !client.IsCode(err, protocol.CodeNotFound) {
+		t.Fatalf("moved source was recreated or returned the wrong error: %v", err)
+	}
+	requireStoredNote(t, c, to, body, head)
+}

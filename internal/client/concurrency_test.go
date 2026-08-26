@@ -70,6 +70,43 @@ func TestWriteAtMergesDisjointConcurrentEdits(t *testing.T) {
 	}
 }
 
+func TestWriteAtWithRevisionReturnsPushHeadAndPreservesWriteAtSignature(t *testing.T) {
+	c, _ := live(t)
+	ctx := context.Background()
+	if _, err := c.Write(ctx, "revision.md", []byte("before\n")); err != nil {
+		t.Fatal(err)
+	}
+	base, err := c.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, revision, err := c.WriteAtWithRevision(ctx, "revision.md", []byte("after\n"), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := c.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision == "" || revision != head {
+		t.Errorf("returned revision = %q, want PushResponse.Head %q", revision, head)
+	}
+	if result.Status != protocol.StatusApplied || result.Hash != protocol.HashContent([]byte("after\n")) {
+		t.Errorf("result = %+v, want applied result for stored bytes", result)
+	}
+
+	// Keep the old two-result call compiling and behaving as before. Existing
+	// callers need not opt in to the repository revision.
+	legacyResult, err := c.WriteAt(ctx, "legacy.md", []byte("still works\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyResult.Status != protocol.StatusApplied {
+		t.Errorf("legacy WriteAt status = %q, want applied", legacyResult.Status)
+	}
+}
+
 // Overlapping edits cannot merge, but nothing may be lost: the server keeps its
 // version and stores the caller's alongside.
 func TestWriteAtConflictKeepsBothVersions(t *testing.T) {

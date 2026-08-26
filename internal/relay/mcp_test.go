@@ -91,8 +91,13 @@ func TestToolsAreAdvertisedWithDescriptions(t *testing.T) {
 	}
 	want := map[string]bool{
 		"list_notes": false, "read_note": false, "write_note": false,
+		"append_note": false, "edit_note": false,
 		"delete_note": false, "note_history": false, "read_note_at": false,
 		"search_notes": false, "list_folders": false,
+	}
+	safetyLanguage := map[string][]string{
+		"append_note": {"existing", "atomic", "content_revision", "blind append"},
+		"edit_note":   {"literal", "content_revision", "zero", "multiple", "move"},
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -100,6 +105,12 @@ func TestToolsAreAdvertisedWithDescriptions(t *testing.T) {
 		}
 		if tool.Description == "" {
 			t.Errorf("%s has no description; an agent cannot tell when to use it", tool.Name)
+		}
+		description := strings.ToLower(tool.Description)
+		for _, phrase := range safetyLanguage[tool.Name] {
+			if !strings.Contains(description, phrase) {
+				t.Errorf("%s description does not explain %q safety: %q", tool.Name, phrase, tool.Description)
+			}
 		}
 	}
 	for name, found := range want {
@@ -117,6 +128,48 @@ func TestWriteThenReadThroughTools(t *testing.T) {
 	got := text(call(t, cs, "read_note", map[string]any{"path": "notes/idea.md"}))
 	if !strings.Contains(got, "an idea") {
 		t.Errorf("read_note returned %q", got)
+	}
+}
+
+func TestWriteReturnsRevisionsForStoredContent(t *testing.T) {
+	cs, c := session(t)
+	const (
+		path = "notes/write-revisions.md"
+		body = "# exact bytes\n\nincluding the final newline\n"
+	)
+	res := call(t, cs, "write_note", map[string]any{"path": path, "content": body})
+	if res.IsError {
+		t.Fatalf("write_note failed: %s", text(res))
+	}
+	var out struct {
+		Path            string `json:"path"`
+		Status          string `json:"status"`
+		Revision        string `json:"revision"`
+		ContentRevision string `json:"content_revision"`
+	}
+	if err := json.Unmarshal([]byte(text(res)), &out); err != nil {
+		t.Fatalf("decode write_note result: %v (%s)", err, text(res))
+	}
+	head, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := c.Read(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Path != path || out.Status != protocol.StatusApplied {
+		t.Errorf("write result = %+v, want applied at %q", out, path)
+	}
+	if out.Revision != head || out.Revision == "" {
+		t.Errorf("revision = %q, want current repository head %q", out.Revision, head)
+	}
+	wantContentRevision := protocol.HashContent(stored)
+	if out.ContentRevision != wantContentRevision || len(out.ContentRevision) != 40 {
+		t.Errorf("content_revision = %q, want stored-content hash %q", out.ContentRevision, wantContentRevision)
+	}
+	if string(stored) != body {
+		t.Errorf("stored bytes = %q, want %q", stored, body)
 	}
 }
 
@@ -282,6 +335,8 @@ func TestWriteConflictReturnsCurrentStateForRetry(t *testing.T) {
 
 	var out struct {
 		Status          string `json:"status"`
+		Revision        string `json:"revision"`
+		ContentRevision string `json:"content_revision"`
 		ConflictPath    string `json:"conflictPath"`
 		CurrentContent  string `json:"currentContent"`
 		CurrentRevision string `json:"currentRevision"`
@@ -292,6 +347,23 @@ func TestWriteConflictReturnsCurrentStateForRetry(t *testing.T) {
 	}
 	if out.Status != protocol.StatusConflict {
 		t.Fatalf("status = %q, want conflict: %s", out.Status, got)
+	}
+	stored, err := c.Read(ctx, "n.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentHead, err := c.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Revision != currentHead || out.Revision == "" {
+		t.Errorf("revision = %q, want conflict commit head %q", out.Revision, currentHead)
+	}
+	if want := protocol.HashContent(stored); out.ContentRevision != want || len(out.ContentRevision) != 40 {
+		t.Errorf("content_revision = %q, want current stored-path hash %q", out.ContentRevision, want)
+	}
+	if out.CurrentRevision != out.Revision {
+		t.Errorf("currentRevision = %q, want returned repository revision %q", out.CurrentRevision, out.Revision)
 	}
 	if !strings.Contains(out.CurrentContent, "HUMAN EDIT") {
 		t.Errorf("currentContent does not show the human's edit: %q", out.CurrentContent)

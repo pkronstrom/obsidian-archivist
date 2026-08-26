@@ -494,23 +494,29 @@ func (c *Client) ReadForEdit(ctx context.Context, path string) (content []byte, 
 // looked", so a concurrent edit is fast-forwarded over and silently lost
 // instead of merged. Passing an empty base is a blind overwrite; see Write.
 func (c *Client) WriteAt(ctx context.Context, path string, content []byte, base string) (protocol.Result, error) {
+	result, _, err := c.WriteAtWithRevision(ctx, path, content, base)
+	return result, err
+}
+
+// WriteAtWithRevision is WriteAt plus the repository head produced by the push.
+func (c *Client) WriteAtWithRevision(ctx context.Context, path string, content []byte, base string) (protocol.Result, string, error) {
 	var zero protocol.Result
 
 	if base == "" {
 		var err error
 		if base, err = c.Head(ctx); err != nil {
-			return zero, err
+			return zero, "", err
 		}
 	}
 	hash := protocol.HashContent(content)
 
 	missing, err := c.Missing(ctx, []string{hash})
 	if err != nil {
-		return zero, err
+		return zero, "", err
 	}
 	if len(missing) > 0 {
 		if err := c.PutContent(ctx, hash, content); err != nil {
-			return zero, err
+			return zero, "", err
 		}
 	}
 
@@ -518,12 +524,12 @@ func (c *Client) WriteAt(ctx context.Context, path string, content []byte, base 
 		Path: path, Op: protocol.OpPut, Hash: hash, Size: int64(len(content)),
 	}})
 	if err != nil {
-		return zero, err
+		return zero, "", err
 	}
 	if len(resp.Results) == 0 {
-		return zero, fmt.Errorf("archivist: push of %s returned no result", path)
+		return zero, "", fmt.Errorf("archivist: push of %s returned no result", path)
 	}
-	return resp.Results[0], nil
+	return resp.Results[0], resp.Head, nil
 }
 
 // Write stores content with NO base, which is a blind overwrite: whatever the

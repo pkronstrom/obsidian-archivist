@@ -78,6 +78,22 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 	}, writeNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name: "append_note",
+		Description: "Append text atomically to an existing text note. content_revision " +
+			"is optional only for an intentional blind append to whatever is currently " +
+			"at that exact path; otherwise pass the full content_revision from read_note. " +
+			"Always check errors before claiming the append landed.",
+	}, appendNote(c))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "edit_note",
+		Description: "Replace literal text in an existing note. Requires the full " +
+			"content_revision from read_note, refuses zero or multiple matches, and " +
+			"never follows moves: a moved source returns not_found. Always check errors " +
+			"before claiming the edit landed.",
+	}, editNote(c))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name: "read_attachment",
 		Description: "Read an attachment (image, pdf, audio, any non-text file) as " +
 			"base64. read_note refuses these on purpose; this is the tool for them. " +
@@ -530,6 +546,40 @@ func nonTextReadError(tool, path string, size int, cause error) error {
 	return errors.New(message)
 }
 
+type appendNoteInput struct {
+	Vault           string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path            string `json:"path" jsonschema:"existing vault-relative text note path"`
+	Content         string `json:"content" jsonschema:"text to append atomically"`
+	ContentRevision string `json:"content_revision,omitempty" jsonschema:"full content_revision from read_note; omit only for an intentional blind append"`
+}
+
+func appendNote(c *client.Client) mcp.ToolHandlerFor[appendNoteInput, protocol.NoteMutationResponse] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in appendNoteInput) (*mcp.CallToolResult, protocol.NoteMutationResponse, error) {
+		out, err := forVault(c, in.Vault).AppendNote(ctx, protocol.AppendNoteRequest{
+			Path: in.Path, Content: in.Content, ContentRevision: in.ContentRevision,
+		})
+		return nil, out, err
+	}
+}
+
+type editNoteInput struct {
+	Vault           string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
+	Path            string `json:"path" jsonschema:"existing vault-relative text note path"`
+	ContentRevision string `json:"content_revision" jsonschema:"full content_revision from read_note"`
+	OldText         string `json:"old_text" jsonschema:"literal text that must occur exactly once"`
+	NewText         string `json:"new_text" jsonschema:"literal replacement text"`
+}
+
+func editNote(c *client.Client) mcp.ToolHandlerFor[editNoteInput, protocol.NoteMutationResponse] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in editNoteInput) (*mcp.CallToolResult, protocol.NoteMutationResponse, error) {
+		out, err := forVault(c, in.Vault).EditNote(ctx, protocol.EditNoteRequest{
+			Path: in.Path, ContentRevision: in.ContentRevision,
+			OldText: in.OldText, NewText: in.NewText,
+		})
+		return nil, out, err
+	}
+}
+
 type writeInput struct {
 	Vault   string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path    string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
@@ -544,9 +594,11 @@ type writeOutput struct {
 	Path string `json:"path"`
 	// Status is 'applied', 'merged', 'conflict' or 'refused'. Only 'applied'
 	// means the stored content is exactly what was sent.
-	Status       string `json:"status"`
-	ConflictPath string `json:"conflictPath,omitempty"`
-	Note         string `json:"note,omitempty"`
+	Status          string `json:"status"`
+	Revision        string `json:"revision,omitempty"`
+	ContentRevision string `json:"content_revision,omitempty"`
+	ConflictPath     string `json:"conflictPath,omitempty"`
+	Note             string `json:"note,omitempty"`
 
 	// Current* carry the note as it now stands, sent only when the write did NOT
 	// land exactly as given.
@@ -571,11 +623,15 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		if in.Path == "" {
 			return nil, writeOutput{}, fmt.Errorf("path is required")
 		}
-		res, err := c.WriteAt(ctx, in.Path, []byte(in.Content), in.Revision)
+		res, revision, err := c.WriteAtWithRevision(ctx, in.Path, []byte(in.Content), in.Revision)
 		if err != nil {
 			return nil, writeOutput{}, err
 		}
 		out := writeOutput{Path: res.Path, Status: res.Status, ConflictPath: res.ConflictPath}
+		switch res.Status {
+		case protocol.StatusApplied, protocol.StatusMerged, protocol.StatusConflict:
+			out.Revision, out.ContentRevision = revision, res.Hash
+		}
 
 		// Anything other than a clean apply means the stored content is not what
 		// was sent, so hand back what IS there. Best-effort: failing to fetch it
