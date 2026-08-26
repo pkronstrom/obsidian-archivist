@@ -429,6 +429,30 @@ func TestNoteMutationRoutesRejectOverLimitStreamingBodiesWithoutChangingState(t 
 	}
 }
 
+func TestAppendNoteRouteAcceptsBodyAtExactRequestLimit(t *testing.T) {
+	h, v, _ := newServer(t)
+	before := []byte("before\n")
+	head, contentRevision := seedAPINote(t, h, "Triage.md", before)
+	request := protocol.AppendNoteRequest{
+		Path: "Triage.md", Content: "after\n", ContentRevision: contentRevision,
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := int64(maxNoteMutationRequestBytes) - int64(len(body))
+	reader := io.MultiReader(
+		strings.NewReader(string(body)),
+		&repeatedByteReader{remaining: padding, value: ' '},
+	)
+
+	w := doRawNoteMutation(t, h, "/v1/note/append", reader)
+	response := requireMutationSuccess(t, w)
+	want := []byte("before\nafter\n")
+	requireMutationResult(t, response, "Triage.md", head, protocol.HashContent(want))
+	requireVaultBytes(t, v, "Triage.md", want)
+}
+
 func TestNoteMutationHistoryRecordsRequestDeviceAndVerifiedToken(t *testing.T) {
 	h, _, r := newServer(t)
 	before := []byte("before\n")
