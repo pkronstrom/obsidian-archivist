@@ -164,6 +164,52 @@ func TestAppendNoteRefusesNonTextCurrentFile(t *testing.T) {
 	}
 }
 
+func TestAppendNoteRefusesNonTextSuffix(t *testing.T) {
+	tests := []struct {
+		name   string
+		suffix []byte
+	}{
+		{name: "NUL", suffix: []byte("suffix\x00")},
+		{name: "invalid UTF-8", suffix: []byte{'s', 0xff}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc, v, r := newRec(t)
+			body := []byte("before\n")
+			head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+
+			_, _, err := rc.AppendNote(
+				"Triage.md",
+				tt.suffix,
+				revision,
+				Origin{Device: "agent"},
+			)
+			requireProtocolCode(t, err, protocol.CodeNotText)
+			assertNoteAtHead(t, v, r, "Triage.md", body, head)
+		})
+	}
+}
+
+func TestAppendNoteRestoresContentWhenCommitFails(t *testing.T) {
+	rc, v, r := newRec(t)
+	body := []byte("before\n")
+	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+	restoreRepo := makeRepoCommitFail(t, r)
+
+	_, _, err := rc.AppendNote(
+		"Triage.md",
+		[]byte("suffix\n"),
+		revision,
+		Origin{Device: "agent"},
+	)
+	restoreRepo()
+	if err == nil {
+		t.Fatal("AppendNote succeeded despite the broken repository index")
+	}
+	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+}
+
 func TestAppendNoteRefusesNULAfterSniffPrefix(t *testing.T) {
 	rc, v, r := newRec(t)
 	body := append(bytes.Repeat([]byte{'x'}, 8001), 0)
@@ -218,7 +264,6 @@ func TestAppendNotePreflightsOversizedExistingFile(t *testing.T) {
 		head,
 	)
 }
-
 
 func TestEditNoteReplacesOneExactMatchAndReturnsRevisions(t *testing.T) {
 	rc, v, r := newRec(t)
@@ -351,7 +396,6 @@ func TestEditNoteRefusesNoOpReplacement(t *testing.T) {
 	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
 
-
 func TestEditNoteRefusesNonTextCurrentFile(t *testing.T) {
 	tests := []struct {
 		name string
@@ -377,6 +421,54 @@ func TestEditNoteRefusesNonTextCurrentFile(t *testing.T) {
 			assertNoteAtHead(t, v, r, "Triage.md", tt.body, head)
 		})
 	}
+}
+
+func TestEditNoteRefusesNonTextReplacement(t *testing.T) {
+	tests := []struct {
+		name    string
+		newText []byte
+	}{
+		{name: "NUL", newText: []byte("changed\x00")},
+		{name: "invalid UTF-8", newText: []byte{'c', 0xff}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc, v, r := newRec(t)
+			body := []byte("before\ntarget\nafter\n")
+			head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+
+			_, _, err := rc.EditNote(
+				"Triage.md",
+				revision,
+				[]byte("target"),
+				tt.newText,
+				Origin{Device: "agent"},
+			)
+			requireProtocolCode(t, err, protocol.CodeNotText)
+			assertNoteAtHead(t, v, r, "Triage.md", body, head)
+		})
+	}
+}
+
+func TestEditNoteRestoresContentWhenCommitFails(t *testing.T) {
+	rc, v, r := newRec(t)
+	body := []byte("before\ntarget\nafter\n")
+	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+	restoreRepo := makeRepoCommitFail(t, r)
+
+	_, _, err := rc.EditNote(
+		"Triage.md",
+		revision,
+		[]byte("target"),
+		[]byte("changed"),
+		Origin{Device: "agent"},
+	)
+	restoreRepo()
+	if err == nil {
+		t.Fatal("EditNote succeeded despite the broken repository index")
+	}
+	assertNoteAtHead(t, v, r, "Triage.md", body, head)
 }
 
 func TestEditAndAppendDoNotRecreateMovedSource(t *testing.T) {
@@ -429,6 +521,35 @@ func seedMutationNote(t *testing.T, rc *Reconciler, r *repo.Repo, path string, b
 		t.Fatalf("seed results = %+v, want one applied", results)
 	}
 	return head, protocol.HashContent(body)
+}
+
+func makeRepoCommitFail(t *testing.T, r *repo.Repo) func() {
+	t.Helper()
+	index := filepath.Join(r.GitDir(), "index")
+	backup := index + ".note-mutation-test"
+	if err := os.Rename(index, backup); err != nil {
+		t.Fatalf("moving repository index: %v", err)
+	}
+	if err := os.Mkdir(index, 0o700); err != nil {
+		_ = os.Rename(backup, index)
+		t.Fatalf("replacing repository index: %v", err)
+	}
+
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		if err := os.Remove(index); err != nil {
+			t.Fatalf("removing broken repository index: %v", err)
+		}
+		if err := os.Rename(backup, index); err != nil {
+			t.Fatalf("restoring repository index: %v", err)
+		}
+		restored = true
+	}
+	t.Cleanup(restore)
+	return restore
 }
 
 func requireProtocolCode(t *testing.T, err error, want string) {

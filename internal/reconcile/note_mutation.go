@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"bytes"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
@@ -22,6 +23,9 @@ func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string
 	}
 	if len(suffix) == 0 {
 		return "", "", mutationError(protocol.CodeMalformed, "append content is empty")
+	}
+	if !validMutationText(suffix) {
+		return "", "", mutationError(protocol.CodeNotText, "append content is not UTF-8 text")
 	}
 
 	body, err := currentText(rc.v, path, expectedHash)
@@ -45,7 +49,7 @@ func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string
 	if err := rc.write(path, next); err != nil {
 		return "", "", err
 	}
-	head, err = rc.r.Commit(origin.message("append from"))
+	head, err = rc.commitMutation(path, body, origin.message("append from"))
 	if err != nil {
 		return "", "", err
 	}
@@ -70,6 +74,9 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 	}
 	if len(oldText) == 0 {
 		return "", "", mutationError(protocol.CodeMalformed, "old text is empty")
+	}
+	if !validMutationText(newText) {
+		return "", "", mutationError(protocol.CodeNotText, "new text is not UTF-8 text")
 	}
 	if bytes.Equal(oldText, newText) {
 		return "", "", mutationError(protocol.CodeMalformed, "old text and new text are identical")
@@ -102,7 +109,7 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 	if err := rc.write(path, next); err != nil {
 		return "", "", err
 	}
-	head, err = rc.r.Commit(origin.message("edit from"))
+	head, err = rc.commitMutation(path, body, origin.message("edit from"))
 	if err != nil {
 		return "", "", err
 	}
@@ -132,7 +139,7 @@ func currentText(v *vault.Vault, path, expectedHash string) ([]byte, error) {
 	if err != nil {
 		return nil, mutationError(protocol.CodeNotFound, "no such note: "+path)
 	}
-	if bytes.IndexByte(body, 0) >= 0 || !utf8.Valid(body) {
+	if !validMutationText(body) {
 		return nil, mutationError(protocol.CodeNotText, path+" is not UTF-8 text")
 	}
 	if expectedHash != "" && protocol.HashContent(body) != expectedHash {
@@ -157,6 +164,26 @@ func overlappingMatchCount(body, oldText []byte) int {
 		offset += index + 1
 	}
 	return matches
+}
+
+func validMutationText(body []byte) bool {
+	return bytes.IndexByte(body, 0) < 0 && utf8.Valid(body)
+}
+
+func (rc *Reconciler) commitMutation(path string, original []byte, message string) (string, error) {
+	head, err := rc.r.Commit(message)
+	if err == nil {
+		return head, nil
+	}
+	if restoreErr := rc.write(path, original); restoreErr != nil {
+		return "", fmt.Errorf(
+			"note mutation commit failed (%w) and %s could not be restored: %v",
+			err,
+			path,
+			restoreErr,
+		)
+	}
+	return "", err
 }
 
 func mutationError(code, message string) error {
