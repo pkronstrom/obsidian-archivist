@@ -1,6 +1,6 @@
 {
   "name": "obsidian-archivist",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Self-hosted sync. Your vault stays plain Markdown files on a server you own, with full history.",
   "scripts": {
     "test": "npm run test:unit",
