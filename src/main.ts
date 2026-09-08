@@ -37,6 +37,8 @@ export default class ArchivistPlugin extends Plugin {
 	 */
 	pendingPairing?: PairingHazardError;
 	private pairingDeferred = false;
+	/** The pairing modal while it is on screen -- see openPairingModal. */
+	private pairingModal: PairingModal | null = null;
 	private timer?: number;
 	private watcher?: Watcher;
 	/**
@@ -403,7 +405,14 @@ export default class ArchivistPlugin extends Plugin {
 	openPairingModal(): void {
 		const hazard = this.pendingPairing;
 		if (!hazard) return;
-		new PairingModal(
+		// One at a time. Concurrent sync cycles COALESCE onto a single in-flight
+		// promise, but each caller still gets its own rejection, so a hazard
+		// raised once reaches every waiting catch and each one opens a modal.
+		// The copies are identical and stack, so answering the top one reveals
+		// the next: "Not now" and even a completed "Publish local" both look
+		// like the dialog ignoring the click.
+		if (this.pairingModal) return;
+		const modal = new PairingModal(
 			this.app,
 			hazard,
 			(choice) => void this.resolvePairing(choice),
@@ -416,7 +425,14 @@ export default class ArchivistPlugin extends Plugin {
 					8000,
 				);
 			},
-		).open();
+		);
+		// Every close routes here -- a choice, "Not now", the X and Escape --
+		// so a dismissed modal can be reopened by the next cycle.
+		modal.onClosed = () => {
+			this.pairingModal = null;
+		};
+		this.pairingModal = modal;
+		modal.open();
 	}
 
 	/**

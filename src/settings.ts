@@ -421,9 +421,17 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 		// A token that opens one vault has one answer. Resolve it on open
 		// rather than making someone press a button to be told the only option.
-		void this.plugin.resolveVaultIfUnambiguous().then((ok) => {
-			if (ok) this.display();
-		});
+		//
+		// Re-render only when that call actually FILLED IN a vault. It returns
+		// true for "a vault is set", not "I set one", so re-rendering on every
+		// true is an unbounded loop: display -> resolve -> display, which pins
+		// a renderer at 100% and never reaches the first sync that would retire
+		// this chooser.
+		if (!this.plugin.settings.vault) {
+			void this.plugin.resolveVaultIfUnambiguous().then((ok) => {
+				if (ok) this.display();
+			});
+		}
 
 		vaultSetting.addButton((b) =>
 			b.setButtonText("Choose").onClick(async () => {

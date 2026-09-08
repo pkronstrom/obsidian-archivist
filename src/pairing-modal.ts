@@ -21,6 +21,14 @@ export class PairingModal extends Modal {
 		super(app);
 	}
 
+	/**
+	 * Fires on every close -- a choice, "Not now", the X and Escape alike.
+	 *
+	 * The owner uses it to forget the open modal. Without it a dismissal by X
+	 * leaves the owner believing a modal is still up and it can never reopen.
+	 */
+	onClosed: () => void = () => {};
+
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
@@ -89,6 +97,7 @@ export class PairingModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.empty();
+		this.onClosed();
 	}
 
 	private choose(choice: PairingChoice): void {
