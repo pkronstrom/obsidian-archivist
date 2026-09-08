@@ -18,16 +18,23 @@ export async function requestUrl(opts) {
 	});
 	const buf = await res.arrayBuffer();
 	const text = new TextDecoder().decode(buf);
-	let json;
-	try {
-		json = JSON.parse(text);
-	} catch {
-		json = undefined;
-	}
 	if (opts.throw !== false && res.status >= 400) {
 		throw new Error(`${res.status}: ${text.slice(0, 200)}`);
 	}
-	return { status: res.status, headers: {}, arrayBuffer: buf, text, json };
+	// `json` is a GETTER THAT THROWS on a body that is not JSON, because that
+	// is what Obsidian does. Returning undefined instead made the shim kinder
+	// than production and hid a real bug: the client read res.json in its error
+	// path, so every non-JSON failure reached the user as a parse error with no
+	// status in it.
+	return {
+		status: res.status,
+		headers: {},
+		arrayBuffer: buf,
+		text,
+		get json() {
+			return JSON.parse(text);
+		},
+	};
 }
 
 export function debounce(fn) {

@@ -309,8 +309,16 @@ export class Client {
 		// mean unknown-base, which was only ever true because there was exactly
 		// one thing a 409 could mean -- a fragile assumption to leave in a
 		// client that outlives the server it was written against.
-		const code: string | undefined = res.json?.error?.code;
-		const message: string = res.json?.error?.message ?? res.text.slice(0, 200);
+		//
+		// errorBody(), not res.json: on a body that is not JSON the getter
+		// THROWS, and it throws from the branch whose whole job is to explain a
+		// failure. A plain-text 400 from Go's own header validation -- what a
+		// token pasted with a stray newline produces -- surfaced to the user as
+		// "JSON Parse error: Unable to parse JSON string", naming neither the
+		// status nor the route. The status is the diagnosis; never lose it.
+		const envelope = errorBody(res);
+		const code: string | undefined = envelope?.error?.code;
+		const message: string = envelope?.error?.message ?? errorText(res);
 
 		if (code === Code.UnknownBase) throw new UnknownBaseError(message);
 		if (code) throw new ServerError(code, message, res.status);
@@ -387,5 +395,30 @@ export class Client {
 	): Promise<{ head: string; results: Result[] }> {
 		const j = (await this.call("POST", "/v1/push", { base, device, changes })).json;
 		return { head: j.head as string, results: (j.results ?? []) as Result[] };
+	}
+}
+
+/**
+ * The error envelope, or undefined when the body is not one.
+ *
+ * `RequestUrlResponse.json` is a GETTER that parses on access and throws on
+ * anything that is not JSON -- a proxy's HTML, an empty body, Go's plain-text
+ * 400. Reading it unguarded turns every such response into a parse error.
+ */
+function errorBody(res: RequestUrlResponse): { error?: { code?: string; message?: string } } | undefined {
+	try {
+		return res.json as { error?: { code?: string; message?: string } } | undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The body as text, for a response with no envelope. Also defensive: an
+ *  empty or binary body must not become an exception in the error path. */
+function errorText(res: RequestUrlResponse): string {
+	try {
+		return res.text.slice(0, 200);
+	} catch {
+		return "";
 	}
 }
