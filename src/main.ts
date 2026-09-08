@@ -1,4 +1,5 @@
-import { Notice, Plugin, TAbstractFile, setIcon } from "obsidian";
+import { Notice, Plugin, TAbstractFile, TFile, setIcon } from "obsidian";
+import { openSyncedNote } from "./open-synced";
 import { Client } from "./client";
 import { Sync, skip, localOnly } from "./sync";
 import { RevisionModal } from "./revision-modal";
@@ -211,6 +212,19 @@ export default class ArchivistPlugin extends Plugin {
 
 			void this.forceSync();
 		});
+
+        this.registerObsidianProtocolHandler("archivist-open", (params) => {
+            this.app.workspace.onLayoutReady(() => {
+                if (params.vault && params.vault !== this.app.vault.getName()) return;
+                const notice = new Notice("Archivist: syncing before opening the note…", 0);
+                void openSyncedNote(
+                    params.file || "",
+                    () => this.forceSync(),
+                    (path) => this.app.vault.getAbstractFileByPath(path) instanceof TFile,
+                    async (path) => { await this.app.workspace.getLeaf(false).openFile(this.app.vault.getAbstractFileByPath(path) as TFile); },
+                ).catch((error: Error) => new Notice(error.message, 8000)).finally(() => notice.hide());
+            });
+        });
 
 		// The mobile lifecycle. iOS suspends the app aggressively, so a push
 		// can be cut short: flush when backgrounding, and pull on focus so the

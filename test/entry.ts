@@ -33,3 +33,5 @@ export {
 	formatPermissions,
 	suggestDeviceName,
 } from "../src/status-text";
+
+export { openSyncedNote } from "../src/open-synced";
