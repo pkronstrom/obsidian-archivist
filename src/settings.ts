@@ -634,7 +634,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	private renderPlugins(container: HTMLElement): void {
 		const generation = ++this.renderGeneration;
-		container.createEl("p", {text: "Reading plugin inventories…"});
+		new Setting(container).setDesc("Reading plugin inventories…");
 		const refresh = async (): Promise<void> => {
 			const request = ++this.inventoryRequest;
 			try {
@@ -649,8 +649,8 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			} catch (error) {
 				if (generation !== this.renderGeneration || request !== this.inventoryRequest) return;
 				container.empty();
-				container.createEl("p", {text:error instanceof Error ? error.message : "Plugin inventories could not be read."});
-				container.createEl("button", {text:"Retry"}).addEventListener("click", () => void refresh());
+				new Setting(container).setDesc(error instanceof Error ? error.message : "Plugin inventories could not be read.")
+					.addButton(button => button.setButtonText("Retry").onClick(() => void refresh()));
 			}
 		};
 		// Refresh again on opening the collapsed section, including after a local install.

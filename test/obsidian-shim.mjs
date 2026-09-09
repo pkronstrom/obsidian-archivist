@@ -43,7 +43,27 @@ export function debounce(fn) {
 
 export class Plugin {}
 export class PluginSettingTab {}
-export class Setting {}
+export class Setting {
+ constructor(container) {
+  this.settingEl=container.createDiv({cls:"setting-item"});
+  this.infoEl=this.settingEl.createDiv({cls:"setting-item-info"});
+  this.nameEl=this.infoEl.createDiv({cls:"setting-item-name"});
+  this.descEl=this.infoEl.createDiv({cls:"setting-item-description"});
+  this.controlEl=this.settingEl.createDiv({cls:"setting-item-control"});
+ }
+ setName(text){this.nameEl.textContent=text;return this;}
+ setDesc(text){this.descEl.textContent=text;return this;}
+ addButton(callback){
+  const el=this.controlEl.createEl("button");
+  const button={setButtonText(text){el.textContent=text;return button;},onClick(fn){el.addEventListener("click",fn);return button;}};
+  callback(button);return this;
+ }
+ addDropdown(callback){
+  const el=this.controlEl.createEl("select");
+  const dropdown={addOption(value,text){el.createEl("option",{value,text});return dropdown;},setValue(value){el.value=value;return dropdown;},onChange(fn){el.addEventListener("change",()=>fn(el.value));return dropdown;}};
+  callback(dropdown);return this;
+ }
+}
 export class Notice {}
 export class TAbstractFile {}
 export class Modal {}
