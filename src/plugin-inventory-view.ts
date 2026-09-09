@@ -24,6 +24,7 @@ export function renderInventoryView(
 	const label = (i: PluginInventory) => (labels.get(i.deviceName) ?? 0) > 1 ? `${i.deviceName} (${i.installationId.slice(0,8)})` : i.deviceName;
 	const toolbar = new Setting(container).setName(`${data.local.plugins.length} installed`);
 	toolbar.settingEl.addClass("archivist-inventory-toolbar");
+	toolbar.settingEl.addClass("mod-list-item");
 	toolbar.addExtraButton(button => button.setIcon("refresh-cw").setTooltip("Refresh plugin list").onClick(onRefresh));
 	if (peers.length) {
 		toolbar.addDropdown(dropdown => {
@@ -50,6 +51,7 @@ export function renderInventoryView(
 		for (const version of row.versions) description.push(`${version.version} — ${version.devices.map(label).join(", ")}`);
 		const setting = new Setting(container).setName(row.name).setDesc(description.join("\n"));
 		setting.settingEl.addClass("archivist-inventory-row");
+		setting.settingEl.addClass("mod-list-item");
 		setting.nameEl.createEl("span", {text:row.localVersion || "Not installed", cls:"archivist-inventory-version"});
 		if (row.compatibility === "desktop-only") setting.nameEl.createEl("span", {
 			text:"Desktop only", cls:"archivist-inventory-tag",
