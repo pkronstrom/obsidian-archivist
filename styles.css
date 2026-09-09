@@ -490,3 +490,47 @@
 	font-weight: var(--font-normal);
 	vertical-align: middle;
 }
+
+/* Mobile themes may stack even mod-list-item settings. Keep inventory actions
+ * in an explicit second column, overriding those theme rules only in this list. */
+.archivist-inventory .setting-item.archivist-inventory-row {
+	display: grid !important;
+	grid-template-columns: minmax(0, 1fr) auto !important;
+	align-items: center !important;
+	column-gap: var(--size-4-2) !important;
+	row-gap: 0 !important;
+}
+.archivist-inventory .archivist-inventory-row > .setting-item-info {
+	grid-column: 1 !important;
+	grid-row: 1 !important;
+	width: auto !important;
+	margin: 0 !important;
+}
+.archivist-inventory .archivist-inventory-row > .setting-item-control {
+	grid-column: 2 !important;
+	grid-row: 1 !important;
+	width: auto !important;
+	margin: 0 !important;
+	padding: 0 !important;
+	align-self: center !important;
+}
+.archivist-inventory .setting-item.archivist-inventory-toolbar {
+	display: flex !important;
+	flex-direction: row !important;
+	align-items: center !important;
+	gap: var(--size-4-2) !important;
+}
+.archivist-inventory .archivist-inventory-toolbar > .setting-item-info {
+	flex: 1 1 auto !important;
+	margin: 0 !important;
+}
+.archivist-inventory .archivist-inventory-toolbar > .setting-item-control {
+	flex: 0 1 auto !important;
+	width: auto !important;
+	margin: 0 !important;
+	padding: 0 !important;
+}
+.archivist-inventory .archivist-inventory-toolbar select {
+	width: auto !important;
+	max-width: min(48vw, 16rem) !important;
+}
