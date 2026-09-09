@@ -22,7 +22,7 @@ that machine can search, read, edit, serve and back up the same files.
 | **Several vaults** | One server process serves them all, each with its own history. Tokens scope to the vaults you name. |
 | **Granular tokens** | Each device and agent gets its own, scoped to named vaults, revocable on its own. |
 | **Private vaults** | Mark a vault protected and an agent that reaches it gets `step_up_required`. You approve with a six-digit code from your authenticator, opening a window that expires on a clock and is never extended by use. |
-| **Obsidian settings sync too** | Themes, hotkeys, snippets and your plugin list, if you want them. |
+| **See plugins across devices** | Find missing plugins and version differences, then open their community store pages. Settings stay local. |
 | **`.local` never syncs** | `notes.local.md`, or anything under `scratch.local/`, stays on the device that made it. |
 
 ## Quick start
@@ -124,7 +124,7 @@ Funnel makes the service public.
 - [Operations](docs/OPERATIONS.md) — deployment, private access, tokens, vaults,
   troubleshooting and backups
 - [Integrations](docs/INTEGRATIONS.md) — Claude Code, web editing, webhooks and
-  Obsidian configuration sync
+  plugin inventories
 - [Internals](docs/INTERNALS.md) — protocol, storage, merging and development
 - [Design notes](docs/) — the decisions behind the implementation
 

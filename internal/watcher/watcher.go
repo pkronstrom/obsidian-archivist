@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -173,13 +172,8 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 // addTree watches dir and every syncable directory beneath it.
 //
-// Dot-directories are skipped, with one exception: the Obsidian configuration
-// directory, which holds allowlisted files that DO sync. Without descending
-// into it, a snippet edited on the server host produces no event, so no Scan,
-// so no commit -- the local write path would carry notes and silently not carry
-// config. vault.Skip is the filter for individual events; this is the separate
-// decision about which directories are worth an inotify watch at all, and it
-// has to be kept in step with it by hand.
+// Inventory ancestors are traversed, while other hidden and .local trees
+// are excluded consistently at startup and when a directory is created.
 func (w *Watcher) addTree(dir string) error {
 	return filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -188,37 +182,15 @@ func (w *Watcher) addTree(dir string) error {
 		if !d.IsDir() {
 			return nil
 		}
-		if p != dir && strings.HasPrefix(d.Name(), ".") && !w.watchableConfigDir(p) {
-			return filepath.SkipDir
+		rel, err := filepath.Rel(w.v.Dir(), p)
+		if err != nil {
+			return err
 		}
-		// A folder marked .local never syncs, so watching it would only
-		// produce events that Commit refuses -- and on a big scratch folder,
-		// a steady stream of them.
-		if vault.LocalOnlyDir(d.Name()) {
+		if rel != "." && vault.SkipDir(filepath.ToSlash(rel)) {
 			return filepath.SkipDir
 		}
 		return w.fsw.Add(p)
 	})
-}
-
-// watchableConfigRel reports whether a vault-relative path is the config
-// directory or lives inside it.
-//
-// Watching the whole subtree costs a handful of inotify descriptors, and the
-// ordinary Skip filter still decides file by file what may be committed -- so
-// this buys the guarantee that no allowlisted file is invisible, at no risk of
-// committing one that is not.
-func (w *Watcher) watchableConfigRel(rel string) bool {
-	return rel == vault.ConfigDir || strings.HasPrefix(rel, vault.ConfigDir+"/")
-}
-
-// watchableConfigDir is watchableConfigRel for an absolute path.
-func (w *Watcher) watchableConfigDir(abs string) bool {
-	rel, err := filepath.Rel(w.v.Dir(), abs)
-	if err != nil {
-		return false
-	}
-	return w.watchableConfigRel(filepath.ToSlash(rel))
 }
 
 func (w *Watcher) handle(ev fsnotify.Event) {
@@ -230,28 +202,12 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 	if rel == "." {
 		return
 	}
-	// vault.Skip is a FILE policy: it says .obsidian is excluded, because the
-	// allowlist names files inside it rather than the directory itself. A
-	// directory event has to be judged separately, or a .obsidian/ created
-	// after startup is dropped here and never reaches addTree -- which is what
-	// happens the first time a remote push creates it, leaving every later
-	// host-local config edit invisible.
-	//
-	// Letting a refused config path through costs at most one no-op commit
-	// attempt: Repo.Commit consults syncable and will not stage it.
-	// A new directory needs its own watch, and then an immediate scan of it:
-	// files can be created inside between the mkdir and the watch being
-	// registered. Moving a populated tree in hits that race every time.
-	//
-	// Judged BEFORE vault.Skip, because Skip carries file rules that a
-	// directory must not inherit. A folder called "project.local.assets"
-	// satisfies the .local grammar, and refusing to watch it would silently
-	// stop every note inside it from syncing -- while the startup walk, which
-	// only skips dot-directories, descends into it happily. The two must not
-	// disagree.
+	// Directory events use traversal rules rather than the file allowlist.
+	// Scan immediately after installing watches: a populated tree can arrive
+	// before the watcher registers its descendants.
 	if ev.Has(fsnotify.Create) {
 		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
-			if vault.LocalOnlyDir(rel) {
+			if vault.SkipDir(rel) {
 				return
 			}
 			if err := w.addTree(ev.Name); err != nil {
@@ -262,7 +218,11 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 		}
 	}
 
-	if vault.Skip(rel) && !w.watchableConfigRel(rel) {
+	// A removed or renamed ancestor can no longer be statted as a directory.
+	// Its event must still trigger a scan to commit inventory deletions.
+	inventoryRemoval := vault.PluginInventoryAncestor(rel) &&
+		(ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename))
+	if vault.Skip(rel) && !inventoryRemoval {
 		return
 	}
 

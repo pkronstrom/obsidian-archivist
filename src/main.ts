@@ -1,7 +1,8 @@
-import { Notice, Plugin, TAbstractFile, TFile, setIcon } from "obsidian";
+import { Notice, Platform, Plugin, TAbstractFile, TFile, setIcon } from "obsidian";
 import { openSyncedNote } from "./open-synced";
+import { publishInventory, inventoryPathAllowed } from "./plugin-inventory";
 import { Client } from "./client";
-import { Sync, skip, localOnly } from "./sync";
+import { Sync, skip, localOnly, type SyncReport } from "./sync";
 import { RevisionModal } from "./revision-modal";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
 import { Watcher } from "./watch";
@@ -9,20 +10,14 @@ import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
 import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
 import { loadToken } from "./credentials";
-import { loadConfigSync } from "./config-sync";
-import {
-	installPlugins,
-	isMobile,
-	plannedInstalls,
-	PluginInstallModal,
-	reportInstalls,
-} from "./plugin-install";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
 export default class ArchivistPlugin extends Plugin {
 	settings: Settings = { ...DEFAULT_SETTINGS };
 	sync!: Sync;
+	inventoryProblem?: string;
+	private layoutReady = false;
 
 	private status?: HTMLElement;
 	private revisions?: HTMLElement;
@@ -96,7 +91,17 @@ export default class ArchivistPlugin extends Plugin {
 			() => new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
-			() => loadConfigSync(this.app),
+			undefined,
+			async () => {
+				if (!this.layoutReady) return;
+				try {
+					await publishInventory(this.app, this.settings.device, Platform.isMobile ? "mobile" : "desktop");
+					this.inventoryProblem = undefined;
+				} catch (error) {
+					this.inventoryProblem = error instanceof Error ? error.message : "Plugin inventory could not be published.";
+					console.warn("[archivist]", this.inventoryProblem);
+				}
+			},
 		);
 
 		// Long-polls the server so remote changes land in about a second rather
@@ -167,7 +172,8 @@ export default class ArchivistPlugin extends Plugin {
 			id: "rebootstrap",
 			name: "Re-bootstrap from server",
 			callback: async () => {
-				await this.sync.forceRebootstrap();
+				const report = await this.sync.forceRebootstrap();
+				this.reportInventoryRefusal(report);
 				new Notice("archivist: re-bootstrapped");
 			},
 		});
@@ -195,12 +201,10 @@ export default class ArchivistPlugin extends Plugin {
 		// diffing against the snapshot, so a missed or spurious event costs
 		// nothing.
 		this.app.workspace.onLayoutReady(() => {
+			this.layoutReady = true;
 			const touched = (f: TAbstractFile) => {
 				if (!this.settings.syncOnChange) return;
-				// With the level, so a snippet or a theme edit schedules a sync
-				// the same way a note does. Without it this keeps the Files-only
-				// default and config only moves on the interval.
-				if (skip(f.path, loadConfigSync(this.app))) return;
+				if (skip(f.path)) return;
 				this.scheduleSync();
 			};
 			this.registerEvent(this.app.vault.on("create", touched));
@@ -388,12 +392,12 @@ export default class ArchivistPlugin extends Plugin {
 					8000,
 				);
 			}
+			this.reportInventoryRefusal(report);
 			this.setStatus(
-				report.rebootstrapped
+				report.refused.length ? "some changes refused" : report.rebootstrapped
 					? "re-bootstrapped"
 					: `↓${report.pulled} ↑${report.pushed}`,
 			);
-			if (report.pulled > 0) await this.installArrivedPlugins();
 		} catch (err) {
 			if (err instanceof PairingHazardError) {
 				// Not an error to report and move past: it is a question, and
@@ -413,6 +417,12 @@ export default class ArchivistPlugin extends Plugin {
 			this.setStatus("error");
 			new Notice(`archivist: ${msg}`, 8000);
 		}
+	}
+
+	private reportInventoryRefusal(report: SyncReport | null): void {
+		if (!report?.refused.some(r => inventoryPathAllowed(r.path))) return;
+		this.inventoryProblem = "Plugin inventory sharing was refused by the server. Update the server and check write access.";
+		new Notice(`archivist: ${this.inventoryProblem}`, 8000);
 	}
 
 	/** Open the pairing choice. Also called from the settings tab. */
@@ -452,7 +462,7 @@ export default class ArchivistPlugin extends Plugin {
 	/**
 	 * Opens this plugin's own settings tab. `app.setting` is undocumented --
 	 * there is no public API for it -- but it is the standard way plugins do
-	 * this, and the same cast pattern already used below for `plugins.manifests`.
+	 * this.
 	 */
 	private openSettings(): void {
 		const setting = (
@@ -467,7 +477,8 @@ export default class ArchivistPlugin extends Plugin {
 	private async resolvePairing(choice: PairingChoice): Promise<void> {
 		this.setStatus("syncing…");
 		try {
-			await this.sync.resolvePairing(choice);
+			const report = await this.sync.resolvePairing(choice);
+			this.reportInventoryRefusal(report);
 			this.pendingPairing = undefined;
 			this.pairingDeferred = false;
 			new Notice(
@@ -481,58 +492,13 @@ export default class ArchivistPlugin extends Plugin {
 			// No second runSync here. Sync.resolvePairing ends by calling run()
 			// itself, so calling it again would push a fresh cycle straight
 			// after the one that just finished.
-			this.setStatus("idle");
+			this.setStatus(report?.refused.length ? "some changes refused" : "idle");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error("[archivist] pairing failed", err);
 			this.setStatus("error");
 			new Notice(`archivist: ${msg}`, 8000);
 		}
-	}
-
-	/**
-	 * Install plugins that arrived in the synced list but are not here yet.
-	 *
-	 * Behind a confirmation every time, and never automatic: this downloads code
-	 * from the internet at the direction of another device, and anyone with
-	 * write access to the vault could add an id to that list. Declining leaves
-	 * the list synced and the code absent, which is exactly what Obsidian Sync
-	 * does.
-	 */
-	private async installArrivedPlugins(): Promise<void> {
-		if (loadConfigSync(this.app).level !== "plugins") return;
-
-		const listPath = `${this.app.vault.configDir}/community-plugins.json`;
-		if (!(await this.app.vault.adapter.exists(listPath))) return;
-
-		let wanted: string[];
-		try {
-			wanted = JSON.parse(await this.app.vault.adapter.read(listPath));
-			if (!Array.isArray(wanted)) return;
-		} catch {
-			return;
-		}
-
-		const registry = (
-			this.app as unknown as {
-				plugins?: { manifests?: Record<string, { id: string; isDesktopOnly?: boolean }> };
-			}
-		).plugins;
-		const manifests = registry?.manifests ?? {};
-		const plan = plannedInstalls(wanted, Object.keys(manifests), manifests, isMobile());
-		if (plan.install.length === 0) {
-			if (plan.skipped.length > 0) {
-				reportInstalls({ installed: [], failed: [], skippedOnMobile: [] }, plan.skipped);
-			}
-			return;
-		}
-
-		new PluginInstallModal(this.app, plan, async () => {
-			const result = await installPlugins(this.app, plan.install, (msg, ...rest) =>
-				console.log("[archivist:plugins]", msg, ...rest),
-			);
-			reportInstalls(result, plan.skipped);
-		}).open();
 	}
 
 	/** All three of URL, token and vault are needed before anything can sync. */

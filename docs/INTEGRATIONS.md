@@ -207,28 +207,35 @@ vault's event stream, selected by `ARCHIVIST_RELAY_VAULT`; that token must have
 read access to the selected vault. MCP callers can still select any vault their
 own token opens.
 
-## Sync Obsidian configuration
+## Plugins on your devices
 
-Configuration sync is off by default and selected independently on each device:
+Open **Archivist → Plugins on your devices** to compare installed community
+plugins across your Mac, phone and other clients. Missing plugins and exact
+version differences are shown per plugin; filter by device when needed. Disabled
+plugins still count as installed. Devices with identical names have separate IDs,
+and each remote list shows when its inventory changed, not when it was last online.
 
-| Level | What syncs |
-| --- | --- |
-| **Files only** | notes and attachments |
-| **Files + appearance** | appearance, hotkeys, snippets and themes |
-| **Files + appearance + plugins** | appearance plus plugin lists and approved settings |
+**Open in Community Plugins** opens the official directory listing, whose **Add
+to Obsidian** action leads to installation. Obsidian handles installation, updates
+and enablement. Private or BRAT plugins may not be listed, and the store version
+may differ from the version on another device. Desktop-only plugins are marked
+separately on mobile. Use **Refresh plugin list** after installing a plugin; the
+next sync shares the changed inventory.
 
-Workspaces, graph state, caches and plugin code never sync. Archivist's own
-settings never sync because they contain its server configuration.
+Only manifest fields (ID, name, version and desktop compatibility) and a device
+label/installation ID travel. Plugin code, settings, enablement, themes, hotkeys
+and other live Obsidian configuration remain local. Inventories are collected
+from the vault's configured Obsidian directory, including disabled plugins.
 
-Plugin `data.json` files are opt-in because they commonly contain API keys. A
-best-effort scanner refuses settings that look credential-bearing and explains
-why. You can approve a plugin explicitly, but a clean scan is not a guarantee
-that a file contains no secret.
+### Upgrading from config sync
 
-Plugin lists sync without plugin code. A receiving device names missing plugins
-and asks before installing them from the community store; desktop-only plugins
-are skipped on mobile.
+Update the server and every client together. Config sync has been retired; old
+appearance/plugin opt-ins cannot re-enable it. Local settings and previous server
+history are preserved, without deleting config files or rewriting history. The
+server refuses config mutations from older clients and omits config from live
+sync downloads. Historical content remains readable.
 
-Settings files merge by JSON key. Arrays replace wholesale. If two devices
-change the same key differently, the last write wins and the other version is
-kept as a conflict copy. Config sync requires the default `.obsidian` directory.
+An older server refuses inventory files. The client reports that refusal; notes
+can still sync. Install the updated server and check token write access before
+expecting inventories from other devices. Offline-device inventories remain
+visible until removed; their timestamps describe the last changed inventory.

@@ -39,7 +39,7 @@ test("skip applies .local before the dotfile and config rules", () => {
 	// most permissive level -- otherwise the promise has a hole exactly where
 	// nobody would look for it.
 	assert.equal(skip(".obsidian/appearance.local.json", plugins), true);
-	assert.equal(skip(".obsidian/appearance.json", plugins), false);
+	assert.equal(skip(".obsidian/appearance.json", plugins), true);
 	assert.equal(skip("Note.md"), false);
 });
 

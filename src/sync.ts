@@ -1,4 +1,5 @@
 import type { App, DataAdapter } from "obsidian";
+import { inventoryPathAllowed, inventoryDirectory } from "./plugin-inventory";
 import { Client, UnknownBaseError, requireCurrentIndex, type Change, type Result } from "./client";
 import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
@@ -13,18 +14,15 @@ import {
 } from "./state";
 import { PairingHazardError, isRescuePath, rescueFolder, type PairingChoice } from "./pairing";
 import {
-	acceptedOnlyByDefault,
-	CONFIG_DIR,
-	configSyncable,
 	DEFAULT_CONFIG_SYNC,
 	type ConfigSyncSettings,
 } from "./config-sync";
-import { scanForSecrets } from "./secrets";
 
 export type SyncReport = {
 	pulled: number;
 	pushed: number;
 	conflicts: Result[];
+	refused: Result[];
 	rebootstrapped: boolean;
 };
 
@@ -108,7 +106,7 @@ export function skip(
 	path: string,
 	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
 ): boolean {
-	// Before the dotfile rules, and never widened by the config allowlist: the
+	// Before the dotfile rules, and never widened by the inventory allowance: the
 	// user picked this name to stop the file syncing, so it outranks every
 	// other rule including the allowlist that lets some config paths through.
 	if (localOnly(path)) return true;
@@ -133,7 +131,7 @@ export function skipDir(
 	// feature. Only the accidental file-grammar match is exempted here.
 	if (localOnlyDir(path)) return true;
 	if (!path.split("/").some((seg) => seg.startsWith("."))) return false;
-	return !configSyncable(path, config);
+	return !inventoryPathAllowed(path);
 }
 
 /**
@@ -148,14 +146,6 @@ export function skipDir(
  * what changed".
  */
 export class Sync {
-	/**
-	 * Plugin settings files refused by the scanner on the way out, so the
-	 * settings pane and the sync report can say WHICH plugin is not syncing
-	 * and why. Rebuilt each cycle: a refusal that no longer applies, because
-	 * the user removed the key or enabled the plugin explicitly, should stop
-	 * being reported.
-	 */
-	readonly refusedSecrets = new Map<string, string[]>();
 	private running = false;
 	private queued = false;
 
@@ -170,12 +160,9 @@ export class Sync {
 		private client: () => Client,
 		private device: () => string,
 		private log: Logger = () => {},
-		/**
-		 * Read fresh on every call, not captured: the user can change the level
-		 * mid-session, and a captured value would keep syncing at the old one
-		 * until Obsidian restarted.
-		 */
+		/** Legacy call signature; no stored choice enables config transfer. */
 		private config: () => ConfigSyncSettings = () => DEFAULT_CONFIG_SYNC,
+		private prepareLocal: () => Promise<void> = async () => {},
 	) {}
 
 	private get adapter(): DataAdapter {
@@ -205,7 +192,7 @@ export class Sync {
 	private async cycle(): Promise<SyncReport> {
 		const client = this.client();
 		let state = loadState(this.app);
-		const report: SyncReport = { pulled: 0, pushed: 0, conflicts: [], rebootstrapped: false };
+		const report: SyncReport = { pulled: 0, pushed: 0, conflicts: [], refused: [], rebootstrapped: false };
 
 		// Identity first, BEFORE anything is read or written.
 		//
@@ -226,18 +213,10 @@ export class Sync {
 		if (!this.pairingResolved && isFirstRun(state)) {
 			const serverHead = await client.head();
 			if (serverHead !== "") {
-				// NOTES only, never config. Every Obsidian vault has a
-				// .obsidian/ directory, so counting config here would make a
-				// brand-new empty vault with config sync enabled refuse to
-				// onboard -- and there would be no way to turn it off, because
-				// the setting lives behind the sync that just refused.
-				//
-				// Config colliding is not the hazard either: allowlisted JSON
-				// is merged by key and everything else in there is refused, so
-				// there is no silent union to prevent. The hazard is two
-				// unrelated sets of NOTES becoming one.
+				// Inventory metadata alone must not make an empty vault look
+				// populated. Pairing guards protect the user's notes.
 				const localFiles = (await this.listAll("")).filter(
-					(p) => !p.startsWith(CONFIG_DIR + "/"),
+					(p) => !inventoryPathAllowed(p),
 				).length;
 				if (localFiles > 0) throw new PairingHazardError(localFiles, serverHead);
 			}
@@ -283,6 +262,7 @@ export class Sync {
 		}
 
 		// --- push ------------------------------------------------------------
+		await this.prepareLocal();
 		const local = await this.localChanges(state);
 		if (local.length > 0) {
 			await this.upload(local);
@@ -290,8 +270,9 @@ export class Sync {
 			state.base = head;
 			for (const r of results) {
 				if (r.status === "conflict") report.conflicts.push(r);
+				if (r.status === "refused") report.refused.push(r);
 			}
-			report.pushed = local.length;
+			report.pushed = local.length - report.refused.length;
 
 			// Adopt into the snapshot ONLY what the server actually took.
 			//
@@ -336,6 +317,7 @@ export class Sync {
 				}
 			}
 			for (const f of needsRefetch) {
+				if (skip(f.path, this.config())) continue;
 				state.files[f.path] = await this.materialise(f.path, f.hash, f.size);
 			}
 		}
@@ -474,10 +456,6 @@ export class Sync {
 	private async localChanges(state: SyncState): Promise<PendingChange[]> {
 		const out: PendingChange[] = [];
 		const seen = new Set<string>();
-		// Rebuilt every cycle. A refusal that no longer applies, because the
-		// key was removed or the plugin was enabled explicitly, must stop being
-		// reported rather than linger as a stale warning.
-		this.refusedSecrets.clear();
 
 		for (const path of await this.listAll("")) {
 			seen.add(path);
@@ -494,23 +472,6 @@ export class Sync {
 				// re-hashing it every cycle.
 				state.files[path] = { hash, mtime: st.mtime, size: st.size };
 				continue;
-			}
-			// A plugin's data.json syncing only because "sync all plugins" is
-			// on gets scanned HERE, at the push, not merely in the settings
-			// pane. Scanning that lives only in the UI is advice; a blanket
-			// default needs enforcement, because the asymmetry is unforgiving:
-			// a false positive costs a setting, a false negative puts a live
-			// key in git history permanently and nothing reports it.
-			if (acceptedOnlyByDefault(path, this.config())) {
-				const why = this.suspicionsIn(content);
-				if (why.length > 0) {
-					// Skipped, never edited: a data.json with a hole in it is a
-					// broken file that looks fine, and the plugin reading it
-					// re-prompts or silently resets.
-					this.refusedSecrets.set(path, why);
-					this.log(`refusing ${path}: ${why.join("; ")}`);
-					continue;
-				}
 			}
 			out.push({ path, op: "put", hash, mtime: st.mtime, size: st.size, content });
 		}
@@ -529,9 +490,7 @@ export class Sync {
 			for (const path of Object.keys(state.files)) {
 				if (seen.has(path)) continue;
 				if (skip(path, this.config())) {
-					// No longer ours to track. Forget it without telling the
-					// server anything; if the level is turned back up, the next
-					// pull re-materialises it from the server's copy.
+					// Retired config is forgotten locally, never deleted remotely.
 					delete state.files[path];
 					continue;
 				}
@@ -544,23 +503,6 @@ export class Sync {
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
 		return pairRenames(out as Pending[]) as PendingChange[];
-	}
-
-	/**
-	 * What the scanner objects to in a data.json, as plain sentences.
-	 *
-	 * Unparseable counts as suspicious rather than clean: a file this cannot
-	 * read is a file this cannot vouch for, and the safe answer for a blanket
-	 * default is to leave it alone.
-	 */
-	private suspicionsIn(content: ArrayBuffer): string[] {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(new TextDecoder().decode(content));
-		} catch {
-			return ["its data.json could not be parsed, so it cannot be checked"];
-		}
-		return scanForSecrets(parsed).map((x) => `${x.path}: ${x.why}`);
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {
@@ -605,12 +547,6 @@ export class Sync {
 		}
 	}
 
-	/** Whether a directory is the config directory or lives inside it. */
-	private mayHoldConfig(dir: string): boolean {
-		if (this.config().level === "files") return false;
-		return dir === CONFIG_DIR || dir.startsWith(CONFIG_DIR + "/");
-	}
-
 	/** listAll walks the vault via the adapter, which sees everything -- unlike
 	 *  vault.getFiles(), which excludes the config directory. */
 	private async listAll(dir: string): Promise<string[]> {
@@ -622,9 +558,8 @@ export class Sync {
 		for (const d of listing.folders) {
 			// A directory is worth descending into if anything under it could
 			// sync. skip() answers that for a FILE path; for a directory the
-			// config directory is the one case where the directory itself is
-			// excluded and its contents are not.
-			if (skipDir(d, this.config()) && !this.mayHoldConfig(d)) continue;
+			// inventory ancestors are excluded as files but contain allowed JSON.
+			if (skipDir(d, this.config()) && !inventoryDirectory(d)) continue;
 			out.push(...(await this.listAll(d)));
 		}
 		return out;
@@ -707,7 +642,7 @@ export class Sync {
 		// Everything except an EARLIER rescue. Those are already rescued, and
 		// sweeping them up again would nest them one level deeper on every
 		// adoption, burying the thing the folder exists to make findable.
-		const paths = (await this.listAll("")).filter((p) => !isRescuePath(p));
+		const paths = (await this.listAll("")).filter((p) => !isRescuePath(p) && !inventoryPathAllowed(p));
 		for (const p of paths) {
 			const dest = `${folder}/${p}`;
 			await this.mkdirs(dest);
@@ -758,10 +693,10 @@ export class Sync {
 	 * name and the server's version lands at the real path, and a local-only
 	 * file is simply pushed on the next cycle.
 	 */
-	async forceRebootstrap(): Promise<void> {
+	async forceRebootstrap(): Promise<SyncReport | null> {
 		saveState(this.app, emptyState());
 		this.pairingResolved = true;
-		await this.run();
+		return this.run();
 	}
 }
 

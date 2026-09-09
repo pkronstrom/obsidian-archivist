@@ -431,3 +431,26 @@
 .archivist-section-head .archivist-section-chevron {
 	flex: 0 0 auto;
 }
+
+/* Plugin inventories use stacked rows so additional devices do not widen mobile. */
+.archivist-inventory-toolbar {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 12px;
+ align-items: center;
+}
+.archivist-inventory-toolbar select { max-width: 100%; }
+.archivist-inventory-plugin {
+ border-top: 1px solid var(--background-modifier-border);
+ padding: 12px 0;
+ overflow-wrap: anywhere;
+}
+.archivist-inventory-plugin h4 { margin: 0 0 8px; }
+.archivist-inventory-plugin p { margin: 4px 0; }
+.archivist-inventory-meta, .archivist-inventory-sources {
+ color: var(--text-muted);
+ font-size: var(--font-smallest);
+ overflow-wrap: anywhere;
+}
+.archivist-inventory-store { display: inline-block; margin-top: 8px; }
+.archivist-inventory-warning { color: var(--text-warning); }

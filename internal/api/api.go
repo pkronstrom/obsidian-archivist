@@ -344,6 +344,13 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request, inst *vaults.I
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
+	// Historical trees retain retired paths, but live sync must never advertise
+	// them to clients bootstrapping under the current policy.
+	for path := range files {
+		if vault.Skip(path) {
+			delete(files, path)
+		}
+	}
 	writeJSON(w, protocol.SnapshotResponse{Head: h, Files: files})
 }
 
@@ -366,10 +373,15 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request, inst *vaults.In
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
-	if entries == nil {
-		entries = []repo.Change{}
+	// Apply current sync policy to puts and deletions from historical cursors.
+	// Keep Repo.Changes unfiltered for revision browsing and recovery.
+	visible := make([]repo.Change, 0, len(entries))
+	for _, entry := range entries {
+		if !vault.Skip(entry.Path) {
+			visible = append(visible, entry)
+		}
 	}
-	writeJSON(w, protocol.ChangesResponse{Head: h, Entries: entries})
+	writeJSON(w, protocol.ChangesResponse{Head: h, Entries: visible})
 }
 
 func (s *Server) have(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {

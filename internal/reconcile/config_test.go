@@ -1,17 +1,12 @@
 package reconcile
 
 import (
-	"encoding/json"
-	"testing"
-
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
+	"testing"
 )
 
-// newRecWithPolicy is newRec plus the exclusion policy the SERVER installs.
-// newRec leaves repo.Open's permissive default in place, which is only correct
-// for tests that do not care what may be committed -- these care entirely.
 func newRecWithPolicy(t *testing.T) (*Reconciler, *vault.Vault, *repo.Repo) {
 	t.Helper()
 	rc, v, r := newRec(t)
@@ -19,233 +14,140 @@ func newRecWithPolicy(t *testing.T) (*Reconciler, *vault.Vault, *repo.Repo) {
 	return rc, v, r
 }
 
-// The REMOTE write path: a push of an allowlisted config file must land, and a
-// push of a refused one must be told so before anything is written.
-func TestPushAcceptsAllowlistedConfigAndRefusesTheRest(t *testing.T) {
-	rc, v, r := newRecWithPolicy(t)
-
-	allowed := []byte(`{"theme":"obsidian"}`)
-	refused := []byte(`{"main":{}}`)
-	hAllowed, err := r.WriteBlob(allowed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hRefused, err := r.WriteBlob(refused)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, results, err := rc.Push("", "mac", []Change{
-		{Path: ".obsidian/appearance.json", Op: protocol.OpPut, Hash: hAllowed},
-		{Path: ".obsidian/workspace.json", Op: protocol.OpPut, Hash: hRefused},
-	})
-	if err != nil {
-		t.Fatalf("push: %v", err)
-	}
-
-	byPath := map[string]Result{}
-	for _, res := range results {
-		byPath[res.Path] = res
-	}
-	if got := byPath[".obsidian/appearance.json"].Status; got != StatusApplied {
-		t.Errorf("appearance.json status = %q, want %q", got, StatusApplied)
-	}
-	if got := byPath[".obsidian/workspace.json"].Status; got != StatusRefused {
-		t.Errorf("workspace.json status = %q, want %q", got, StatusRefused)
-	}
-
-	if got, err := v.Read(".obsidian/appearance.json"); err != nil || string(got) != string(allowed) {
-		t.Errorf("appearance.json on disk = %q, %v", got, err)
-	}
-	if _, err := v.Read(".obsidian/workspace.json"); err == nil {
-		t.Error("workspace.json was written despite being refused")
-	}
-}
-
-// The LOCAL write path: a config file edited on the server host must reach
-// history through Scan, and a refused one must not.
-func TestScanCommitsAllowlistedConfigOnly(t *testing.T) {
-	rc, v, r := newRecWithPolicy(t)
-
-	if err := v.Write(".obsidian/snippets/dark.css", []byte("body{}\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := v.Write(".obsidian/workspace.json", []byte(`{"left":{}}`)); err != nil {
-		t.Fatal(err)
-	}
-
-	head, err := rc.Scan("local config edit")
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	snap, err := r.Snapshot(head)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := snap[".obsidian/snippets/dark.css"]; !ok {
-		t.Error("a locally-edited snippet never reached history")
-	}
-	if _, ok := snap[".obsidian/workspace.json"]; ok {
-		t.Error("workspace.json reached history through the local path")
+func TestLegacyConfigOperationsRefusedAndHistoryPreserved(t *testing.T) {
+	for _, op := range []string{"put", "del", "move-from", "move-to"} {
+		t.Run(op, func(t *testing.T) {
+			rc, v, r := newRec(t)
+			config := ".obsidian/appearance.json"
+			old := `{"theme":"old"}`
+			if err := v.Write(config, []byte(old)); err != nil {
+				t.Fatal(err)
+			}
+			if err := v.Write("source.md", []byte("source")); err != nil {
+				t.Fatal(err)
+			}
+			base, err := rc.Scan("legacy config history")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+			ch := put(t, r, config, "replacement")
+			switch op {
+			case "del":
+				ch = Change{Path: config, Op: protocol.OpDel}
+			case "move-from":
+				ch = Change{Path: "leaked.md", From: config, Op: protocol.OpMove}
+			case "move-to":
+				ch = Change{Path: ".obsidian/hotkeys.json", From: "source.md", Op: protocol.OpMove}
+			}
+			head, results, err := rc.Push(base, "legacy-client", []Change{ch, put(t, r, "note.md", "notes continue")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if results[0].Status != StatusRefused || results[1].Status != StatusApplied {
+				t.Fatalf("results = %+v", results)
+			}
+			for _, rev := range []string{base, head} {
+				got, err := r.ReadAt(rev, config)
+				if err != nil || string(got) != old {
+					t.Fatalf("history %s = %q, %v", rev, got, err)
+				}
+			}
+			got, err := v.Read(config)
+			if err != nil || string(got) != old {
+				t.Fatalf("disk config = %q, %v", got, err)
+			}
+			if got, err := v.Read("source.md"); err != nil || string(got) != "source" {
+				t.Fatalf("move source changed: %q %v", got, err)
+			}
+			if _, err := v.Read(".obsidian/hotkeys.json"); err == nil {
+				t.Fatal("move destination written")
+			}
+			if _, err := v.Read("leaked.md"); err == nil {
+				t.Fatal("config source leaked")
+			}
+			if err := v.Write(config, []byte("local config edit")); err != nil {
+				t.Fatal(err)
+			}
+			after, err := rc.Scan("local config ignored")
+			if err != nil || after != head {
+				t.Fatalf("local config created commit: %s %v", after, err)
+			}
+		})
 	}
 }
 
-// Two devices editing different keys of the same settings file must both keep
-// their edit, and must not produce a conflict file.
-func TestConfigJSONMergesByKey(t *testing.T) {
+const inventoryPath = ".archivist/plugin-inventory/01234567-89ab-cdef-0123-456789abcdef.json"
+
+func TestInventoryCommitAndWholeFileLastWriterWins(t *testing.T) {
 	rc, v, r := newRecWithPolicy(t)
-
-	base := []byte("{\n  \"theme\": \"obsidian\",\n  \"fontSize\": 16\n}\n")
-	if err := v.Write(".obsidian/appearance.json", base); err != nil {
-		t.Fatal(err)
-	}
-	baseHead, err := rc.Scan("seed")
+	base, results, err := rc.Push("", "mac", []Change{put(t, r, inventoryPath, `{
+ "name": "old",
+ "plugins": []
+}
+`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// The server moves on: fontSize changes here.
-	if err := v.Write(".obsidian/appearance.json",
-		[]byte("{\n  \"theme\": \"obsidian\",\n  \"fontSize\": 18\n}\n")); err != nil {
-		t.Fatal(err)
+	if results[0].Status != StatusApplied {
+		t.Fatalf("results = %+v", results)
 	}
-	if _, err := rc.Scan("server edit"); err != nil {
-		t.Fatal(err)
+	snap, err := r.Snapshot(base)
+	if err != nil || snap[inventoryPath].Hash == "" {
+		t.Fatalf("inventory absent from commit: %+v %v", snap, err)
 	}
-
-	// The client pushes a theme change computed from the older base.
-	theirs := []byte("{\n  \"theme\": \"minimal\",\n  \"fontSize\": 16\n}\n")
-	h, err := r.WriteBlob(theirs)
+	ours := `{
+ "name": "server",
+ "plugins": []
+}
+`
+	prior, _, err := rc.Push(base, "mac", []Change{put(t, r, inventoryPath, ours)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, results, err := rc.Push(baseHead, "mac", []Change{
-		{Path: ".obsidian/appearance.json", Op: protocol.OpPut, Hash: h},
-	})
+	theirs := `{
+ "name": "old",
+ "plugins": ["plugin"]
+}
+`
+	head, results, err := rc.Push(base, "restored-mac", []Change{put(t, r, inventoryPath, theirs)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if results[0].Status != StatusMerged {
-		t.Fatalf("status = %q, want %q", results[0].Status, StatusMerged)
+	if results[0].Status != StatusApplied {
+		t.Fatalf("inventory merged or conflicted: %+v", results)
 	}
-
-	got, err := v.Read(".obsidian/appearance.json")
-	if err != nil {
-		t.Fatal(err)
+	if got, err := v.Read(inventoryPath); err != nil || string(got) != theirs {
+		t.Fatalf("inventory combined devices: %q %v", got, err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(got, &m); err != nil {
-		t.Fatalf("merged config is not valid JSON: %v\n%s", err, got)
+	if got, err := r.ReadAt(prior, inventoryPath); err != nil || string(got) != ours {
+		t.Fatalf("prior lost: %q %v", got, err)
 	}
-	if m["theme"] != "minimal" {
-		t.Errorf("theme = %v, want minimal (the client's edit was lost)", m["theme"])
-	}
-	if m["fontSize"] != float64(18) {
-		t.Errorf("fontSize = %v, want 18 (the server's edit was lost)", m["fontSize"])
+	next, _, err := rc.Push(head, "mac", []Change{put(t, r, inventoryPath, theirs)})
+	if err != nil || next != head {
+		t.Fatalf("unchanged inventory committed: %s %v", next, err)
 	}
 }
 
-// Same key, different values: the last writer wins AND a conflict copy is kept.
-// A settings file has no way to carry conflict markers, so the copy is the only
-// record that a choice was made.
-func TestConfigJSONConflictKeepsACopy(t *testing.T) {
-	rc, v, r := newRecWithPolicy(t)
-
-	if err := v.Write(".obsidian/appearance.json",
-		[]byte("{\n  \"theme\": \"obsidian\"\n}\n")); err != nil {
-		t.Fatal(err)
-	}
-	baseHead, err := rc.Scan("seed")
+// A malformed prior upload must not trap an installation in an unavailable
+// state when it subsequently publishes a valid inventory from a stale base.
+func TestInventoryCanReplaceMalformedBinaryContent(t *testing.T) {
+	rc, _, r := newRecWithPolicy(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, inventoryPath, "{}")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Write(".obsidian/appearance.json",
-		[]byte("{\n  \"theme\": \"things\"\n}\n")); err != nil {
+	if _, _, err := rc.Push(base, "mac", []Change{put(t, r, inventoryPath, "bad\x00inventory")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rc.Scan("server edit"); err != nil {
-		t.Fatal(err)
-	}
-
-	theirs := []byte("{\n  \"theme\": \"minimal\"\n}\n")
-	h, err := r.WriteBlob(theirs)
+	head, results, err := rc.Push(base, "mac", []Change{put(t, r, inventoryPath, `{"plugins":[]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, results, err := rc.Push(baseHead, "mac", []Change{
-		{Path: ".obsidian/appearance.json", Op: protocol.OpPut, Hash: h},
-	})
-	if err != nil {
-		t.Fatal(err)
+	if results[0].Status != StatusApplied {
+		t.Fatalf("repair refused by merge resolution: %+v", results)
 	}
-	if results[0].Status != StatusConflict {
-		t.Fatalf("status = %q, want %q", results[0].Status, StatusConflict)
-	}
-	if results[0].ConflictPath == "" {
-		t.Fatal("no conflict copy was recorded")
-	}
-
-	got, err := v.Read(".obsidian/appearance.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(got, &m); err != nil {
-		t.Fatalf("the winning file must be valid JSON Obsidian can read: %v", err)
-	}
-	if m["theme"] != "minimal" {
-		t.Errorf("theme = %v, want minimal (the last writer)", m["theme"])
-	}
-
-	kept, err := v.Read(results[0].ConflictPath)
-	if err != nil {
-		t.Fatalf("reading the conflict copy: %v", err)
-	}
-	var km map[string]any
-	if err := json.Unmarshal(kept, &km); err != nil {
-		t.Fatalf("the conflict copy must be valid JSON, not a fenced merge: %v\n%s", err, kept)
-	}
-	if km["theme"] != "things" {
-		t.Errorf("conflict copy theme = %v, want things (the server's version)", km["theme"])
-	}
-}
-
-// A CSS snippet is ordinary text and keeps the ordinary text merge.
-func TestConfigCSSStillTextMerges(t *testing.T) {
-	rc, v, r := newRecWithPolicy(t)
-
-	if err := v.Write(".obsidian/snippets/dark.css", []byte("a\nb\nc\n")); err != nil {
-		t.Fatal(err)
-	}
-	baseHead, err := rc.Scan("seed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := v.Write(".obsidian/snippets/dark.css", []byte("A\nb\nc\n")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rc.Scan("server edit"); err != nil {
-		t.Fatal(err)
-	}
-
-	h, err := r.WriteBlob([]byte("a\nb\nC\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, results, err := rc.Push(baseHead, "mac", []Change{
-		{Path: ".obsidian/snippets/dark.css", Op: protocol.OpPut, Hash: h},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if results[0].Status != StatusMerged {
-		t.Fatalf("status = %q, want %q", results[0].Status, StatusMerged)
-	}
-	got, err := v.Read(".obsidian/snippets/dark.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "A\nb\nC\n" {
-		t.Errorf("merged css = %q, want %q", got, "A\nb\nC\n")
+	if got, err := r.ReadAt(head, inventoryPath); err != nil || string(got) != `{"plugins":[]}` {
+		t.Fatalf("repair: %q %v", got, err)
 	}
 }

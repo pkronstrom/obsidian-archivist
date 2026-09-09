@@ -5,14 +5,8 @@ import { DeletedModal } from "./deleted-modal";
 import { scopeWarning, stepUpWarning } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
-import {
-	CONFIG_DIR,
-	loadConfigSync,
-	saveConfigSync,
-	type ConfigLevel,
-	type ConfigSyncSettings,
-} from "./config-sync";
-import { scanForSecrets } from "./secrets";
+import { collectInventory, readInventories } from "./plugin-inventory";
+import { renderInventoryView } from "./plugin-inventory-view";
 import { VaultPickerModal } from "./vault-picker";
 import type ArchivistPlugin from "./main";
 import {
@@ -110,6 +104,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			if (nowOpen) this.opened.add(title);
 			else this.opened.delete(title);
 			body.toggle(nowOpen);
+			if (nowOpen) body.dispatchEvent(new Event("archivist-section-open"));
 			setIcon(chevron, nowOpen ? "chevron-down" : "chevron-right");
 		});
 		return body;
@@ -173,7 +168,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		const unconfigured = !this.plugin.settings.serverUrl || !loadToken(this.app);
 		this.renderServer(this.section(containerEl, "Server", unconfigured));
 		this.renderSyncBehavior(this.section(containerEl, "Sync behavior"));
-		this.renderConfigSync(this.section(containerEl, "Obsidian config"));
+		this.renderPlugins(this.section(containerEl, "Plugins on your devices"));
 		this.renderHistoryAndRecovery(this.section(containerEl, "History and recovery"));
 		this.renderTroubleshooting(this.section(containerEl, "Troubleshooting"));
 	}
@@ -635,181 +630,36 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			);
 	}
 
-	/** The config-sync section: level, then per-plugin opt-ins. */
-	private renderConfigSync(containerEl: HTMLElement): void {
+	private inventoryDevice = "";
 
-		// Obsidian lets the config directory be renamed. This plugin does not
-		// follow that: the whole point of syncing config in-vault is that files
-		// land where Obsidian looks with no translation step, and a rename
-		// would reintroduce exactly that step. Say so rather than syncing the
-		// wrong paths.
-		if (this.app.vault.configDir !== CONFIG_DIR) {
-			new Setting(containerEl).setDesc(
-				`Config sync is unavailable: this vault's configuration directory is ` +
-					`"${this.app.vault.configDir}" rather than "${CONFIG_DIR}", and the ` +
-					`server's allowlist names the default. Notes sync normally.`,
-			);
-			return;
-		}
-
-		const config = loadConfigSync(this.app);
-
-		new Setting(containerEl)
-			.setName("What to sync")
-			.setDesc(
-				"Chosen per device and never synced itself, so a phone can stay on " +
-					"Files only while a laptop syncs everything. Workspace layout, the " +
-					"graph view and plugin caches never sync at any level.",
-			)
-			.addDropdown((d) =>
-				d
-					.addOption("files", "Files only")
-					.addOption("appearance", "Files + appearance")
-					.addOption("plugins", "Files + appearance + plugins")
-					.setValue(config.level)
-					.onChange(async (v) => {
-						config.level = v as ConfigLevel;
-						saveConfigSync(this.app, config);
-						this.display();
-					}),
-			);
-
-		if (config.level !== "plugins") return;
-
-		new Setting(containerEl).setName("Plugin settings").setHeading();
-
-		// Two modes, and the scanner behaves differently in each. Off: nothing
-		// syncs until you say so, per plugin, having read what the scan found.
-		// On: everything syncs EXCEPT what the scan objects to, checked again
-		// at the push rather than only here, because a blanket default must
-		// not be able to send a credential nobody looked at.
-		new Setting(containerEl)
-			.setName("Sync settings for all plugins")
-			.setDesc(
-				"Includes plugins you install later, without enabling each one. " +
-					"Anything the scan flags is still held back until you allow it below.",
-			)
-			.addToggle((t) =>
-				t.setValue(config.acceptAllPlugins).onChange(async (on) => {
-					config.acceptAllPlugins = on;
-					saveConfigSync(this.app, config);
-					this.display();
-				}),
-			);
-
-		new Setting(containerEl).setDesc(
-			"Plugin settings (data.json) often hold API keys, so each is scanned for " +
-				"credentials. Scanning is best-effort, not a guarantee: enabling a " +
-				"flagged plugin puts its secrets into sync history permanently.",
-		);
-
-		// Its own container, filled asynchronously. display() can run again
-		// before the previous scan finishes -- changing the sync mode
-		// re-renders, and every toggle here calls saveSettings -- and the
-		// pending render holds a reference to the element it was given. Without
-		// a target of its own plus the generation guard below, the late render
-		// appends a SECOND copy of every plugin row into the freshly rebuilt
-		// pane.
-		const optIns = containerEl.createDiv();
-		void this.renderPluginOptIns(optIns, config, ++this.renderGeneration);
-	}
-
-	/**
-	 * One row per installed plugin that has a data.json, with what the scanner
-	 * saw. Archivist's own is absent by construction: it is excluded on the
-	 * server with no override, so offering the switch would be a lie.
-	 */
-	private async renderPluginOptIns(
-		containerEl: HTMLElement,
-		config: ConfigSyncSettings,
-		generation: number,
-	): Promise<void> {
-		const adapter = this.app.vault.adapter;
-		const dir = `${CONFIG_DIR}/plugins`;
-		if (!(await adapter.exists(dir))) return;
-		if (generation !== this.renderGeneration) return;
-
-		const { folders } = await adapter.list(dir);
-		if (generation !== this.renderGeneration) return;
-		// Counted while scanning, and reported at the end: the friction this
-		// removes is not knowing that a plugin you installed last month has
-		// been quietly not syncing its settings ever since.
-		let cleanAndIdle = 0;
-		for (const folder of folders.sort()) {
-			// Re-checked each iteration: the scan reads and parses a data.json
-			// per plugin, so a re-render can easily land mid-loop.
-			if (generation !== this.renderGeneration) return;
-			const id = folder.slice(dir.length + 1);
-			if (id.toLowerCase() === "archivist") continue;
-
-			const dataPath = `${folder}/data.json`;
-			if (!(await adapter.exists(dataPath))) continue;
-
-			let suspicions: { path: string; why: string }[] = [];
-			let unreadable = false;
+	private renderPlugins(container: HTMLElement): void {
+		const generation = ++this.renderGeneration;
+		container.createEl("p", {text: "Reading plugin inventories…"});
+		const refresh = async (): Promise<void> => {
+			const request = ++this.inventoryRequest;
 			try {
-				suspicions = scanForSecrets(JSON.parse(await adapter.read(dataPath)));
-			} catch {
-				unreadable = true;
+				const [local, remote] = await Promise.all([
+					collectInventory(this.app, this.plugin.settings.device, Platform.isMobile ? "mobile" : "desktop"),
+					readInventories(this.app.vault.adapter),
+				]);
+				if (generation !== this.renderGeneration || request !== this.inventoryRequest) return;
+				if (!remote.inventories.some(i => i.installationId === this.inventoryDevice)) this.inventoryDevice = "";
+				renderInventoryView(container, {local, ...remote, problem:this.plugin.inventoryProblem}, this.inventoryDevice,
+					id => { this.inventoryDevice = id; void refresh(); }, () => void refresh());
+			} catch (error) {
+				if (generation !== this.renderGeneration || request !== this.inventoryRequest) return;
+				container.empty();
+				container.createEl("p", {text:error instanceof Error ? error.message : "Plugin inventories could not be read."});
+				container.createEl("button", {text:"Retry"}).addEventListener("click", () => void refresh());
 			}
+		};
+		// Refresh again on opening the collapsed section, including after a local install.
+		container.addEventListener("archivist-section-open", () => void refresh());
+		void refresh();
+	}
+	private inventoryRequest = 0;
 
-			// A clean row says NOTHING. The caveat that a clean scan is not a
-			// guarantee belongs once, in the section description above -- repeated
-			// under every plugin it was three lines of identical grey text per
-			// row, which on a phone is most of the screen and reads as noise
-			// rather than as a warning.
-			const desc = unreadable
-				? "data.json could not be parsed, so it cannot be checked"
-				: suspicions.length === 0
-					? ""
-					: `Possible credentials: ${suspicions.map((x) => `${x.path}: ${x.why}`).join("; ")}`;
-
-			const setting = new Setting(containerEl).setName(id);
-			if (desc) setting.setDesc(desc);
-			if (unreadable) continue;
-
-			// With accept-all on, a clean plugin is already syncing and its
-			// toggle would be a lie: turning it "off" changes nothing, because
-			// the blanket default puts it back. Say so instead of offering a
-			// control that does not control anything.
-			if (config.acceptAllPlugins && suspicions.length === 0) {
-				setting.setDesc("Syncing, allowed by the setting above");
-				continue;
-			}
-			if (suspicions.length === 0 && !config.acceptedPlugins.includes(id)) {
-				cleanAndIdle++;
-			}
-
-			setting.addToggle((t) =>
-				t.setValue(config.acceptedPlugins.includes(id)).onChange(async (on) => {
-					if (on && suspicions.length > 0) {
-						// The override exists, and it states what is being
-						// accepted. It is not a dismissal.
-						new Notice(
-							`archivist: "${id}" is being synced despite ${suspicions.length} ` +
-								`suspected credential(s). Those values will be in git history ` +
-								`permanently. Turn it off and rotate them if that was not intended.`,
-							15000,
-						);
-					}
-					config.acceptedPlugins = on
-						? [...new Set([...config.acceptedPlugins, id])]
-						: config.acceptedPlugins.filter((p) => p !== id);
-					saveConfigSync(this.app, config);
-				}),
-			);
-		}
-
-		// The nudge that makes opt-in bearable. Without it, a plugin installed
-		// months ago sits here not syncing its settings and nothing ever says
-		// so -- you find out when a laptop and a phone disagree about a plugin
-		// you configured once.
-		if (!config.acceptAllPlugins && cleanAndIdle > 0 && generation === this.renderGeneration) {
-			new Setting(containerEl).setDesc(
-				cleanAndIdle === 1
-					? "1 plugin has clean settings that are not syncing. Turn it on above, or use the setting at the top of this section."
-					: `${cleanAndIdle} plugins have clean settings that are not syncing. Turn them on above, or use the setting at the top of this section.`,
-			);
-		}
+	hide(): void {
+		this.renderGeneration++;
 	}
 }

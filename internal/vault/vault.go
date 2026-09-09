@@ -188,39 +188,20 @@ func isTemp(rel string) bool {
 	return strings.HasPrefix(path.Base(rel), tmpPrefix)
 }
 
-// Skip reports whether a path is excluded from sync entirely.
-//
-// Dotfiles at any level are skipped: .git never appears here (the git dir lives
-// outside the vault) but .trash and editor droppings do, and none of them
-// belong in the synced set.
-//
-// The one exception is an allowlisted path inside the Obsidian configuration
-// directory -- see config.go. That is a WIDENING of this refusal, not a
-// loosening of it: everything not named there is still refused, and the
-// allowlist is consulted from exactly this one predicate so the four places
-// that use it cannot disagree about what may sync:
-//
-//	internal/reconcile/reconcile.go  applyOne, before any remote write
-//	internal/repo/repo.go            Commit, at staging, for BOTH write paths
-//	internal/repo/history.go         Check, so exclusions are not reported as drift
-//	internal/watcher/watcher.go      handle, so excluded events are dropped
-//
-// The watcher's addTree is the fifth and does NOT go through here; it tests
-// directory names directly and is handled alongside this change.
+// Skip reports whether a file is excluded from sync. All live Obsidian
+// configuration stays local. Only canonical plugin inventory files may pass
+// through the hidden-file exclusion; .local exclusions always win.
 func Skip(rel string) bool {
 	if isTemp(rel) {
 		return true
 	}
-	// Checked BEFORE the dotfile rules, and never widened by the config
-	// allowlist: .local is the one exclusion a person opts into by naming a
-	// file, so it has to beat every other rule including the allowlist that
-	// otherwise lets specific config paths through.
+	// User-selected .local exclusions take precedence over hidden exceptions.
 	if LocalOnly(rel) {
 		return true
 	}
 	for _, seg := range strings.Split(rel, "/") {
 		if strings.HasPrefix(seg, ".") {
-			return !ConfigSyncable(rel)
+			return !PluginInventoryPath(rel)
 		}
 	}
 	return false

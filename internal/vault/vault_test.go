@@ -172,15 +172,6 @@ func TestHashIsStableAndPrefixed(t *testing.T) {
 	}
 }
 
-func TestSkipAllowsAllowlistedConfig(t *testing.T) {
-	if Skip(".obsidian/appearance.json") {
-		t.Error("an allowlisted config file is still being skipped")
-	}
-	if Skip(".obsidian/snippets/dark.css") {
-		t.Error("a snippet is still being skipped")
-	}
-}
-
 func TestSkipStillRefusesEverythingElseDotted(t *testing.T) {
 	for _, p := range []string{
 		".obsidian/workspace.json",

@@ -387,20 +387,21 @@ Go client has `atRoot()` for exactly those two.
 
 ## What is not synced
 
-Everything under a dot-directory, with one exception: an allowlist of
-`.obsidian/` paths, when the device has opted in. `internal/vault/config.go`
-holds the allowlist and `vault.Skip` is the single predicate that consults it —
-which is what keeps the four places that ask (the reconciler's `applyOne`,
-`Repo.Commit`, `Repo.Check` and the watcher's event filter) from ever
-disagreeing.
+Everything under a dot-directory is excluded, except
+`.archivist/plugin-inventory/<lowercase-uuid>.json`. Live `.obsidian` configuration
+is always excluded. `vault.Skip` enforces the file boundary for mutation,
+staging and live sync responses; `vault.SkipDir` admits only the two inventory
+ancestor directories for traversal and watches. Rename/removal of those ancestors
+also schedules a scan. Historical repository reads remain unfiltered.
 
-The watcher's `addTree` is a fifth consumer that does **not** go through
-`vault.Skip`: it decides which directories are worth an inotify watch by name,
-and `handle` judges directory events separately for the same reason. Both have
-their own exception for the config directory, and all three have to be kept in
-step by hand. Without them, local config edits produce no event, so no `Scan`,
-so no commit — the local write path would carry notes and silently not carry
-config.
+Each installation stores its UUID in vault-scoped local storage. The client scans
+installed manifests after layout readiness inside the serialized sync cycle,
+after pull and before computing local changes. Deterministically ordered inventory
+JSON is replaced only when its contents change; timestamps do not cause idle
+commits. Readers validate the schema, identity, bounds and fields before comparing.
+Inventory writes use whole-file last-writer-wins on the server, including malformed
+previous content; they never go through text or key merging. Prior bytes remain
+in Git history. Inventories are informational, not authenticated device ownership.
 
 ## Three invariants worth knowing
 

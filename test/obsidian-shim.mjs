@@ -123,6 +123,7 @@ export class FsAdapter {
 		else await fs.rmdir(this.abs(p));
 	}
 	async rename(from, to) {
+		if (await this.exists(to)) throw new Error("Destination file already exists!");
 		await fs.mkdir(path.dirname(this.abs(to)), { recursive: true });
 		await fs.rename(this.abs(from), this.abs(to));
 	}

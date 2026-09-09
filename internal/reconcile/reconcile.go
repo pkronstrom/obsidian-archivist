@@ -416,15 +416,19 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 		return res, rc.write(path, theirs)
 	}
 
+	// An inventory describes one installation at one point in time. Never
+	// combine fields from different scans, even when diff3 could merge cleanly.
+	// The incoming whole file wins; the previous version stays in Git history.
+	if vault.PluginInventoryPath(path) {
+		res.Status = StatusApplied
+		res = rc.resultFor(res, theirs)
+		return res, rc.write(path, theirs)
+	}
+
 	// Binary never merges. A merged binary is corrupt, and conflict markers in
 	// a PNG are worse than either version alone.
 	if merge.IsBinary(ours) || merge.IsBinary(theirs) {
 		return rc.keepBoth(device, path, theirs, nil)
-	}
-
-	// Allowlisted JSON never sees diff3. See vault.MergeExempt for why.
-	if vault.MergeExempt(path) {
-		return rc.resolveJSON(base, device, path, ours, theirs)
 	}
 
 	baseContent, err := rc.r.ReadAt(base, path)
@@ -448,56 +452,6 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 	}
 	res.Status = StatusMerged
 	res = rc.resultFor(res, merged)
-	return res, rc.write(path, merged)
-}
-
-// resolveJSON merges a settings file by key rather than by line.
-//
-// On a clean merge the result is written and reported as merged, exactly like a
-// text merge. On a key-level divergence the CLIENT's version wins -- they are
-// the last writer -- and the server's version is kept beside it under a
-// conflict name. A settings file cannot carry conflict markers: Obsidian would
-// fail to parse it, and a config file that will not parse is worse than either
-// version alone. The copy is therefore the only record that a choice was made,
-// which is why one is kept every time.
-func (rc *Reconciler) resolveJSON(base, device, path string, ours, theirs []byte) (Result, error) {
-	res := Result{Path: path}
-
-	baseContent, err := rc.r.ReadAt(base, path)
-	if err != nil {
-		// No common ancestor. MergeJSON treats an unparseable base as a
-		// conflict, which is the right answer: with nothing to compare against,
-		// every key looks changed on both sides.
-		baseContent = nil
-	}
-
-	merged, conflict, err := merge.MergeJSON(baseContent, ours, theirs)
-	if err != nil {
-		return res, err
-	}
-	if !conflict {
-		res.Status = StatusMerged
-		res = rc.resultFor(res, merged)
-		return res, rc.write(path, merged)
-	}
-
-	// Last writer wins at the real path; the server's version is parked beside
-	// it. Deliberately NOT keepBoth, which does the opposite -- it keeps the
-	// server's version at the path and parks the client's. For a note that is
-	// right, because the server's copy is the one every other device already
-	// has. For a settings file the device in front of the person wins, and the
-	// copy carries the version they did not choose.
-	cp := conflictPath(path, device, ours)
-	res.Status, res.ConflictPath = StatusConflict, cp
-	res = rc.resultFor(res, merged)
-	if h, herr := repo.HashContent(ours); herr == nil {
-		res.ConflictHash = h
-	}
-	// The copy is the server's version verbatim, NOT a fenced merge: it has to
-	// stay valid JSON so it can simply be copied back over the winner.
-	if err := rc.write(cp, ours); err != nil {
-		return res, err
-	}
 	return res, rc.write(path, merged)
 }
 

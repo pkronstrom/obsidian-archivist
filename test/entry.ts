@@ -14,7 +14,7 @@ export { isRescuePath } from "../src/pairing";
 
 export { loadToken, saveToken } from "../src/credentials";
 
-export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR, acceptedOnlyByDefault, pluginDataId } from "../src/config-sync";
+export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR } from "../src/config-sync";
 
 export { scanForSecrets } from "../src/secrets";
 
@@ -35,3 +35,6 @@ export {
 } from "../src/status-text";
 
 export { openSyncedNote } from "../src/open-synced";
+
+export * from "../src/plugin-inventory";
+export * from "../src/plugin-inventory-view";

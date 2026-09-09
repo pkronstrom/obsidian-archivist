@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { FakeApp } from "./obsidian-shim.mjs";
-import { Sync, Client } from "../dist-test/entry.mjs";
+import { Sync, Client, publishInventory, collectInventory, readInventories, compareInventories, inventoryPath } from "../dist-test/entry.mjs";
 
 const [, , SERVER, TOKEN, VAULT_ARG] = process.argv;
 if (!SERVER || !TOKEN) {
@@ -316,64 +316,59 @@ check("publish local created no conflict file",
 	!macNotes.some((f) => f.includes(".conflict-") && f.startsWith("a.")),
 	JSON.stringify(macNotes));
 
-// --- config sync ------------------------------------------------------------
-
-async function configDevice(name, level, acceptedPlugins = []) {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), `cfg-${name}-`));
-	const app = new FakeApp(root);
-	const config = { level, acceptedPlugins };
-	const sync = new Sync(app, () => new Client(SERVER, TOKEN, VAULT), () => name, () => {}, () => config);
-	return { name, root, app, sync, config, read: (p) => fs.readFile(path.join(root, p), "utf8") };
+// --- plugin inventory: three installations, duplicate labels, no config -------
+async function inventoryDevice(label, platform, plugins) {
+ const d = await device(label);
+ d.app.vault.configDir = ".obsidian";
+ for (const [id, version, isDesktopOnly = false] of plugins) {
+  await d.app.vault.adapter.write(`.obsidian/plugins/${id}/manifest.json`, JSON.stringify({id,name:id,version,isDesktopOnly}));
+  await d.app.vault.adapter.write(`.obsidian/plugins/${id}/data.json`, '{"local":"settings"}');
+ }
+ d.sync = new Sync(d.app, () => new Client(SERVER,TOKEN,VAULT), () => label, () => {},
+  () => ({level:"plugins",acceptedPlugins:["dataview"],acceptAllPlugins:true}),
+  async () => { d.inventory = await publishInventory(d.app,label,platform); });
+ return d;
 }
-
-const deskA = await configDevice("deskA", "appearance");
-const deskB = await configDevice("deskB", "appearance");
-
-await fs.mkdir(path.join(deskA.root, ".obsidian/snippets"), { recursive: true });
-await fs.writeFile(path.join(deskA.root, ".obsidian/snippets/dark.css"), "body { color: red }\n");
-await fs.writeFile(path.join(deskA.root, ".obsidian/appearance.json"), '{\n  "theme": "minimal"\n}\n');
-await fs.writeFile(path.join(deskA.root, ".obsidian/workspace.json"), '{\n  "left": {}\n}\n');
-
+const deskA = await inventoryDevice("Mac","desktop", [["dataview","1"],["desktop-plugin","1",true]]);
+const deskB = await inventoryDevice("Mac","desktop", [["dataview","2"],["private-plugin","beta"]]);
+const inventoryPhone = await inventoryDevice("Phone","mobile", [["dataview","0"]]);
+const devices = [deskA,deskB,inventoryPhone];
+for (const d of devices) await d.sync.run();
+for (const d of devices) await d.sync.run();
+const shared = await readInventories(inventoryPhone.app.vault.adapter);
+check("three installation inventories survive duplicate device labels",shared.inventories.length===3 && new Set(shared.inventories.map(i=>i.installationId)).size===3);
+const rows = compareInventories(inventoryPhone.inventory,shared.inventories);
+check("phone sees both remote versions",rows.find(r=>r.id==="dataview").versions.length===2);
+check("phone sees missing plugin",rows.find(r=>r.id==="private-plugin").status==="missing");
+check("phone sees desktop-only plugin separately",rows.find(r=>r.id==="desktop-plugin").status==="desktop-only");
+check("plugin settings and missing plugin code never travel", !(await inventoryPhone.app.vault.adapter.exists(".obsidian/plugins/private-plugin")));
+const inventoryClient=new Client(SERVER,TOKEN,VAULT);
+const idleHead=await inventoryClient.head();
+for (let n=0;n<3;n++) for (const d of devices) await d.sync.run();
+check("unchanged inventory cycles produce no commits",await inventoryClient.head()===idleHead);
+const peerBefore=await deskA.app.vault.adapter.read(inventoryPath(deskB.inventory.installationId));
+await deskA.app.vault.adapter.write(".obsidian/plugins/dataview/manifest.json",JSON.stringify({id:"dataview",name:"dataview",version:"3",isDesktopOnly:false}));
 await deskA.sync.run();
-await deskB.sync.run();
-
-check("a snippet reaches the other device",
-	(await deskB.read(".obsidian/snippets/dark.css")) === "body { color: red }\n");
-check("appearance.json reaches the other device",
-	JSON.parse(await deskB.read(".obsidian/appearance.json")).theme === "minimal");
-check("workspace.json does NOT travel",
-	!(await deskB.app.vault.adapter.exists(".obsidian/workspace.json")));
-
-// A device on "files only" gets none of it.
-const phoneFilesOnly = await configDevice("phoneFilesOnly", "files");
-await phoneFilesOnly.sync.run();
-check("a files-only device receives no config",
-	!(await phoneFilesOnly.app.vault.adapter.exists(".obsidian/appearance.json")));
-
-// Two devices editing different keys of one settings file both keep their edit.
-await fs.writeFile(path.join(deskA.root, ".obsidian/appearance.json"),
-	'{\n  "theme": "minimal",\n  "baseFontSize": 18\n}\n');
+const delta=await inventoryClient.changes(idleHead);
+check("updating a plugin changes only its source inventory",delta.entries.length===1 && delta.entries[0].path===inventoryPath(deskA.inventory.installationId));
+await inventoryPhone.sync.run();
+check("remote plugin version update leaves phone's installed version local",(await collectInventory(inventoryPhone.app,"Phone","mobile")).plugins[0].version==="0");
+check("peers are not republished locally",await deskA.app.vault.adapter.read(inventoryPath(deskB.inventory.installationId))===peerBefore);
+await deskA.app.vault.adapter.rmdir(".obsidian/plugins/dataview",true);
 await deskA.sync.run();
-await fs.writeFile(path.join(deskB.root, ".obsidian/appearance.json"),
-	'{\n  "theme": "minimal",\n  "accentColor": "#fff"\n}\n');
-await deskB.sync.run();
+await inventoryPhone.sync.run();
+check("uninstall updates only the source inventory",(await collectInventory(inventoryPhone.app,"Phone","mobile")).plugins[0].version==="0");
+await deskA.app.vault.adapter.write(".archivist/plugin-inventory/ffffffff-ffff-ffff-ffff-ffffffffffff.json","{malformed");
+await deskA.app.vault.adapter.write("inventory-note.md","notes still sync");
 await deskA.sync.run();
-const finalAppearance = JSON.parse(await deskA.read(".obsidian/appearance.json"));
-check("the settings file is still valid JSON after a merge",
-	typeof finalAppearance === "object" && finalAppearance !== null);
-check("both devices' disjoint key edits survived",
-	finalAppearance.baseFontSize === 18 && finalAppearance.accentColor === "#fff",
-	JSON.stringify(finalAppearance));
-
-// Archivist's own data.json is refused even if a device tries to push it.
-const sneaky = await configDevice("sneaky", "plugins", ["archivist"]);
-await fs.mkdir(path.join(sneaky.root, ".obsidian/plugins/archivist"), { recursive: true });
-await fs.writeFile(path.join(sneaky.root, ".obsidian/plugins/archivist/data.json"),
-	'{"token":"THE-BEARER-TOKEN"}\n');
-await sneaky.sync.run();
+await inventoryPhone.sync.run();
+check("malformed inventory does not block note sync",await inventoryPhone.read("inventory-note.md")==="notes still sync");
+check("malformed inventory is unavailable, not missing-plugin evidence",(await readInventories(inventoryPhone.app.vault.adapter)).unavailable===1);
+await deskA.app.vault.adapter.write(".obsidian/appearance.json",'{"theme":"local"}');
+await deskA.app.vault.adapter.write(".obsidian/community-plugins.json",'["dataview"]');
 await deskA.sync.run();
-check("archivist's own data.json never travels",
-	!(await deskA.app.vault.adapter.exists(".obsidian/plugins/archivist/data.json")));
+await inventoryPhone.sync.run();
+check("legacy enabled config options cannot transfer live config",!(await inventoryPhone.app.vault.adapter.exists(".obsidian/appearance.json")) && !(await inventoryPhone.app.vault.adapter.exists(".obsidian/community-plugins.json")));
 
 // --- multi-vault -----------------------------------------------------------
 // Needs a server started with two vaults and a tokens file. Skipped otherwise.
