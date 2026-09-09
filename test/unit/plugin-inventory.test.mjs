@@ -107,7 +107,7 @@ test("oversized UTF-8 inventory preserves prior publication instead of causing c
  const before=await app.vault.adapter.read(file(first.installationId));
  const adapter=app.vault.adapter;
  const oldExists=adapter.exists.bind(adapter),oldRead=adapter.read.bind(adapter),oldStat=adapter.stat.bind(adapter),oldList=adapter.list.bind(adapter);
- adapter.exists=async p=>p===".custom/plugins" || oldExists(p);
+ adapter.exists=async p=>p===".custom/plugins" || p.endsWith("manifest.json") || oldExists(p);
  adapter.list=async p=>p===".custom/plugins" ? {files:[],folders:Array.from({length:1600},(_,n)=>`.custom/plugins/p${n}`)} : oldList(p);
  adapter.stat=async p=>p.endsWith("manifest.json")?{type:"file",size:1000}:oldStat(p);
  adapter.read=async p=>p.endsWith("manifest.json")?JSON.stringify({id:p.split("/")[2],name:"界".repeat(200),version:"界".repeat(100),isDesktopOnly:false}):oldRead(p);
@@ -135,4 +135,22 @@ test("failed replacement restores the previous inventory and startup recovers an
  await app.vault.adapter.write(".custom/plugins/a/manifest.json","{");
  await assert.rejects(api.publishInventory(app,"Mac","desktop"),/incomplete/);
  assert.equal(await app.vault.adapter.read(target),before);
+});
+
+test("settings-only plugin folders left by config sync do not break inventory", async t => {
+ const app=await appFor(t);
+ await app.vault.adapter.write(".custom/plugins/installed/manifest.json",JSON.stringify(plugin("installed")));
+ await app.vault.adapter.write(".custom/plugins/not-installed/data.json",'{"setting":"local"}');
+ const inventory=await api.publishInventory(app,"Phone","mobile");
+ assert.deepEqual(inventory.plugins,[plugin("installed")]);
+ assert.equal(await app.vault.adapter.read(".custom/plugins/not-installed/data.json"),'{"setting":"local"}');
+});
+test("scan errors identify the offending manifest and retain the old inventory",async t=>{
+ const app=await appFor(t);
+ await app.vault.adapter.write(".custom/plugins/broken/manifest.json",JSON.stringify(plugin("broken")));
+ const first=await api.publishInventory(app,"Phone","mobile");
+ const before=await app.vault.adapter.read(file(first.installationId));
+ await app.vault.adapter.write(".custom/plugins/broken/manifest.json","{");
+ await assert.rejects(api.publishInventory(app,"Phone","mobile"),/broken.*manifest\.json/);
+ assert.equal(await app.vault.adapter.read(file(first.installationId)),before);
 });

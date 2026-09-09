@@ -46,12 +46,14 @@ export function renderInventoryView(
 		const description: string[] = [];
 		if (row.status === "missing") description.push("Missing on this device");
 		if (row.status === "different-version") description.push("Different version");
-		if (row.compatibility === "desktop-only") description.push("Desktop only");
 		if (row.compatibility === "uncertain") description.push("Compatibility uncertain: device manifests disagree. Check the store listing.");
 		for (const version of row.versions) description.push(`${version.version} — ${version.devices.map(label).join(", ")}`);
 		const setting = new Setting(container).setName(row.name).setDesc(description.join("\n"));
 		setting.settingEl.addClass("archivist-inventory-row");
 		setting.nameEl.createEl("span", {text:row.localVersion || "Not installed", cls:"archivist-inventory-version"});
+		if (row.compatibility === "desktop-only") setting.nameEl.createEl("span", {
+			text:"Desktop only", cls:"archivist-inventory-tag",
+		});
 		setting.descEl.addClass("archivist-inventory-description");
 		if (row.status === "missing" || row.status === "different-version") setting.descEl.addClass("archivist-inventory-difference");
 		if (!(data.local.platform === "mobile" && row.compatibility === "desktop-only")) {

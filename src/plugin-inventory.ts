@@ -76,12 +76,23 @@ export async function collectInventory(app: App, deviceName: string, platform: P
 	const adapter = app.vault.adapter;
 	const dir = `${app.vault.configDir}/plugins`;
 	const plugins: InventoryPlugin[] = [];
+	let step = `listing ${dir}`;
 	try {
 		if (await adapter.exists(dir)) {
 			const {folders} = await adapter.list(dir);
 			if (folders.length > MAX_PLUGINS) throw new Error("too many plugins");
 			for (const folder of folders.sort()) {
-				const raw: unknown = JSON.parse(await readBounded(adapter, `${folder}/manifest.json`));
+				const manifest = `${folder}/manifest.json`;
+				step = `checking ${manifest}`;
+				// Obsidian ignores directories without manifests. Legacy config
+				// sync can leave data.json here without installing the plugin.
+				if (!(await adapter.exists(manifest))) continue;
+				step = `reading ${manifest}`;
+				const text = await readBounded(adapter, manifest);
+				step = `parsing ${manifest}`;
+				let raw: unknown;
+				try { raw = JSON.parse(text); } catch { throw new Error("Invalid JSON"); }
+				step = `validating ${manifest}`;
 				// Older manifests may omit the optional desktop-only flag.
 				const p = projectPlugin(object(raw) ? {...raw, isDesktopOnly:raw.isDesktopOnly ?? false} : raw);
 				if (!p || plugins.some(other => other.id === p.id)) throw new Error("invalid manifest");
@@ -89,12 +100,16 @@ export async function collectInventory(app: App, deviceName: string, platform: P
 			}
 		}
 		plugins.sort((a,b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-		const result: PluginInventory = {schemaVersion:1, installationId:installationId(app),
+		step = "creating the local installation ID";
+		const id = installationId(app);
+		step = "validating the device name and inventory";
+		const result: PluginInventory = {schemaVersion:1, installationId:id,
 			deviceName:deviceName.trim() || "Device", platform, updatedAt:new Date().toISOString(), plugins};
 		if (!parseInventory(inventoryPath(result.installationId), JSON.stringify(result))) throw new Error("invalid inventory");
 		return result;
-	} catch {
-		throw new Error("Plugin inventory scan incomplete; the previous list has been kept.");
+	} catch (error) {
+		const reason = error instanceof Error ? `: ${error.message.slice(0, 180)}` : "";
+		throw new Error(`Plugin inventory scan incomplete while ${step}${reason}. The previous list has been kept.`);
 	}
 }
 /** Called inside the sync cycle, after pulling and before scanning local changes. */

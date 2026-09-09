@@ -469,3 +469,15 @@
 .archivist-inventory-toolbar select { max-width: 100%; }
 .archivist-inventory-sources summary { cursor: pointer; }
 .archivist-inventory-sources > div { margin-top: var(--size-4-1); }
+
+.archivist-inventory-tag {
+	display: inline-block;
+	margin-left: var(--size-4-2);
+	padding: 1px 6px;
+	border-radius: var(--radius-s);
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-normal);
+	vertical-align: middle;
+}
