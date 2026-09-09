@@ -17,53 +17,56 @@ export function renderInventoryView(
 	openStore: (url: string) => void = url => { window.open(url, "_blank", "noopener,noreferrer"); },
 ): void {
 	container.empty();
-	new Setting(container)
-		.setName("Installed plugins")
-		.setDesc("Compare plugin names and versions. Settings and plugin management stay on each device.")
-		.addButton(button => button.setButtonText("Refresh").onClick(onRefresh));
+	container.addClass("archivist-inventory");
 	const peers = data.inventories.filter(i => i.installationId !== data.local.installationId);
 	const labels = new Map<string,number>();
 	for (const i of [data.local,...peers]) labels.set(i.deviceName,(labels.get(i.deviceName) ?? 0)+1);
 	const label = (i: PluginInventory) => (labels.get(i.deviceName) ?? 0) > 1 ? `${i.deviceName} (${i.installationId.slice(0,8)})` : i.deviceName;
+	const toolbar = new Setting(container).setName(`${data.local.plugins.length} installed`);
+	toolbar.settingEl.addClass("archivist-inventory-toolbar");
+	toolbar.addExtraButton(button => button.setIcon("refresh-cw").setTooltip("Refresh plugin list").onClick(onRefresh));
 	if (peers.length) {
-		new Setting(container).setName("Compare with").addDropdown(dropdown => {
+		toolbar.addDropdown(dropdown => {
 			dropdown.addOption("", "All other devices");
 			for (const peer of peers) dropdown.addOption(peer.installationId, label(peer));
 			dropdown.setValue(selected).onChange(onSelect);
+			dropdown.selectEl.setAttribute("aria-label", "Compare with device");
 		});
-	} else new Setting(container).setDesc("No other device has shared its plugin list yet.");
-	if (data.problem) new Setting(container).setDesc(data.problem);
-	if (data.unavailable) new Setting(container).setDesc(
+	} else container.createDiv({text:"No other device has shared its plugin list yet.", cls:"archivist-inventory-note"});
+	if (data.problem) container.createDiv({text:data.problem, cls:"archivist-inventory-note"});
+	if (data.unavailable) container.createDiv({text:
 		`${data.unavailable} device inventory record(s) unavailable. Missing or different plugins cannot be determined for those records.`,
-	);
-	const deviceRow = new Setting(container).setName("Device inventories").setDesc(
-		`${peers.length + 1} device${peers.length ? "s" : ""}`,
-	);
-	const sources = container.createDiv();
-	sources.hidden = true;
-	deviceRow.addButton(button => button.setButtonText("Show").onClick(() => {
-		sources.hidden = !sources.hidden;
-		button.setButtonText(sources.hidden ? "Show" : "Hide");
-	}));
-	new Setting(sources).setName(`This device: ${data.local.deviceName}`).setDesc("Scanned now");
-	for (const peer of peers) new Setting(sources).setName(label(peer)).setDesc(
-		`Inventory updated ${new Date(peer.updatedAt).toLocaleString()}`,
-	);
+		cls:"archivist-inventory-note",
+	});
 	const rows = compareInventories(data.local, peers, selected || undefined);
-	if (!rows.length) new Setting(container).setDesc("No installed plugins in these inventories.");
+	// Put actionable differences first, preserving the stable name order within groups.
+	rows.sort((a, b) => Number(b.status === "missing" || b.status === "different-version") - Number(a.status === "missing" || a.status === "different-version"));
+	if (!rows.length) container.createDiv({text:"No installed plugins in these inventories.", cls:"archivist-inventory-note"});
 	for (const row of rows) {
-		const description = [row.localVersion ? `This device: ${row.localVersion}` : "This device: not installed"];
+		const description: string[] = [];
 		if (row.status === "missing") description.push("Missing on this device");
 		if (row.status === "different-version") description.push("Different version");
 		if (row.compatibility === "desktop-only") description.push("Desktop only");
 		if (row.compatibility === "uncertain") description.push("Compatibility uncertain: device manifests disagree. Check the store listing.");
 		for (const version of row.versions) description.push(`${version.version} — ${version.devices.map(label).join(", ")}`);
 		const setting = new Setting(container).setName(row.name).setDesc(description.join("\n"));
+		setting.settingEl.addClass("archivist-inventory-row");
+		setting.nameEl.createEl("span", {text:row.localVersion || "Not installed", cls:"archivist-inventory-version"});
 		setting.descEl.addClass("archivist-inventory-description");
+		if (row.status === "missing" || row.status === "different-version") setting.descEl.addClass("archivist-inventory-difference");
 		if (!(data.local.platform === "mobile" && row.compatibility === "desktop-only")) {
-			setting.addButton(button => button.setButtonText("Community Plugins")
+			setting.addExtraButton(button => button.setIcon("external-link")
+				.setTooltip(`Open ${row.name} in Community Plugins (if listed)`)
 				.onClick(() => openStore(communityPluginUrl(row.id))));
 		}
 	}
-	new Setting(container).setDesc("The store may offer a different version. Private and unlisted plugins may not have a Community Plugins listing.");
+	if (peers.length) {
+		const sources = container.createEl("details", {cls:"archivist-inventory-sources"});
+		sources.createEl("summary", {text:`${peers.length + 1} devices`});
+		sources.createDiv({text:`This device: ${data.local.deviceName} — scanned now`});
+		for (const peer of peers) sources.createDiv({text:
+			`${label(peer)} — Inventory updated ${new Date(peer.updatedAt).toLocaleString()}`,
+		});
+	}
+	container.createDiv({text:"Settings stay local. Store versions may differ; private plugins may not be listed.", cls:"archivist-inventory-note"});
 }

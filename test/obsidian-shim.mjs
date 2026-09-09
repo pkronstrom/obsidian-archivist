@@ -58,9 +58,14 @@ export class Setting {
   const button={setButtonText(text){el.textContent=text;return button;},onClick(fn){el.addEventListener("click",fn);return button;}};
   callback(button);return this;
  }
+ addExtraButton(callback){
+  const el=this.controlEl.createEl("button");
+  const button={setIcon(icon){el.setAttribute("data-icon",icon);return button;},setTooltip(text){el.setAttribute("aria-label",text);return button;},onClick(fn){el.addEventListener("click",fn);return button;}};
+  callback(button);return this;
+ }
  addDropdown(callback){
   const el=this.controlEl.createEl("select");
-  const dropdown={addOption(value,text){el.createEl("option",{value,text});return dropdown;},setValue(value){el.value=value;return dropdown;},onChange(fn){el.addEventListener("change",()=>fn(el.value));return dropdown;}};
+  const dropdown={selectEl:el,addOption(value,text){el.createEl("option",{value,text});return dropdown;},setValue(value){el.value=value;return dropdown;},onChange(fn){el.addEventListener("change",()=>fn(el.value));return dropdown;}};
   callback(dropdown);return this;
  }
 }

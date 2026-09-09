@@ -7,6 +7,7 @@ class Element {
  createDiv(opts={}){return this.createEl("div",opts);}
  empty(){this.children=[];}
  addEventListener(name,fn){this.listeners[name]=fn;}
+ setAttribute(name,value){this.opts.attr??={};this.opts.attr[name]=value;}
  addClass(cls){this.opts.cls=((this.opts.cls??"")+" "+cls).trim();}
  get text(){return [this.textContent??this.opts.text??"",...this.children.map(c=>c.text)].join(" ");}
  all(tag){return [...(this.tag===tag?[this]:[]),...this.children.flatMap(c=>c.all(tag))];}
@@ -26,7 +27,7 @@ test("inventory view groups device versions, filters and opens only official sto
  assert.match(el.text,/unavailable/);
  const select=el.all("select")[0]; select.value=c;select.listeners.change();assert.equal(filter,c);
  el.all("button")[0].listeners.click();assert.equal(refreshed,1);
- const storeButtons=el.all("button").filter(b=>b.text==="Community Plugins");
+ const storeButtons=el.all("button").filter(b=>b.opts.attr?.["data-icon"]==="external-link");
  assert.equal(storeButtons.length,2);
  for (const button of storeButtons) button.listeners.click();
  assert.ok(opened.every(url=>url.startsWith("https://community.obsidian.md/plugins/")));

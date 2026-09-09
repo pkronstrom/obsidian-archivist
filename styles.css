@@ -432,8 +432,40 @@
 	flex: 0 0 auto;
 }
 
-/* Keep theme-owned setting rows and controls; only preserve version line breaks. */
+/* A compact list inside settings, independent of themes that turn every row into a card. */
+.archivist-inventory .setting-item.archivist-inventory-row,
+.archivist-inventory .setting-item.archivist-inventory-toolbar {
+	background: transparent !important;
+	border: 0 !important;
+	border-radius: 0 !important;
+	margin: 0 !important;
+	padding: var(--size-4-2) 0 !important;
+}
+.archivist-inventory .setting-item.archivist-inventory-row {
+	border-bottom: 1px solid var(--background-modifier-border) !important;
+}
+.archivist-inventory .setting-item-info { min-width: 0; }
+.archivist-inventory .setting-item-name { overflow-wrap: anywhere; }
+.archivist-inventory-version {
+	margin-left: var(--size-4-2);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-normal);
+	color: var(--text-muted);
+	white-space: nowrap;
+}
 .archivist-inventory-description {
 	white-space: pre-line;
 	overflow-wrap: anywhere;
 }
+.archivist-inventory-difference { color: var(--text-accent); }
+.archivist-inventory-note,
+.archivist-inventory-sources {
+	margin: var(--size-4-2) 0;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	overflow-wrap: anywhere;
+}
+.archivist-inventory-toolbar .setting-item-control { flex-wrap: wrap; }
+.archivist-inventory-toolbar select { max-width: 100%; }
+.archivist-inventory-sources summary { cursor: pointer; }
+.archivist-inventory-sources > div { margin-top: var(--size-4-1); }
