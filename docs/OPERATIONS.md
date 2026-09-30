@@ -115,8 +115,13 @@ save the printed secret: it appears only once.
 docker compose exec archivist /archivist-server token add -label laptop \
   -vaults personal -profile obsidian-plugin
 docker compose exec archivist /archivist-server token list
+docker compose exec archivist /archivist-server token update <id-prefix> -vaults personal,work
 docker compose exec archivist /archivist-server token revoke <id-prefix>
 ```
+
+`token update` changes only the flags you pass (`-vaults`, `-scopes`,
+`-step-up`, `-expires-in`, `-label`) and keeps the token's secret, so the device
+holding it needs no change.
 
 The running server reloads the file after `add` or `revoke`; no restart is
 needed.
@@ -287,9 +292,16 @@ on `work` until it calls the relay's `unlock` MCP tool with a code you give it.
 A code opens that vault for that token for 15 minutes (`ARCHIVIST_STEP_UP_TTL`),
 on a clock, never extended by use. A deploy drops active grants.
 
-To add step-up to an existing token, mint a replacement with `-step-up`, swap it
-into the client, then revoke the old one. `token list` shows each token's
-step-up in the `STEP-UP` column.
+To gate an agent that already has a token, update it in place; the agent keeps
+its credential and you scan the printed secret:
+
+```bash
+docker compose exec archivist /archivist-server token update <id-prefix> \
+  -vaults personal,work -step-up work
+```
+
+Moving step-up between vaults keeps the secret; `-step-up ''` clears it.
+`token list` shows each token's step-up in the `STEP-UP` column.
 
 Never give `-step-up` to a token nobody is present to unlock: the Obsidian
 plugin, `mcp-scheduled` jobs and the relay's background token would fail at

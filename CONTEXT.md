@@ -10,8 +10,8 @@ hashed; the plaintext exists only in the mint output. Never means the six-digit
 step-up code — see [[code]].
 
 **Principal** — what one token may do: its label, vaults, scopes, expiry and
-step-up vaults. Immutable. Changing a permission means minting a new token, not
-editing an existing one.
+step-up vaults. Changed in place with `token update`, which keeps the bearer
+secret, so the device holding it needs nothing new.
 
 **Scope** — a verb a token holds: `read`, `write`, `delete`. No wildcard. Every
 route declares the scope it needs in the `routes()` table.

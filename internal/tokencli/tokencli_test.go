@@ -394,3 +394,103 @@ func TestStepUpTokensShowInTheList(t *testing.T) {
 		t.Errorf("the list does not show step-up:\n%s", out.String())
 	}
 }
+
+// mintFor adds one token and returns its hash and the tokens file path.
+func mintFor(t *testing.T, args ...string) (string, string) {
+	t.Helper()
+	path := tokensPath(t.TempDir())
+	var out bytes.Buffer
+	if err := Run(append([]string{"add", "-tokens", path}, args...), &out); err != nil {
+		t.Fatal(err)
+	}
+	return auth.HashToken(printedToken(t, out.String())), path
+}
+
+func principalOf(t *testing.T, path, hash string) auth.Principal {
+	t.Helper()
+	set, err := auth.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := set.Entries()[hash]
+	if !ok {
+		t.Fatal("the token is gone; update must keep its hash")
+	}
+	return p
+}
+
+// The point of update: the device keeps its credential, only the permissions
+// change.
+func TestUpdateAddsStepUpInPlaceAndPrintsTheSecretOnce(t *testing.T) {
+	hash, path := mintFor(t, "-label", "agent", "-vaults", "personal", "-scopes", "read,write")
+
+	var out bytes.Buffer
+	if err := Run([]string{"update", hash[:12], "-tokens", path,
+		"-vaults", "personal,work", "-step-up", "work"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	p := principalOf(t, path, hash)
+	if !p.Opens("work") || !p.NeedsStepUp("work") || p.NeedsStepUp("personal") || p.TotpSecret == "" {
+		t.Errorf("principal after update is wrong: %+v", p)
+	}
+	if p.Label != "agent" || strings.Join(p.Scopes, ",") != "read,write" {
+		t.Errorf("fields not passed were changed: %+v", p)
+	}
+	s := out.String()
+	if n := strings.Count(s, "secret="); n != 1 || !strings.Contains(s, "Step-up:    work") {
+		t.Errorf("update output is wrong (secret shown %d times):\n%s", n, s)
+	}
+	if strings.Contains(s, auth.TokenPrefix) {
+		t.Error("update printed a bearer token; it must not mint one")
+	}
+}
+
+// Moving step-up between vaults must not invalidate the authenticator entry
+// already scanned for this token.
+func TestUpdateKeepsAnExistingSecret(t *testing.T) {
+	hash, path := mintFor(t, "-label", "agent", "-vaults", "personal,work", "-scopes", "read",
+		"-step-up", "work")
+	before := principalOf(t, path, hash).TotpSecret
+
+	var out bytes.Buffer
+	if err := Run([]string{"update", "-tokens", path, "-step-up", "personal,work", hash[:12]}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if after := principalOf(t, path, hash).TotpSecret; after != before {
+		t.Error("the secret was rotated by a step-up change that did not need one")
+	}
+	if strings.Contains(out.String(), "secret=") {
+		t.Error("an unchanged secret was printed again")
+	}
+}
+
+func TestUpdateClearingStepUpDropsTheSecret(t *testing.T) {
+	hash, path := mintFor(t, "-label", "agent", "-vaults", "work", "-scopes", "read", "-step-up", "work")
+	var out bytes.Buffer
+	if err := Run([]string{"update", hash[:12], "-tokens", path, "-step-up", ""}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if p := principalOf(t, path, hash); len(p.StepUp) != 0 || p.TotpSecret != "" {
+		t.Errorf("step-up was not cleared: %+v", p)
+	}
+}
+
+// Update applies the same rules as add; a narrowed token must stay coherent.
+func TestUpdateRefusesWhatAddWouldRefuse(t *testing.T) {
+	hash, path := mintFor(t, "-label", "agent", "-vaults", "personal,work", "-scopes", "read",
+		"-step-up", "work")
+	for _, args := range [][]string{
+		{"-vaults", "personal"}, // would leave step-up on a vault it no longer opens
+		{"-scopes", "admin"},
+		{"-step-up", "vault:work"},
+		{}, // nothing to change
+	} {
+		var out bytes.Buffer
+		if err := Run(append([]string{"update", hash[:12], "-tokens", path}, args...), &out); err == nil {
+			t.Errorf("update %v succeeded", args)
+		}
+	}
+	if p := principalOf(t, path, hash); !p.Opens("work") {
+		t.Error("a refused update still changed the file")
+	}
+}

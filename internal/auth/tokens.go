@@ -226,19 +226,8 @@ func (s *Set) Lookup(token string) (Principal, bool) {
 // returns the secret. The secret is returned exactly once and is never
 // recoverable from the set afterwards.
 func (s *Set) Mint(p Principal) (string, error) {
-	if len(p.Vaults) == 0 {
-		return "", errors.New("auth: a token must open at least one vault")
-	}
-	if len(p.Scopes) == 0 {
-		return "", errors.New("auth: a token must hold at least one scope")
-	}
-	for _, sc := range p.Scopes {
-		if !ValidScope(sc) {
-			return "", fmt.Errorf("auth: %q is not a scope (read, write, delete)", sc)
-		}
-	}
-	if err := validateStepUp(p); err != nil {
-		return "", fmt.Errorf("auth: %w", err)
+	if err := validatePrincipal(p); err != nil {
+		return "", err
 	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -255,6 +244,42 @@ func (s *Set) Mint(p Principal) (string, error) {
 	}
 	s.byHash[HashToken(token)] = p
 	return token, nil
+}
+
+// Update replaces the principal of an existing token, keeping its secret, so a
+// permission change needs no new credential on the device that holds it. The
+// running server picks it up through the file watcher, and long-lived streams
+// re-check the current principal on every keepalive.
+func (s *Set) Update(hash string, p Principal) error {
+	if err := validatePrincipal(p); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byHash[hash]; !ok {
+		return errors.New("auth: no such token")
+	}
+	s.byHash[hash] = p
+	return nil
+}
+
+// validatePrincipal is what every principal must satisfy to enter the table.
+func validatePrincipal(p Principal) error {
+	if len(p.Vaults) == 0 {
+		return errors.New("auth: a token must open at least one vault")
+	}
+	if len(p.Scopes) == 0 {
+		return errors.New("auth: a token must hold at least one scope")
+	}
+	for _, sc := range p.Scopes {
+		if !ValidScope(sc) {
+			return fmt.Errorf("auth: %q is not a scope (read, write, delete)", sc)
+		}
+	}
+	if err := validateStepUp(p); err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	return nil
 }
 
 // Revoke removes one entry by its hash, reporting whether anything was removed.

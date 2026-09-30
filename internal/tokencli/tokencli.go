@@ -1,5 +1,5 @@
-// Package tokencli is the `archivist-server token` subcommand: mint, list and
-// revoke tokens in the tokens file.
+// Package tokencli is the `archivist-server token` subcommand: mint, list,
+// update and revoke tokens in the tokens file.
 //
 // Deliberately offline. There is no HTTP route that mints, because the server
 // is reachable from the internet behind Caddy and a mint endpoint would let any
@@ -61,20 +61,22 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 // Handles reports whether name is this package's subcommand.
 func Handles(name string) bool { return name == "token" }
 
-// Run executes `token <add|list|revoke>`. args excludes the "token" word.
+// Run executes `token <add|list|update|revoke>`. args excludes the "token" word.
 func Run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("token: need a subcommand: add, list or revoke")
+		return errors.New("token: need a subcommand: add, list, update or revoke")
 	}
 	switch args[0] {
 	case "add":
 		return runAdd(args[1:], out)
 	case "list":
 		return runList(args[1:], out)
+	case "update":
+		return runUpdate(args[1:], out)
 	case "revoke":
 		return runRevoke(args[1:], out)
 	default:
-		return fmt.Errorf("token: unknown subcommand %q (add, list, revoke)", args[0])
+		return fmt.Errorf("token: unknown subcommand %q (add, list, update, revoke)", args[0])
 	}
 }
 
@@ -179,28 +181,7 @@ func runAdd(args []string, out io.Writer) error {
 	if *profile != "" {
 		fmt.Fprintf(out, "Profile:    %s\n", *profile)
 	}
-	fmt.Fprintf(out, "Vaults:     %s\n", strings.Join(p.Vaults, ", "))
-	fmt.Fprintf(out, "Scopes:     %s\n", strings.Join(p.Scopes, ", "))
-	// Always printed, "none" included: this line is what catches a forgotten
-	// -step-up at mint time, so it must be there to read when it is missing.
-	fmt.Fprintf(out, "Step-up:    %s\n", orNone(p.StepUp))
-	if p.ExpiresAt != 0 {
-		fmt.Fprintf(out, "Expires:    %s\n", time.Unix(p.ExpiresAt, 0).Format(time.RFC3339))
-	} else {
-		fmt.Fprint(out, "Expires:    never\n")
-	}
-	// The plugin needs BOTH verbs, not just write: it syncs down, and asks the
-	// read-scoped POST /v1/have which blobs are missing before it uploads
-	// anything. Warning only about write let a write-only token through clean
-	// and then fail on the first sync.
-	if !p.Can(auth.ScopeRead) || !p.Can(auth.ScopeWrite) {
-		fmt.Fprint(out, "\nNOTE: the Obsidian plugin needs both read and write. Do NOT paste "+
-			"this token into it -- syncing will fail.\n")
-	}
-	if len(p.StepUp) > 0 {
-		fmt.Fprint(out, "\nNOTE: step-up is for MCP agents. The Obsidian plugin cannot present a "+
-			"code, so do NOT paste this token into it for a gated vault.\n")
-	}
+	printPermissions(out, p)
 	fmt.Fprint(out, "\nThis is the only time the token and the secret are shown.\n")
 	if p.TotpSecret != "" {
 		fmt.Fprintf(out, "\nScan this, or run:\n  qrencode -t ANSIUTF8 '%s'\n",
@@ -240,6 +221,125 @@ func runList(args []string, out io.Writer) error {
 	return nil
 }
 
+// matchPrefix resolves an ID prefix from `token list` to exactly one hash.
+//
+// Refusing beats guessing: acting on the wrong token locks out or widens a
+// device, and the operator cannot tell which one it was afterwards.
+func matchPrefix(set *auth.Set, prefix string) (string, error) {
+	var matches []string
+	for h := range set.Entries() {
+		if strings.HasPrefix(h, prefix) {
+			matches = append(matches, h)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no token starts with %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("%q matches %d tokens; use more characters", prefix, len(matches))
+	}
+}
+
+// runUpdate changes an existing token's permissions in place. The bearer
+// secret is unchanged, so no device needs a new credential. Only the flags
+// given change; everything else is kept.
+//
+// Takes the ID prefix first (`token update <id> -step-up work`) or last.
+func runUpdate(args []string, out io.Writer) error {
+	fs, path := flagSet("update")
+	label := fs.String("label", "", "new label")
+	vaultNames := fs.String("vaults", "", `comma-separated vault names, or "*" for every vault`)
+	scopes := fs.String("scopes", "", "comma-separated: read, write, delete")
+	expires := fs.Duration("expires-in", 0, "expire this long from now; 0 means never")
+	stepUp := fs.String("step-up", "", "comma-separated vaults needing a one-time code; empty clears it")
+
+	var prefix string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		prefix, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if prefix == "" && fs.NArg() == 1 {
+		prefix = fs.Arg(0)
+	} else if fs.NArg() != 0 || prefix == "" {
+		return errors.New("token update: need exactly one ID prefix (see `token list`)")
+	}
+	changed := 0
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name != "tokens" {
+			changed++
+		}
+	})
+	if changed == 0 {
+		return errors.New("token update: nothing to change; pass -vaults, -scopes, -step-up, -expires-in or -label")
+	}
+	if *expires < 0 {
+		return fmt.Errorf("token update: -expires-in must not be negative, got %s", *expires)
+	}
+
+	var hash string
+	var p auth.Principal
+	newSecret := false
+	if err := withFileLock(*path, func() error {
+		set, err := load(*path)
+		if err != nil {
+			return err
+		}
+		hash, err = matchPrefix(set, prefix)
+		if err != nil {
+			return fmt.Errorf("token update: %w", err)
+		}
+		p = set.Entries()[hash]
+		if flagWasSet(fs, "label") {
+			p.Label = *label
+		}
+		if flagWasSet(fs, "vaults") {
+			p.Vaults = split(*vaultNames)
+		}
+		if flagWasSet(fs, "scopes") {
+			p.Scopes = split(*scopes)
+		}
+		if flagWasSet(fs, "expires-in") {
+			p.ExpiresAt = 0
+			if *expires > 0 {
+				p.ExpiresAt = time.Now().Add(*expires).Unix()
+			}
+		}
+		if flagWasSet(fs, "step-up") {
+			p.StepUp = split(*stepUp)
+			switch {
+			case len(p.StepUp) == 0:
+				p.TotpSecret = ""
+			case p.TotpSecret == "":
+				// The authenticator entry already scanned for this token keeps
+				// working when step-up only changes vaults; a secret is minted
+				// only when the token had none.
+				if p.TotpSecret, err = stepup.NewSecret(); err != nil {
+					return err
+				}
+				newSecret = true
+			}
+		}
+		if err := set.Update(hash, p); err != nil {
+			return fmt.Errorf("token update: %w", err)
+		}
+		return set.Save(*path)
+	}); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(out, "Updated:    %s (%s)\n", hash[:12], p.Label)
+	printPermissions(out, p)
+	if newSecret {
+		fmt.Fprintf(out, "\nThis is the only time the secret is shown. Scan this, or run:\n  qrencode -t ANSIUTF8 '%s'\n",
+			stepup.URI(p.Label, p.TotpSecret))
+	}
+	return nil
+}
+
 func runRevoke(args []string, out io.Writer) error {
 	fs, path := flagSet("revoke")
 	if err := fs.Parse(args); err != nil {
@@ -256,23 +356,10 @@ func runRevoke(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		var matches []string
-		for h := range set.Entries() {
-			if strings.HasPrefix(h, prefix) {
-				matches = append(matches, h)
-			}
+		hash, err = matchPrefix(set, prefix)
+		if err != nil {
+			return fmt.Errorf("token revoke: %w", err)
 		}
-		switch len(matches) {
-		case 0:
-			return fmt.Errorf("token revoke: no token starts with %q", prefix)
-		case 1:
-		default:
-			// Refusing beats guessing: revoking the wrong token locks out a
-			// device, and the operator cannot tell which one it was afterwards.
-			return fmt.Errorf("token revoke: %q matches %d tokens; use more characters",
-				prefix, len(matches))
-		}
-		hash = matches[0]
 		label = set.Entries()[hash].Label
 		set.Revoke(hash)
 		return set.Save(*path)
@@ -298,4 +385,31 @@ func orNone(v []string) string {
 		return "none"
 	}
 	return strings.Join(v, ",")
+}
+
+// printPermissions is what add and update both show: what the token may do,
+// then the warnings that follow from it.
+func printPermissions(out io.Writer, p auth.Principal) {
+	fmt.Fprintf(out, "Vaults:     %s\n", strings.Join(p.Vaults, ", "))
+	fmt.Fprintf(out, "Scopes:     %s\n", strings.Join(p.Scopes, ", "))
+	// Always printed, "none" included: this line is what catches a forgotten
+	// -step-up at mint or update time, so it must be there to read when it is missing.
+	fmt.Fprintf(out, "Step-up:    %s\n", orNone(p.StepUp))
+	if p.ExpiresAt != 0 {
+		fmt.Fprintf(out, "Expires:    %s\n", time.Unix(p.ExpiresAt, 0).Format(time.RFC3339))
+	} else {
+		fmt.Fprint(out, "Expires:    never\n")
+	}
+	// The plugin needs BOTH verbs, not just write: it syncs down, and asks the
+	// read-scoped POST /v1/have which blobs are missing before it uploads
+	// anything. Warning only about write let a write-only token through clean
+	// and then fail on the first sync.
+	if !p.Can(auth.ScopeRead) || !p.Can(auth.ScopeWrite) {
+		fmt.Fprint(out, "\nNOTE: the Obsidian plugin needs both read and write. Do NOT paste "+
+			"this token into it -- syncing will fail.\n")
+	}
+	if len(p.StepUp) > 0 {
+		fmt.Fprint(out, "\nNOTE: step-up is for MCP agents. The Obsidian plugin cannot present a "+
+			"code, so do NOT paste this token into it for a gated vault.\n")
+	}
 }

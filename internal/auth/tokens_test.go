@@ -310,3 +310,25 @@ func TestLoadRejectsStepUpWithNoSecret(t *testing.T) {
 		t.Fatal("step-up with no secret loaded cleanly; the token could never unlock")
 	}
 }
+
+func TestUpdateReplacesOnlyAnExistingTokenAndValidates(t *testing.T) {
+	s := New()
+	tok, err := s.Mint(Principal{Vaults: []string{"personal"}, Scopes: []string{ScopeRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := HashToken(tok)
+	if err := s.Update(h, Principal{Vaults: []string{"personal", "work"}, Scopes: []string{ScopeRead}}); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.Lookup(tok); !p.Opens("work") {
+		t.Error("the same token did not see the widened principal")
+	}
+	if err := s.Update(h, Principal{Vaults: []string{"work"}, Scopes: []string{ScopeRead},
+		StepUp: []string{"work"}}); err == nil {
+		t.Error("an update with step-up and no secret was accepted")
+	}
+	if err := s.Update("nope", Principal{Vaults: []string{"work"}, Scopes: []string{ScopeRead}}); err == nil {
+		t.Error("updating a token that does not exist created one")
+	}
+}

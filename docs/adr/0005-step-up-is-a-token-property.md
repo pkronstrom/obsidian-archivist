@@ -40,8 +40,14 @@ token carrying it promised a gate that did not exist.
 - Gating an agent is one `token add -step-up <vault>`; no other credential moves.
 - Forgetting `-step-up` mints an ungated token, visible in the mint output and
   the listing. Accepted for a single-operator deployment.
-- A long-lived stream re-checks the CURRENT principal each keepalive, so a stepUp
-  entry added to an existing token by hand-editing the file ends streams it had
-  open ungated. Re-minting remains the supported way to change a token.
+- `token update <id>` changes an existing token in place (vaults, scopes,
+  step-up, expiry, label) and keeps its bearer secret, so gating an agent that
+  already has a token needs no client change. This reverses the step-up
+  design's "principals are immutable": the audit moment it bought was a forced
+  re-inventory of every holder, which a single operator does not need. Adding
+  step-up to a token without a secret mints one and prints it once; moving it
+  between vaults keeps the secret; clearing it drops the secret.
+- A long-lived stream re-checks the CURRENT principal each keepalive, so an
+  update that narrows a token or adds step-up ends streams it had open.
 - A destructive-operation confirmation gate, if one is ever needed, comes back
   with its enforcement in the same change.

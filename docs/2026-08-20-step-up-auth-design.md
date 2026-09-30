@@ -137,6 +137,9 @@ Permissions first, token last: you read what you granted before you copy it, and
 the token is the final line, which is the easiest to select and the one that
 survives scrolling.
 
+> **Reversed (2026-09-30):** `token update` now changes a principal in place;
+> see ADR-0005.
+
 Principals are **immutable**. There is no `token update`. Changing a permission
 means minting a new token and replacing it wherever it is held, which costs two
 propagations — the credential and a fresh QR scan — and buys an audit moment by
