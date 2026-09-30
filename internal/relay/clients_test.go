@@ -144,15 +144,15 @@ func TestDefaultVaultIsCachedPerToken(t *testing.T) {
 func TestPoolCachesOneMCPServerPerToken(t *testing.T) {
 	srv := vaultsServer(t, []string{"personal"}, nil)
 	p := NewPool(srv.URL, "relay")
-	a, err := p.MCPServer(context.Background(), "tok-a", "archivist", "test")
+	a, err := p.MCPServer(context.Background(), "tok-a", "", "archivist", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := p.MCPServer(context.Background(), "tok-a", "archivist", "test")
+	b, _ := p.MCPServer(context.Background(), "tok-a", "", "archivist", "test")
 	if a != b {
 		t.Error("one token got two MCP servers; the eight tools are rebuilt on every call")
 	}
-	c, _ := p.MCPServer(context.Background(), "tok-b", "archivist", "test")
+	c, _ := p.MCPServer(context.Background(), "tok-b", "", "archivist", "test")
 	if a == c {
 		t.Fatal("two tokens share one MCP server; a caller would act as someone else")
 	}
@@ -174,7 +174,7 @@ func TestMCPServerCallsAreVaultQualified(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := NewPool(srv.URL, "relay")
-	if _, err := p.MCPServer(context.Background(), "tok", "archivist", "test"); err != nil {
+	if _, err := p.MCPServer(context.Background(), "tok", "", "archivist", "test"); err != nil {
 		t.Fatal(err)
 	}
 	// The client the tools close over must address a vault. Exercise it the way
@@ -189,5 +189,40 @@ func TestMCPServerCallsAreVaultQualified(t *testing.T) {
 	}
 	if len(paths) < 2 || paths[len(paths)-1] != "/personal/v1/head" {
 		t.Errorf("paths = %v, want the last one vault-qualified", paths)
+	}
+}
+
+// Gating an agent on a second vault must not break a client that never chose
+// one: it gets the relay's configured vault when its token opens it.
+func TestDefaultVaultFallsBackToTheRelaysVault(t *testing.T) {
+	srv := vaultsServer(t, []string{"personal", "work"}, nil)
+	p := NewPool(srv.URL, "relay")
+	p.Fallback = "personal"
+	got, err := p.DefaultVault(context.Background(), "tok")
+	if err != nil || got != "personal" {
+		t.Fatalf("default = %q, %v; want personal", got, err)
+	}
+	p2 := NewPool(srv.URL, "relay")
+	p2.Fallback = "other"
+	if _, err := p2.DefaultVault(context.Background(), "tok"); err == nil {
+		t.Error("fell back to a vault the token does not open")
+	}
+}
+
+// ?vault= picks the session's vault, and each vault gets its own server.
+func TestMCPServerHonoursARequestedVault(t *testing.T) {
+	srv := vaultsServer(t, []string{"personal", "work"}, nil)
+	p := NewPool(srv.URL, "relay")
+	w, err := p.MCPServer(context.Background(), "tok", "work", "archivist", "test")
+	if err != nil {
+		t.Fatalf("a named vault was refused: %v", err)
+	}
+	if _, err := p.MCPServer(context.Background(), "tok", "", "archivist", "test"); err == nil {
+		t.Error("no fallback configured, two vaults, none named: must still refuse")
+	}
+	p.Fallback = "personal"
+	d, err := p.MCPServer(context.Background(), "tok", "", "archivist", "test")
+	if err != nil || d == w {
+		t.Errorf("default session = %v, err %v; want a separate server from work's", d, err)
 	}
 }

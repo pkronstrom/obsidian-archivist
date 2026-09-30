@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -30,6 +31,11 @@ const maxPooledClients = 256
 // on their own token were never evaluated by the authority that enforces them.
 type Pool struct {
 	template *client.Client
+
+	// Fallback is the relay's configured vault. A token opening several vaults
+	// that names none gets it, when the token opens it: gating an agent on a
+	// second vault must not break every client that never needed to choose.
+	Fallback string
 
 	mu       sync.Mutex
 	clients  map[string]*client.Client
@@ -93,9 +99,13 @@ func (p *Pool) Len() int {
 // The credential is baked into the server's tools rather than read per call,
 // which is what stops a future tool from forgetting to plumb it: there is no
 // per-handler credential to forget.
-func (p *Pool) MCPServer(ctx context.Context, token, name, version string) (*mcp.Server, error) {
+//
+// vault is the caller's ?vault=, or empty to resolve a default. Servers are
+// cached per token AND vault, since each closes over one vault.
+func (p *Pool) MCPServer(ctx context.Context, token, vault, name, version string) (*mcp.Server, error) {
+	key := token + "\x00" + vault
 	p.mu.Lock()
-	if s, ok := p.servers[token]; ok {
+	if s, ok := p.servers[key]; ok {
 		p.mu.Unlock()
 		return s, nil
 	}
@@ -108,18 +118,20 @@ func (p *Pool) MCPServer(ctx context.Context, token, name, version string) (*mcp
 	// run until this was fixed. The REST surface resolves the vault per
 	// request; MCP has to resolve it here, because the tools close over the
 	// client rather than seeing the request.
-	vault, err := p.DefaultVault(ctx, token)
-	if err != nil {
-		return nil, err
+	if vault == "" {
+		var err error
+		if vault, err = p.DefaultVault(ctx, token); err != nil {
+			return nil, err
+		}
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if s, ok := p.servers[token]; ok {
+	if s, ok := p.servers[key]; ok {
 		return s, nil
 	}
 	s := NewMCPServer(p.forLocked(token).WithVia("relay-mcp").WithVault(vault), name, version)
-	p.servers[token] = s
+	p.servers[key] = s
 	return s, nil
 }
 
@@ -154,6 +166,12 @@ func (p *Pool) DefaultVault(ctx context.Context, token string) (string, error) {
 		p.mu.Unlock()
 		return vaults[0], nil
 	default:
+		if p.Fallback != "" && slices.Contains(vaults, p.Fallback) {
+			p.mu.Lock()
+			p.defaults[token] = p.Fallback
+			p.mu.Unlock()
+			return p.Fallback, nil
+		}
 		return "", fmt.Errorf("this token opens %d vaults (%s); name one with ?vault= or the vault parameter",
 			len(vaults), strings.Join(vaults, ", "))
 	}

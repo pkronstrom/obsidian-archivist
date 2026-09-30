@@ -268,7 +268,7 @@ func TestHandlerWithMCPEnabledDoesNotPanic(t *testing.T) {
 	// The real factory shape: the caller's bearer decides which server they get.
 	h := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		srv, err := pool.MCPServer(r.Context(), tok, "archivist", "test")
+		srv, err := pool.MCPServer(r.Context(), tok, "", "archivist", "test")
 		if err != nil {
 			return nil
 		}

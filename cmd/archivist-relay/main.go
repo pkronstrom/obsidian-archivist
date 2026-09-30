@@ -131,6 +131,7 @@ func run(cfg *config, log *slog.Logger) error {
 	// The pool builds one client per caller token for every request operation.
 	probe := client.New(cfg.url, "", cfg.device)
 	pool := relay.NewPoolWithProbe(probe)
+	pool.Fallback = cfg.vault
 	var bg *client.Client
 	if len(cfg.webhooks) > 0 {
 		bg = client.New(cfg.url, cfg.token, cfg.device).WithVault(cfg.vault)
@@ -194,7 +195,7 @@ func run(cfg *config, log *slog.Logger) error {
 		// eight tool handlers must remember to read.
 		mcpHandler = mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-			srv, err := pool.MCPServer(r.Context(), tok, "archivist", version.Version)
+			srv, err := pool.MCPServer(r.Context(), tok, r.URL.Query().Get("vault"), "archivist", version.Version)
 			if err != nil {
 				// nil makes the SDK answer with a protocol error the caller can
 				// read, rather than serving tools that would build unqualified
