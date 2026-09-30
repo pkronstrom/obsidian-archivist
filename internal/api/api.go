@@ -219,7 +219,7 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 		return
 	}
 
-	until := s.grants.Grant(hash, inst.Name)
+	until := s.grants.Grant(grantKey(bearer(r), p), inst.Name)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"vault":     inst.Name,
@@ -242,7 +242,6 @@ func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.P
 		// The unlock route: gated by policy, but it is what opens the gate.
 		return stepUpState{gated: true}, true
 	}
-	hash := auth.HashToken(bearer(r))
 	if s.grants == nil {
 		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
 			"this server was built without step-up support, so "+vault+" cannot be unlocked")
@@ -251,7 +250,7 @@ func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.P
 	// One lock acquisition for both answers. Asking Held and then Watch would
 	// let a re-grant land in between and hand this request the successor's
 	// channel, so it would outlive the grant it was actually admitted under.
-	lapsed, held := s.grants.HeldWatch(hash, vault)
+	lapsed, held := s.grants.HeldWatch(grantKey(bearer(r), p), vault)
 	if !held {
 		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
 			"this token needs an unlock code for "+vault+
@@ -272,10 +271,38 @@ func (s *Server) stepUpStillPermits(p auth.Principal, vault, presented string) e
 	if !p.NeedsStepUp(vault) {
 		return nil
 	}
-	if s.grants == nil || !s.grants.Held(auth.HashToken(presented), vault) {
+	if s.grants == nil || !s.grants.Held(grantKey(presented, p), vault) {
 		return errors.New("no active grant")
 	}
 	return nil
+}
+
+// grantKey binds a grant to the token AND its current TOTP secret.
+//
+// Keyed by the token alone, a grant outlived the secret it was earned with:
+// unlock, clear step-up with `token update`, re-add it (minting a new secret),
+// and the old grant still admitted the token with no code from the new one.
+// A new secret now means a new key, so the old grant is simply never found.
+func grantKey(presented string, p auth.Principal) string {
+	return auth.HashToken(presented) + "\x00" + auth.HashToken(p.TotpSecret)
+}
+
+// stillAdmitted re-answers admission for a request that has been running a
+// while, against the principal as it stands NOW: revoked, expired, narrowed,
+// or gained step-up since it was admitted.
+//
+// A request admitted ungated has no lapse channel, so one whose token becomes
+// gated is ended outright rather than kept on a grant it never watched; the
+// reconnect is admitted with the right watch.
+func (s *Server) stillAdmitted(presented, vault string, admitted stepUpState) bool {
+	p, ok := s.tokens.Lookup(presented)
+	if !ok || !p.Opens(vault) || !p.Can(auth.ScopeRead) {
+		return false
+	}
+	if !admitted.gated && p.NeedsStepUp(vault) {
+		return false
+	}
+	return s.stepUpStillPermits(p, vault, presented) == nil
 }
 
 // bearer lifts the presented token back out of the request.
@@ -698,16 +725,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 			writeEvent(w, ev)
 			flusher.Flush()
 		case <-ticker.C:
-			p, ok := s.tokens.Lookup(bearer)
-			if !ok || !p.Opens(name) || !p.Can(auth.ScopeRead) {
-				return // revoked, expired, or narrowed since this stream opened
-			}
-			// The token may have GAINED a stepUp entry since this stream opened
-			// (the tokens file was edited under the same hash). A stream admitted
-			// ungated has no lapse channel and would otherwise keep publishing
-			// changed paths for days. Bounded by one tick, same as the revocation
-			// check above, and for the same reason: the timer already exists.
-			if s.stepUpStillPermits(p, name, bearer) != nil {
+			// Revoked, expired, narrowed or newly gated since this stream opened
+			// (`token update` edits a token under the same hash). Bounded by one
+			// tick, because the timer already exists.
+			if !s.stillAdmitted(bearer, name, stepUpFrom(r)) {
 				return
 			}
 			fmt.Fprint(w, ": keepalive\n\n")
@@ -797,6 +818,13 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	case ev, ok := <-ch:
 		if !ok {
 			writeJSON(w, protocol.WaitResponse{Head: since, Changed: false})
+			return
+		}
+		// The token may have changed while this poll blocked. Answering with
+		// the new head would hand it news it is no longer allowed to see.
+		if !s.stillAdmitted(bearer(r), inst.Name, stepUpFrom(r)) {
+			fail(w, http.StatusForbidden, protocol.CodeForbidden,
+				"this token's access changed while waiting; retry")
 			return
 		}
 		writeJSON(w, protocol.WaitResponse{Head: ev.Head, Changed: true})

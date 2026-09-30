@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
+	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
+	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/stepup"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
@@ -58,6 +60,7 @@ type stepUpFixture struct {
 	gatedReadOnly string // same step-up, read scope only
 	plain         string // opens every vault, no step-up
 	gatedNoSecret string // gated on work but carrying no secret to unlock with
+	writer        string // ungated, writes commits for the wait tests
 }
 
 // principals is the fixture's token table, keyed by plaintext token.
@@ -76,6 +79,9 @@ func (f *stepUpFixture) principals() map[string]auth.Principal {
 		},
 		f.plain: {
 			Label: "plain", Vaults: []string{"*"}, Scopes: rw,
+		},
+		f.writer: {
+			Label: "writer", Vaults: []string{"*"}, Scopes: rw,
 		},
 		// Mint and Load both refuse this combination, so it can only arrive by
 		// somebody hand-editing the file -- which is exactly why the handler
@@ -111,6 +117,7 @@ func newStepUpFixture(t *testing.T) *stepUpFixture {
 		gatedReadOnly: "tok-gated-ro",
 		plain:         "tok-plain",
 		gatedNoSecret: "tok-gated-nosecret",
+		writer:        "tok-writer",
 	}
 	f.set = auth.NewSetForTest(f.principals())
 	set := f.set
@@ -159,7 +166,7 @@ func (f *stepUpFixture) unlock(t *testing.T, vault, tok string) *httptest.Respon
 // absolute TTL does.
 func (f *stepUpFixture) expireGrant(tok, vault string) {
 	f.clock.advance(2 * time.Minute)
-	if f.grants.Held(auth.HashToken(tok), vault) {
+	if f.grants.Held(grantKey(tok, f.principals()[tok]), vault) {
 		panic("the grant survived its TTL; the tests below would prove nothing")
 	}
 }
@@ -440,5 +447,128 @@ func TestAStreamStopsWhenItsTokenGainsStepUp(t *testing.T) {
 	case <-drained:
 	case <-time.After(3 * time.Second):
 		t.Fatal("the stream kept running after its token gained step-up on this vault")
+	}
+}
+
+// edit swaps one token's principal in place, as `token update` does.
+func (f *stepUpFixture) edit(tok string, change func(*auth.Principal)) {
+	all := f.principals()
+	p := all[tok]
+	change(&p)
+	all[tok] = p
+	f.set.Replace(auth.NewSetForTest(all))
+}
+
+// commitTo writes one file to vault through the API as the writer token.
+func (f *stepUpFixture) commitTo(t *testing.T, vault, path, body string) {
+	t.Helper()
+	var head struct {
+		Head string `json:"head"`
+	}
+	json.Unmarshal(f.as(t, "GET", "/"+vault+"/v1/head", nil, f.writer).Body.Bytes(), &head)
+	hash, _ := repo.HashContent([]byte(body))
+	req := httptest.NewRequest("PUT", "/"+vault+"/v1/content/"+hash, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+f.writer)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body)
+	}
+	res := f.as(t, "POST", "/"+vault+"/v1/push", protocol.PushRequest{
+		Base: head.Head, Device: "test",
+		Changes: []reconcile.Change{{Path: path, Op: "put", Hash: hash}},
+	}, f.writer)
+	if res.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", res.Code, res.Body)
+	}
+}
+
+// A new TOTP secret must not inherit a grant earned with the old one: unlock,
+// clear step-up, re-add it with a fresh secret, and the token needs a new code.
+func TestAGrantDoesNotSurviveASecretChange(t *testing.T) {
+	s := newStepUpFixture(t)
+	s.unlock(t, "work", s.gated)
+	s.edit(s.gated, func(p *auth.Principal) { p.TotpSecret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP" })
+	if res := s.as(t, "GET", "/work/v1/head", nil, s.gated); res.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: the grant was earned with a secret this token no longer has", res.Code)
+	}
+}
+
+// A long poll admitted ungated must not report a commit once its token has
+// gained step-up on that vault.
+func TestABlockedWaitDoesNotReportNewsAfterItsTokenGainsStepUp(t *testing.T) {
+	s := newStepUpFixture(t)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	var head struct {
+		Head string `json:"head"`
+	}
+	json.Unmarshal(s.as(t, "GET", "/work/v1/head", nil, s.plain).Body.Bytes(), &head)
+
+	status := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest("GET", srv.URL+"/work/v1/wait?timeout=30&since="+head.Head, nil)
+		req.Header.Set("Authorization", "Bearer "+s.plain)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- 0
+			return
+		}
+		res.Body.Close()
+		status <- res.StatusCode
+	}()
+
+	time.Sleep(150 * time.Millisecond) // let the long poll block
+	s.edit(s.plain, func(p *auth.Principal) {
+		p.StepUp, p.TotpSecret = []string{"work"}, rfcSecretForAPITest
+	})
+	s.commitTo(t, "work", "a.md", "news\n")
+
+	select {
+	case got := <-status:
+		if got != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403: the poll reported a commit to a token now gated", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the poll never answered")
+	}
+}
+
+// A stream admitted ungated has no lapse channel. If its token gains step-up and
+// is unlocked before the next keepalive, it must still end: otherwise it runs on
+// a grant it never watched, past that grant's absolute expiry.
+func TestAnUngatedStreamEndsWhenItsTokenBecomesGatedEvenIfUnlocked(t *testing.T) {
+	defer func(d time.Duration) { streamKeepalive = d }(streamKeepalive)
+	streamKeepalive = 50 * time.Millisecond
+
+	s := newStepUpFixture(t)
+	srv := httptest.NewServer(s.handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/work/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+s.plain)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: the stream never opened", res.StatusCode)
+	}
+	drained := make(chan struct{})
+	go func() { io.ReadAll(res.Body); close(drained) }()
+
+	// Grant FIRST, then gate, so no keepalive can ever see the token gated
+	// without a grant. Only the "admitted ungated, now gated" rule can end it.
+	gated := s.principals()[s.plain]
+	gated.StepUp, gated.TotpSecret = []string{"work"}, rfcSecretForAPITest
+	s.grants.Grant(grantKey(s.plain, gated), "work")
+	s.edit(s.plain, func(p *auth.Principal) { *p = gated })
+
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("an ungated stream kept running on a grant it never watched")
 	}
 }

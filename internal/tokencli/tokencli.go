@@ -226,6 +226,11 @@ func runList(args []string, out io.Writer) error {
 // Refusing beats guessing: acting on the wrong token locks out or widens a
 // device, and the operator cannot tell which one it was afterwards.
 func matchPrefix(set *auth.Set, prefix string) (string, error) {
+	// Every hash starts with "", so an empty prefix -- an unset shell variable --
+	// would silently select the only token in a one-token file.
+	if prefix == "" {
+		return "", errors.New("an empty ID prefix matches every token")
+	}
 	var matches []string
 	for h := range set.Entries() {
 		if strings.HasPrefix(h, prefix) {
@@ -264,7 +269,10 @@ func runUpdate(args []string, out io.Writer) error {
 	}
 	if prefix == "" && fs.NArg() == 1 {
 		prefix = fs.Arg(0)
-	} else if fs.NArg() != 0 || prefix == "" {
+	} else if fs.NArg() != 0 {
+		prefix = ""
+	}
+	if prefix == "" {
 		return errors.New("token update: need exactly one ID prefix (see `token list`)")
 	}
 	changed := 0

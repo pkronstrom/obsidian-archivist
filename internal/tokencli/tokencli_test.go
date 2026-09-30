@@ -494,3 +494,18 @@ func TestUpdateRefusesWhatAddWouldRefuse(t *testing.T) {
 		t.Error("a refused update still changed the file")
 	}
 }
+
+// An unset shell variable must not select the only token in the file.
+func TestUpdateRefusesAnEmptyPrefix(t *testing.T) {
+	hash, path := mintFor(t, "-label", "only", "-vaults", "personal", "-scopes", "read")
+	var out bytes.Buffer
+	if err := Run([]string{"update", "-tokens", path, "-scopes", "read,write", ""}, &out); err == nil {
+		t.Fatal("an empty prefix updated a token")
+	}
+	if err := Run([]string{"revoke", "-tokens", path, ""}, &out); err == nil {
+		t.Fatal("an empty prefix revoked a token")
+	}
+	if p := principalOf(t, path, hash); strings.Join(p.Scopes, ",") != "read" {
+		t.Error("the token changed")
+	}
+}
