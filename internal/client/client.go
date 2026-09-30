@@ -159,17 +159,15 @@ func (c *Client) doRoot(ctx context.Context, method, path string, body io.Reader
 // VaultList is everything GET /v1/vaults reports.
 //
 // ListVaults keeps returning names alone, because most callers want only that.
-// This exists because the relay and the plugin need the two step-up fields,
-// which the name-only shape silently discarded.
+// This exists so a caller can see the token's scopes and step-up, which the
+// name-only shape silently discards.
 type VaultList struct {
 	Vaults    []string `json:"vaults"`
 	CanCreate bool     `json:"canCreate,omitempty"`
 	Label     string   `json:"label,omitempty"`
 	Scopes    []string `json:"scopes,omitempty"`
-	// ProtectedVaults is the SERVER's policy: which vaults carry a marker.
-	ProtectedVaults []string `json:"protectedVaults,omitempty"`
-	// RequiresStepUpAuth is THIS token's posture toward them.
-	RequiresStepUpAuth []string `json:"requiresStepUpAuth,omitempty"`
+	// StepUp lists the vaults this token must unlock with a code.
+	StepUp []string `json:"stepUp,omitempty"`
 }
 
 // VaultListing asks what this token opens, and under what policy. A SERVER-root

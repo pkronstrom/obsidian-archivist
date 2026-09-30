@@ -21,7 +21,7 @@ that machine can search, read, edit, serve and back up the same files.
 | **Conflicts keep both sides** | Two devices editing one note merges, or keeps both versions with an explanation. Nothing is silently overwritten. |
 | **Several vaults** | One server process serves them all, each with its own history. Tokens scope to the vaults you name. |
 | **Granular tokens** | Each device and agent gets its own, scoped to named vaults, revocable on its own. |
-| **Private vaults** | Mark a vault protected and an agent that reaches it gets `step_up_required`. You approve with a six-digit code from your authenticator, opening a window that expires on a clock and is never extended by use. |
+| **Step-up for agents** | Mint an agent's token with `-step-up work` and it gets `step_up_required` on that vault until you approve with a six-digit code from your authenticator, opening a window that expires on a clock and is never extended by use. Other tokens on the same vault are unaffected. |
 | **See plugins across devices** | Find missing plugins and version differences, then open their community store pages. Settings stay local. |
 | **`.local` never syncs** | `notes.local.md`, or anything under `scratch.local/`, stays on the device that made it. |
 
@@ -38,7 +38,7 @@ mkdir -p data/vaults/personal data/.archivist
 printf 'ARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' "$(id -u)" "$(id -g)" > .env
 docker compose build archivist relay
 docker compose run --rm --no-deps archivist token add \
-  -root /data -label first-device -vaults personal -profile obsidian-plugin
+  -label first-device -vaults personal -profile obsidian-plugin
 ```
 
 Copy the printed `arch_...` token; it is shown only once. Then start the stack:

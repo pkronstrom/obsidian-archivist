@@ -10,7 +10,7 @@ hashed; the plaintext exists only in the mint output. Never means the six-digit
 step-up code — see [[code]].
 
 **Principal** — what one token may do: its label, vaults, scopes, expiry and
-step-up posture. Immutable. Changing a permission means minting a new token, not
+step-up vaults. Immutable. Changing a permission means minting a new token, not
 editing an existing one.
 
 **Scope** — a verb a token holds: `read`, `write`, `delete`. No wildcard. Every
@@ -19,20 +19,13 @@ route declares the scope it needs in the `routes()` table.
 ## Step-up
 
 **Step-up authentication** — an already-authenticated principal proving more
-before a sensitive operation. Deliberately not called "2FA": nothing is
+before it may read or write a vault. Deliberately not called "2FA": nothing is
 authenticating an identity here, the token already did that, and both factors are
-things you have. Field name: `requiresStepUpAuth`.
+things you have. Field name: `stepUp`, a list of vault names on the principal.
 
-**Protected vault** — a vault carrying the marker at
-`$ROOT/.archivist/<vault>/step-up`. The marker holds no secret; presence is the
-whole content. A protected vault forces every token that opens it to state a
-posture at mint time. It does *not* mean every token is gated — see
-[[posture]].
-
-**Posture** — what one token intends toward one protected vault, as entries in
-`requiresStepUpAuth`: `vault:<name>` gates access, `ops:<name>` gates destructive
-operations. A token may hold either, both, or neither, and "neither" is legal
-only because mint made you say so.
+A property of the token alone. A vault is never "protected": the same vault is
+gated for an agent's token and open for the phone that syncs it. See
+`docs/adr/0005-step-up-is-a-token-property.md`.
 
 **Grant** — the time-boxed permission an unlock creates, bound to one token and
 one vault. In memory, absolute expiry, dies with the process. Not "session":
@@ -41,9 +34,6 @@ this is not a cookie and not per-connection.
 **Code** — the six digits from an authenticator. Never "token", which is already
 the bearer credential, and never "one-time token" for the same reason. Single-use:
 the last accepted time step is remembered per token.
-
-**One-shot** — a step-up that authorizes exactly one operation and creates no
-grant. What `ops:` entries produce. The counterpart to a grant, not a short one.
 
 **`totpSecret`** — the base32 shared secret, one per token, stored reversibly
 because HMAC needs it. Never reused as an encryption key: the server holds it, so

@@ -46,20 +46,45 @@ func (c *stepUpClock) at() time.Time {
 	return c.now
 }
 
-// stepUpFixture is a server over three vaults: personal unprotected, work and
-// private both carrying a marker.
+// stepUpFixture is a server over three vaults. Step-up is a property of the
+// token alone, so the same vault is gated for one token and open for another.
 type stepUpFixture struct {
 	handler http.Handler
-	root    string
+	set     *auth.Set
 	clock   *stepUpClock
 	grants  *stepup.Grants
 
-	gated         string // vault:work, vault:private -- must unlock both
-	gatedReadOnly string // same posture, read scope only
-	opsOnly       string // ops:work, exempt from private -- decided, not gated
-	exempt        string // recorded exemption for both, no secret
-	undecided     string // nothing recorded: predates the marker
-	gatedNoSecret string // gated on access but carrying no secret to unlock with
+	gated         string // stepUp work, private -- must unlock both
+	gatedReadOnly string // same step-up, read scope only
+	plain         string // opens every vault, no step-up
+	gatedNoSecret string // gated on work but carrying no secret to unlock with
+}
+
+// principals is the fixture's token table, keyed by plaintext token.
+func (f *stepUpFixture) principals() map[string]auth.Principal {
+	rw := []string{auth.ScopeRead, auth.ScopeWrite}
+	return map[string]auth.Principal{
+		f.gated: {
+			Label: "gated", Vaults: []string{"*"}, Scopes: rw,
+			TotpSecret: rfcSecretForAPITest,
+			StepUp:     []string{"work", "private"},
+		},
+		f.gatedReadOnly: {
+			Label: "gated-ro", Vaults: []string{"*"}, Scopes: []string{auth.ScopeRead},
+			TotpSecret: rfcSecretForAPITest,
+			StepUp:     []string{"work", "private"},
+		},
+		f.plain: {
+			Label: "plain", Vaults: []string{"*"}, Scopes: rw,
+		},
+		// Mint and Load both refuse this combination, so it can only arrive by
+		// somebody hand-editing the file -- which is exactly why the handler
+		// must still cope rather than trusting the invariant.
+		f.gatedNoSecret: {
+			Label: "gated-nosecret", Vaults: []string{"*"}, Scopes: rw,
+			StepUp: []string{"work"},
+		},
+	}
 }
 
 func newStepUpFixture(t *testing.T) *stepUpFixture {
@@ -67,15 +92,6 @@ func newStepUpFixture(t *testing.T) *stepUpFixture {
 	root := t.TempDir()
 	for _, name := range []string{"personal", "work", "private"} {
 		if err := os.MkdirAll(filepath.Join(root, "vaults", name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, name := range []string{"work", "private"} {
-		dir := filepath.Join(root, ".archivist", name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, vaults.StepUpMarker), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -90,48 +106,14 @@ func newStepUpFixture(t *testing.T) *stepUpFixture {
 	t.Cleanup(func() { reg.Close() })
 
 	f := &stepUpFixture{
-		root:          root,
 		clock:         &stepUpClock{now: time.Unix(1111111109, 0)},
 		gated:         "tok-gated",
 		gatedReadOnly: "tok-gated-ro",
-		opsOnly:       "tok-ops",
-		exempt:        "tok-exempt",
-		undecided:     "tok-undecided",
+		plain:         "tok-plain",
 		gatedNoSecret: "tok-gated-nosecret",
 	}
-	rw := []string{auth.ScopeRead, auth.ScopeWrite}
-	set := auth.NewSetForTest(map[string]auth.Principal{
-		f.gated: {
-			Label: "gated", Vaults: []string{"*"}, Scopes: rw,
-			TotpSecret:         rfcSecretForAPITest,
-			RequiresStepUpAuth: []string{"vault:work", "vault:private"},
-		},
-		f.gatedReadOnly: {
-			Label: "gated-ro", Vaults: []string{"*"}, Scopes: []string{auth.ScopeRead},
-			TotpSecret:         rfcSecretForAPITest,
-			RequiresStepUpAuth: []string{"vault:work", "vault:private"},
-		},
-		f.opsOnly: {
-			Label: "ops", Vaults: []string{"*"}, Scopes: rw,
-			TotpSecret:         rfcSecretForAPITest,
-			RequiresStepUpAuth: []string{"ops:work"},
-			StepUpExempt:       []string{"private"},
-		},
-		f.exempt: {
-			Label: "exempt", Vaults: []string{"*"}, Scopes: rw,
-			StepUpExempt: []string{"work", "private"},
-		},
-		f.undecided: {
-			Label: "undecided", Vaults: []string{"*"}, Scopes: rw,
-		},
-		// Mint and Load both refuse this combination, so it can only arrive by
-		// somebody hand-editing the file -- which is exactly why the handler
-		// must still cope rather than trusting the invariant.
-		f.gatedNoSecret: {
-			Label: "gated-nosecret", Vaults: []string{"*"}, Scopes: rw,
-			RequiresStepUpAuth: []string{"vault:work"},
-		},
-	})
+	f.set = auth.NewSetForTest(f.principals())
+	set := f.set
 
 	f.grants = stepup.NewGrants(time.Minute, f.clock.Now)
 	t.Cleanup(f.grants.Close)
@@ -182,18 +164,6 @@ func (f *stepUpFixture) expireGrant(tok, vault string) {
 	}
 }
 
-func (f *stepUpFixture) breakMarkerLookup(t *testing.T) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores the permission bits this test relies on")
-	}
-	dir := filepath.Join(f.root, ".archivist")
-	if err := os.Chmod(dir, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o755) })
-}
-
 func errorCodeOf(t *testing.T, res *httptest.ResponseRecorder) string {
 	t.Helper()
 	var body protocol.ErrorResponse
@@ -203,7 +173,7 @@ func errorCodeOf(t *testing.T, res *httptest.ResponseRecorder) string {
 	return body.Error.Code
 }
 
-func TestAProtectedVaultRefusesReadsUntilUnlocked(t *testing.T) {
+func TestAGatedVaultRefusesReadsUntilUnlocked(t *testing.T) {
 	s := newStepUpFixture(t)
 	res := s.as(t, "GET", "/work/v1/head", nil, s.gated)
 	if res.Code != http.StatusForbidden {
@@ -214,37 +184,19 @@ func TestAProtectedVaultRefusesReadsUntilUnlocked(t *testing.T) {
 	}
 }
 
-// Absence denies. A token minted before the marker existed has no recorded
-// decision, and must be refused rather than admitted.
-func TestATokenThatDecidedNothingIsDenied(t *testing.T) {
+// The point of making step-up a token property: gating an agent on work must
+// not lock out the phone that syncs work.
+func TestAnotherTokenOnTheSameVaultIsNotGated(t *testing.T) {
 	s := newStepUpFixture(t)
-	res := s.as(t, "GET", "/work/v1/head", nil, s.undecided)
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: this token predates the marker", res.Code)
-	}
-	if code := errorCodeOf(t, res); code != protocol.CodeStepUpRequired {
-		t.Errorf("code = %q, want %q", code, protocol.CodeStepUpRequired)
+	if res := s.as(t, "GET", "/work/v1/head", nil, s.plain); res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; this token has no step-up", res.Code)
 	}
 }
 
-func TestARecordedExemptionReachesAProtectedVault(t *testing.T) {
-	s := newStepUpFixture(t)
-	if res := s.as(t, "GET", "/work/v1/head", nil, s.exempt); res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; this token recorded an exemption", res.Code)
-	}
-}
-
-func TestAnUnprotectedVaultIsNeverGated(t *testing.T) {
+func TestAVaultOutsideStepUpIsNeverGated(t *testing.T) {
 	s := newStepUpFixture(t)
 	if res := s.as(t, "GET", "/personal/v1/head", nil, s.gated); res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; personal carries no marker", res.Code)
-	}
-}
-
-func TestAnOpsPostureDoesNotGateAccess(t *testing.T) {
-	s := newStepUpFixture(t)
-	if res := s.as(t, "GET", "/work/v1/head", nil, s.opsOnly); res.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; ops: gates destructive operations, not reads", res.Code)
+		t.Fatalf("status = %d, want 200; personal is not in this token's stepUp", res.Code)
 	}
 }
 
@@ -256,15 +208,6 @@ func TestScopeIsCheckedBeforeStepUp(t *testing.T) {
 	if code := errorCodeOf(t, res); code != protocol.CodeForbidden {
 		t.Errorf("code = %q, want %q: refuse for the missing scope, not for a code",
 			code, protocol.CodeForbidden)
-	}
-}
-
-// Cannot tell is not no.
-func TestAnUndeterminableMarkerIsARefusal(t *testing.T) {
-	s := newStepUpFixture(t)
-	s.breakMarkerLookup(t)
-	if res := s.as(t, "GET", "/work/v1/head", nil, s.exempt); res.Code == http.StatusOK {
-		t.Fatal("a vault whose protection could not be determined was served anyway")
 	}
 }
 
@@ -308,21 +251,21 @@ func TestUnlockRejectsAWrongCode(t *testing.T) {
 	}
 }
 
-// Unlocking a vault this token has no access posture toward would spend a code
-// on a grant nothing consults.
-func TestUnlockIsRefusedWithoutAnAccessPosture(t *testing.T) {
+// Unlocking a vault this token does not gate would spend a code on a grant
+// nothing consults.
+func TestUnlockIsRefusedForATokenWithoutStepUp(t *testing.T) {
 	s := newStepUpFixture(t)
-	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": s.code(t)}, s.opsOnly)
+	res := s.as(t, "POST", "/work/v1/unlock", map[string]any{"code": s.code(t)}, s.plain)
 	if res.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: this token gates ops, not access", res.Code)
+		t.Fatalf("status = %d, want 403: this token has no step-up", res.Code)
 	}
 }
 
-func TestUnlockIsRefusedOnAnUnprotectedVault(t *testing.T) {
+func TestUnlockIsRefusedOnAVaultOutsideStepUp(t *testing.T) {
 	s := newStepUpFixture(t)
 	res := s.as(t, "POST", "/personal/v1/unlock", map[string]any{"code": s.code(t)}, s.gated)
 	if res.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: personal carries no marker", res.Code)
+		t.Fatalf("status = %d, want 403: personal is not in this token's stepUp", res.Code)
 	}
 }
 
@@ -445,46 +388,27 @@ func TestABlockedWaitStopsWhenItsGrantLapses(t *testing.T) {
 	}
 }
 
-// Two different facts, and the plugin needs both: which vaults the SERVER
-// protects, and what THIS token decided about them. One field cannot answer
-// both, and conflating them makes the plugin warn about vaults it is not gated
-// on.
-func TestVaultListReportsPolicyAndPostureSeparately(t *testing.T) {
+// The plugin refuses, at setup, a token gated on the vault it would sync.
+func TestVaultListReportsThisTokensStepUp(t *testing.T) {
 	s := newStepUpFixture(t)
-	res := s.as(t, "GET", "/v1/vaults", nil, s.opsOnly)
-
-	var got struct {
-		ProtectedVaults    []string `json:"protectedVaults"`
-		RequiresStepUpAuth []string `json:"requiresStepUpAuth"`
-	}
-	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if len(got.ProtectedVaults) != 2 {
-		t.Errorf("protectedVaults = %v, want work and private", got.ProtectedVaults)
-	}
-	if len(got.RequiresStepUpAuth) != 1 || got.RequiresStepUpAuth[0] != "ops:work" {
-		t.Errorf("requiresStepUpAuth = %v, want [ops:work]", got.RequiresStepUpAuth)
+	for tok, want := range map[string][]string{s.gated: {"work", "private"}, s.plain: {}} {
+		res := s.as(t, "GET", "/v1/vaults", nil, tok)
+		var got struct {
+			StepUp []string `json:"stepUp"`
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.StepUp == nil || strings.Join(got.StepUp, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: stepUp = %#v, want %v (present even when empty)", tok, got.StepUp, want)
+		}
 	}
 }
 
-// protect marks a vault after the fixture is already running, so a stream can be
-// opened before protection begins.
-func (f *stepUpFixture) protect(t *testing.T, name string) {
-	t.Helper()
-	dir := filepath.Join(f.root, ".archivist", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, vaults.StepUpMarker), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// Protection begins when the marker appears, including for streams already
-// running. One admitted while the vault was open has no lapse channel, so
-// without a periodic re-check it would keep publishing changed paths forever.
-func TestAStreamOpenedBeforeProtectionStopsWhenTheMarkerAppears(t *testing.T) {
+// A token can gain a stepUp entry under the same hash when the tokens file is
+// edited. A stream it opened ungated has no lapse channel, so without the
+// periodic re-check it would keep publishing changed paths forever.
+func TestAStreamStopsWhenItsTokenGainsStepUp(t *testing.T) {
 	defer func(d time.Duration) { streamKeepalive = d }(streamKeepalive)
 	streamKeepalive = 50 * time.Millisecond
 
@@ -492,9 +416,8 @@ func TestAStreamOpenedBeforeProtectionStopsWhenTheMarkerAppears(t *testing.T) {
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 
-	// personal carries no marker yet, so this is admitted ungated.
-	req, _ := http.NewRequest("GET", srv.URL+"/personal/v1/events", nil)
-	req.Header.Set("Authorization", "Bearer "+s.gated)
+	req, _ := http.NewRequest("GET", srv.URL+"/work/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+s.plain)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -507,11 +430,15 @@ func TestAStreamOpenedBeforeProtectionStopsWhenTheMarkerAppears(t *testing.T) {
 	drained := make(chan struct{})
 	go func() { io.ReadAll(res.Body); close(drained) }()
 
-	s.protect(t, "personal")
+	edited := s.principals()
+	p := edited[s.plain]
+	p.StepUp, p.TotpSecret = []string{"work"}, rfcSecretForAPITest
+	edited[s.plain] = p
+	s.set.Replace(auth.NewSetForTest(edited))
 
 	select {
 	case <-drained:
 	case <-time.After(3 * time.Second):
-		t.Fatal("the stream kept running after its vault became protected")
+		t.Fatal("the stream kept running after its token gained step-up on this vault")
 	}
 }

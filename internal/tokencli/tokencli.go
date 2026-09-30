@@ -16,49 +16,27 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/stepup"
-	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 )
 
-// posture is what a profile does about step-up on a protected vault.
-type posture int
-
-const (
-	postureNone posture = iota // record an exemption
-	postureOps                 // ops:<vault> -- confirm destructive operations only
-	postureFull                // vault:<vault> and ops:<vault>
-)
-
-// profiles are named for WHO HOLDS the token, because that is what determines
-// whether a code can ever be typed. Explicit flags override every field.
-//
-// The attended/unattended split is the one that breaks things when wrong: a
-// token with vault: step-up and no human behind it is a service that dies at
-// its first restart and cannot recover.
-var profiles = map[string]struct {
-	scopes   []string
-	posture  posture
-	attended bool
-}{
-	// The plugin persists the vault to disk, so gating its ACCESS protects
-	// nothing and would prompt on every restart. Confirming a destructive
-	// operation triggered from it is the opposite: worth having.
-	"obsidian-plugin": {[]string{auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete}, postureOps, true},
-	"mcp-client":      {[]string{auth.ScopeRead, auth.ScopeWrite}, postureFull, true},
-	// memo-ai is an MCP client running under dagu with nobody watching: the
-	// same hazard as the relay's own token, reached through a name that
-	// describes the surface rather than who is present.
-	"mcp-scheduled":    {[]string{auth.ScopeRead, auth.ScopeWrite}, postureNone, false},
-	"relay-background": {[]string{auth.ScopeRead}, postureNone, false},
+// profiles are scope presets named for WHO HOLDS the token. They do not set
+// step-up: that is always an explicit -step-up, so a gate is never implied by a
+// name. Explicit -scopes overrides the preset.
+var profiles = map[string][]string{
+	// The plugin needs all three: it syncs down, uploads, and propagates
+	// deletes.
+	"obsidian-plugin": {auth.ScopeRead, auth.ScopeWrite, auth.ScopeDelete},
+	"mcp-client":      {auth.ScopeRead, auth.ScopeWrite},
+	// memo-ai under dagu: an MCP client with nobody watching, so never give it
+	// -step-up -- it could not present a code after its first restart.
+	"mcp-scheduled":    {auth.ScopeRead, auth.ScopeWrite},
+	"relay-background": {auth.ScopeRead},
 }
 
 func profileNames() string {
@@ -78,38 +56,6 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 		}
 	})
 	return set
-}
-
-// protectedIn lists the protected vaults under a root. An unreadable entry is
-// an error, never a silent "not protected".
-func protectedIn(l vaults.Layout) ([]string, error) {
-	names, err := l.Discover()
-	if err != nil {
-		return nil, fmt.Errorf("listing vaults under %s: %w", l.Root, err)
-	}
-	out := []string{}
-	for _, n := range names {
-		_, err := os.Lstat(filepath.Join(l.GitDir(n), vaults.StepUpMarker))
-		switch {
-		case err == nil:
-			out = append(out, n)
-		case errors.Is(err, fs.ErrNotExist):
-		default:
-			return nil, fmt.Errorf("cannot tell whether %s is protected: %w", n, err)
-		}
-	}
-	return out, nil
-}
-
-// gatedOnAccess keeps the plugin warning to vault: entries. An ops: posture on a
-// plugin token is a feature, not a mistake.
-func gatedOnAccess(p auth.Principal) bool {
-	for _, e := range p.RequiresStepUpAuth {
-		if strings.HasPrefix(e, auth.StepUpVault+":") {
-			return true
-		}
-	}
-	return false
 }
 
 // Handles reports whether name is this package's subcommand.
@@ -161,10 +107,8 @@ func runAdd(args []string, out io.Writer) error {
 	scopes := fs.String("scopes", "read", "comma-separated: read, write, delete")
 	canCreate := fs.Bool("can-create-vaults", false, "allow this token to create vaults")
 	expires := fs.Duration("expires-in", 0, "expire after this long; 0 means never")
-	stepUp := fs.String("step-up", "", "comma-separated vault:<name> / ops:<name> entries requiring a one-time code")
-	noStepUp := fs.String("no-step-up", "", "comma-separated protected vaults this token deliberately does not gate")
-	profile := fs.String("profile", "", "starting point: "+profileNames())
-	root := fs.String("root", os.Getenv("ARCHIVIST_ROOT"), "vault root, for checking which vaults are protected")
+	stepUp := fs.String("step-up", "", "comma-separated vaults this token must unlock with a one-time code")
+	profile := fs.String("profile", "", "scope preset: "+profileNames())
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -174,42 +118,15 @@ func runAdd(args []string, out io.Writer) error {
 	if *vaultNames == "" {
 		return errors.New("token add: -vaults is required")
 	}
-
-	var prof struct {
-		scopes   []string
-		posture  posture
-		attended bool
-	}
 	if *profile != "" {
-		got, ok := profiles[*profile]
+		preset, ok := profiles[*profile]
 		if !ok {
 			return fmt.Errorf("token add: %q is not a profile (%s)", *profile, profileNames())
 		}
-		prof = got
 		if !flagWasSet(fs, "scopes") {
-			*scopes = strings.Join(prof.scopes, ",")
-		}
-		if !prof.attended && *stepUp != "" {
-			return fmt.Errorf("token add: %s runs with no human present, so it can never "+
-				"present a code; a step-up posture would make it fail at its first restart", *profile)
+			*scopes = strings.Join(preset, ",")
 		}
 	}
-
-	// Without a root the protection check cannot run, and a check that skips
-	// itself when a variable is unset is not a check.
-	if *root == "" {
-		return errors.New("token add: -root (or ARCHIVIST_ROOT) is required, so minting can " +
-			"tell which vaults are protected")
-	}
-	// A typo satisfies "non-empty" and then discovers no vaults, so the
-	// protection check passes over a root that does not exist. That mints a
-	// token nobody checked rather than refusing, so stat it.
-	if info, err := os.Stat(*root); err != nil {
-		return fmt.Errorf("token add: cannot read -root %s: %w", *root, err)
-	} else if !info.IsDir() {
-		return fmt.Errorf("token add: -root %s is not a directory", *root)
-	}
-	layout := vaults.Layout{Root: *root}
 
 	p := auth.Principal{
 		Label:           *label,
@@ -217,6 +134,7 @@ func runAdd(args []string, out io.Writer) error {
 		Scopes:          split(*scopes),
 		CanCreateVaults: *canCreate,
 		CreatedAt:       time.Now().Unix(),
+		StepUp:          split(*stepUp),
 	}
 	// A negative duration asked for an expiry and would silently have produced a
 	// permanent token, which is the opposite of what was requested.
@@ -231,47 +149,7 @@ func runAdd(args []string, out io.Writer) error {
 			return fmt.Errorf("token add: %q is not a scope (read, write, delete)", s)
 		}
 	}
-
-	p.RequiresStepUpAuth = split(*stepUp)
-	p.StepUpExempt = split(*noStepUp)
-
-	protectedVaults, err := protectedIn(layout)
-	if err != nil {
-		return fmt.Errorf("token add: %w", err)
-	}
-	// A wildcard opens vaults that do not exist yet, so checking it against what
-	// happens to be present now proves nothing about tomorrow. Refuse the
-	// combination rather than pretend it was verified.
-	if slices.Contains(p.Vaults, "*") && len(protectedVaults) > 0 &&
-		!flagWasSet(fs, "step-up") && !flagWasSet(fs, "no-step-up") {
-		return fmt.Errorf("token add: -vaults * with protected vaults present (%s) needs an "+
-			"explicit -step-up or -no-step-up; a wildcard cannot be checked against vaults "+
-			"that do not exist yet", strings.Join(protectedVaults, ", "))
-	}
-
-	targets := p.Vaults
-	if slices.Contains(targets, "*") {
-		targets = protectedVaults
-	}
-	for _, v := range targets {
-		if !slices.Contains(protectedVaults, v) || p.StepUpDecided(v) {
-			continue
-		}
-		if *profile == "" {
-			return fmt.Errorf("token add: %s requires an explicit step-up posture.\n"+
-				"Pass -step-up vault:%s[,ops:%s], or -no-step-up %s to opt out deliberately.", v, v, v, v)
-		}
-		switch prof.posture {
-		case postureFull:
-			p.RequiresStepUpAuth = append(p.RequiresStepUpAuth, auth.StepUpVault+":"+v, auth.StepUpOps+":"+v)
-		case postureOps:
-			p.RequiresStepUpAuth = append(p.RequiresStepUpAuth, auth.StepUpOps+":"+v)
-		case postureNone:
-			p.StepUpExempt = append(p.StepUpExempt, v)
-		}
-	}
-
-	if len(p.RequiresStepUpAuth) > 0 {
+	if len(p.StepUp) > 0 {
 		secret, err := stepup.NewSecret()
 		if err != nil {
 			return err
@@ -303,12 +181,9 @@ func runAdd(args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Vaults:     %s\n", strings.Join(p.Vaults, ", "))
 	fmt.Fprintf(out, "Scopes:     %s\n", strings.Join(p.Scopes, ", "))
-	if len(p.RequiresStepUpAuth) > 0 {
-		fmt.Fprintf(out, "Step-up:    %s\n", strings.Join(p.RequiresStepUpAuth, ", "))
-	}
-	if len(p.StepUpExempt) > 0 {
-		fmt.Fprintf(out, "Not gated:  %s\n", strings.Join(p.StepUpExempt, ", "))
-	}
+	// Always printed, "none" included: this line is what catches a forgotten
+	// -step-up at mint time, so it must be there to read when it is missing.
+	fmt.Fprintf(out, "Step-up:    %s\n", orNone(p.StepUp))
 	if p.ExpiresAt != 0 {
 		fmt.Fprintf(out, "Expires:    %s\n", time.Unix(p.ExpiresAt, 0).Format(time.RFC3339))
 	} else {
@@ -322,9 +197,9 @@ func runAdd(args []string, out io.Writer) error {
 		fmt.Fprint(out, "\nNOTE: the Obsidian plugin needs both read and write. Do NOT paste "+
 			"this token into it -- syncing will fail.\n")
 	}
-	if gatedOnAccess(p) {
-		fmt.Fprint(out, "\nNOTE: a vault: posture is for MCP agents. The Obsidian plugin cannot "+
-			"present a code, and it persists the vault to disk anyway. An ops: posture is fine there.\n")
+	if len(p.StepUp) > 0 {
+		fmt.Fprint(out, "\nNOTE: step-up is for MCP agents. The Obsidian plugin cannot present a "+
+			"code, so do NOT paste this token into it for a gated vault.\n")
 	}
 	fmt.Fprint(out, "\nThis is the only time the token and the secret are shown.\n")
 	if p.TotpSecret != "" {
@@ -351,15 +226,16 @@ func runList(args []string, out io.Writer) error {
 	}
 	sort.Strings(hashes)
 
-	fmt.Fprintf(out, "%-12s  %-18s  %-20s  %-18s  %s\n", "ID", "LABEL", "VAULTS", "SCOPES", "EXPIRES")
+	fmt.Fprintf(out, "%-12s  %-22s  %-20s  %-18s  %-12s  %s\n", "ID", "LABEL", "VAULTS", "SCOPES", "STEP-UP", "EXPIRES")
 	for _, h := range hashes {
 		p := entries[h]
 		expiry := "never"
 		if p.ExpiresAt != 0 {
 			expiry = time.Unix(p.ExpiresAt, 0).Format("2006-01-02")
 		}
-		fmt.Fprintf(out, "%-12s  %-18s  %-20s  %-18s  %s\n",
-			h[:12], p.Label, strings.Join(p.Vaults, ","), strings.Join(p.Scopes, ","), expiry)
+		fmt.Fprintf(out, "%-12s  %-22s  %-20s  %-18s  %-12s  %s\n",
+			h[:12], p.Label, strings.Join(p.Vaults, ","), strings.Join(p.Scopes, ","),
+			orNone(p.StepUp), expiry)
 	}
 	return nil
 }
@@ -415,4 +291,11 @@ func split(s string) []string {
 		}
 	}
 	return out
+}
+
+func orNone(v []string) string {
+	if len(v) == 0 {
+		return "none"
+	}
+	return strings.Join(v, ",")
 }

@@ -327,17 +327,17 @@ export default class ArchivistPlugin extends Plugin {
 		const token = loadToken(this.app);
 		if (!this.settings.serverUrl || !token) return false;
 		try {
-			const { vaults, protectedVaults, requiresStepUpAuth, label } = await new Client(
+			const { vaults, stepUp, label } = await new Client(
 				this.settings.serverUrl,
 				token,
 				"",
 			).listVaults();
 			if (vaults.length !== 1) return false;
 			// One vault is not a reason to skip the check the Choose button
-			// makes. A token gated on vault ACCESS cannot drive this plugin --
+			// makes. A vault this token gates cannot be synced by this plugin --
 			// there is nowhere here to present a code -- so adopting it silently
 			// would start a sync that can only fail.
-			const gated = stepUpWarning(protectedVaults, requiresStepUpAuth, label);
+			const gated = stepUpWarning(vaults, stepUp, label);
 			if (gated) {
 				console.log("[archivist] not adopting the only vault:", gated);
 				return false;

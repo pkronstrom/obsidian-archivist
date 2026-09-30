@@ -18,7 +18,7 @@ mkdir -p data/vaults/personal data/.archivist
 printf 'ARCHIVIST_UID=%s\nARCHIVIST_GID=%s\n' "$(id -u)" "$(id -g)" > .env
 docker compose build archivist relay
 docker compose run --rm --no-deps archivist token add \
-  -root /data -label first-device -vaults personal -profile obsidian-plugin
+  -label first-device -vaults personal -profile obsidian-plugin
 ```
 
 Save the printed `arch_...` token in the first device. It appears only once.
@@ -112,7 +112,7 @@ Archivist stores only token hashes. Give each device or agent its own token and
 save the printed secret: it appears only once.
 
 ```bash
-docker compose exec archivist /archivist-server token add -root /data -label laptop \
+docker compose exec archivist /archivist-server token add -label laptop \
   -vaults personal -profile obsidian-plugin
 docker compose exec archivist /archivist-server token list
 docker compose exec archivist /archivist-server token revoke <id-prefix>
@@ -123,7 +123,7 @@ needed.
 
 A token carries a label, allowed vaults, expiry and the scopes `read`, `write`
 and `delete`. Its label is recorded in commit history. Prefer the built-in
-profiles, which choose the expected scopes and step-up posture:
+profiles, which choose the expected scopes (never step-up):
 
 | Profile | Intended holder | Access |
 | --- | --- | --- |
@@ -141,7 +141,7 @@ Give every Obsidian installation its own token:
 
 ```bash
 docker compose exec archivist /archivist-server token add \
-  -root /data -label phone -vaults personal -profile obsidian-plugin
+  -label phone -vaults personal -profile obsidian-plugin
 ```
 
 Install the plugin, enter the same server URL and vault name, then use the new
@@ -211,7 +211,7 @@ their holder needs:
 
 ```bash
 docker compose exec archivist /archivist-server token add \
-  -root /data -label work-laptop -vaults work -profile obsidian-plugin
+  -label work-laptop -vaults work -profile obsidian-plugin
 ```
 
 `GET /v1/vaults` lists only the vaults opened by the presented token. Vault
@@ -269,61 +269,32 @@ separate empty data directory. Do not file-copy
 `data/.archivist/<vault>` while the server is running: a backup can catch a ref
 and its objects at different moments.
 
-## Protecting a vault
+## Step-up for an agent
 
-A protected vault requires an authenticator code before selected tokens can
-read it or perform destructive operations. This is a consent gate, not
-encryption: the server still holds plaintext files.
-
-Re-mint every token that opens the vault before creating the marker. State the
-posture explicitly because profile defaults apply only after a vault is already
-protected:
+Step-up makes one token prove presence with an authenticator code before it may
+read or write a vault. It is a property of that token only: the phone and laptop
+syncing the same vault are unaffected. This is a consent gate, not encryption:
+the server still holds plaintext files.
 
 ```bash
 docker compose exec archivist /archivist-server token add \
-  -root /data -label work-laptop -vaults work \
-  -profile obsidian-plugin -step-up ops:work
-
-docker compose exec archivist /archivist-server token add \
-  -root /data -label agent-claude -vaults work,personal \
-  -profile mcp-client -step-up vault:work,ops:work
+  -label agent-claude -vaults personal,work -profile mcp-client -step-up work
 ```
 
-Update the plugin and agent with their new credentials and verify each can see
-the intended vault before creating the marker:
+The output shows `Step-up:    work` and an `otpauth://` URL; add it to your
+authenticator. The agent reaches `personal` freely and gets `step_up_required`
+on `work` until it calls the relay's `unlock` MCP tool with a code you give it.
+A code opens that vault for that token for 15 minutes (`ARCHIVIST_STEP_UP_TTL`),
+on a clock, never extended by use. A deploy drops active grants.
 
-```bash
-NEW_TOKEN=arch_replace_with_the_new_token
-curl -fsS -H "Authorization: Bearer $NEW_TOKEN" \
-  http://127.0.0.1:8090/v1/vaults
-touch data/.archivist/work/step-up
-curl -fsS -H "Authorization: Bearer $NEW_TOKEN" \
-  http://127.0.0.1:8090/work/v1/head
-```
+To add step-up to an existing token, mint a replacement with `-step-up`, swap it
+into the client, then revoke the old one. `token list` shows each token's
+step-up in the `STEP-UP` column.
 
-If webhooks follow this vault, mint a separate `relay-background` token with
-`-no-step-up work`, set `RELAY_BG_TOKEN`, and recreate the relay before adding
-the marker. The [webhook setup](INTEGRATIONS.md#webhooks) shows the full flow.
-
-Once the marker exists, old tokens are refused because they have no explicit
-posture. New tokens minted with a profile receive that profile's default posture
-automatically, but an explicit `-step-up` or `-no-step-up` remains clearer when
-changing protection policy.
-
-Minting the token prints an `otpauth://` URL for an authenticator. Profiles use
-these postures:
-
-| Posture | Gates | Lifetime |
-| --- | --- | --- |
-| `vault:work` | read and write access | grant, 15 minutes by default |
-| `ops:work` | destructive operations | one code for one operation |
-
-An attended agent can call the relay's `unlock` MCP tool with a code. A deploy
-drops active grants. Unattended `mcp-scheduled` and `relay-background` profiles
-refuse vault step-up because nobody is present to unlock them.
-
-Webhooks continue when a protected vault is not unlocked: they use the relay's
-background token, not an attended caller's grant.
+Never give `-step-up` to a token nobody is present to unlock: the Obsidian
+plugin, `mcp-scheduled` jobs and the relay's background token would fail at
+their first request. Webhooks use the background token, so they keep firing for
+a vault an agent has not unlocked.
 
 ## Write guards
 

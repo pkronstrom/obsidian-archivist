@@ -41,14 +41,14 @@ type Server struct {
 }
 
 // Option configures the server. Variadic because step-up is additive: every
-// existing caller builds a server with no protected vaults and must keep
+// existing caller builds a server whose tokens carry no step-up and must keep
 // compiling unchanged.
 type Option func(*Server)
 
 // WithStepUp supplies the grant table and verifier.
 //
 // Without it the server still ENFORCES the gate -- it simply cannot open it, so
-// a protected vault refuses everything. That is the correct direction for a
+// a token with step-up is refused on its gated vaults. That is the correct direction for a
 // build that forgot to wire this: unavailable, not unguarded.
 func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
 	return func(s *Server) { s.grants, s.verifier = g, v }
@@ -57,10 +57,8 @@ func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
 // stepUpState is the gate decision made at admission.
 //
 // Handlers that outlive the middleware -- SSE, long-poll -- must act on this
-// rather than re-deriving it. Re-statting the marker inside a handler is a
-// TOCTOU window: a stream opened while a vault was unprotected would otherwise
-// keep running after the marker appeared, and a transient error would silently
-// downgrade a gated stream to an unwatched one.
+// rather than re-deriving it: the lapse channel belongs to the grant the request
+// was admitted under, and asking again later could attach a successor grant.
 type stepUpState struct {
 	gated  bool
 	lapsed <-chan struct{}
@@ -182,10 +180,8 @@ func (s *Server) withVault(scope string, skipStepUp bool, h func(http.ResponseWr
 
 // unlock exchanges a one-time code for a grant on this vault.
 //
-// It requires that this vault is protected AND that this token gates access to
-// it. Without both, a code would be spent to create a grant nothing consults --
-// and an unlock issued before a marker existed would pre-authorise the vault
-// that is about to be protected.
+// It requires that this token gates access to this vault. Otherwise a code
+// would be spent to create a grant nothing consults.
 func (s *Server) unlock(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	p, _ := r.Context().Value(ctxPrincipal).(auth.Principal)
 
@@ -235,30 +231,11 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 // to keep enforcing it. It writes the refusal itself, so the caller only has to
 // return.
 //
-// Two halves, both required: the vault carries a marker, and this token recorded
-// a decision about it. See docs/adr/0003-protected-vault-and-token-posture.md.
+// The gate is a property of the token alone: a vault is gated for THIS caller
+// when its token names the vault in stepUp. Other tokens opening the same vault
+// are unaffected. See docs/adr/0005-step-up-is-a-token-property.md.
 func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.Principal, vault string, skip bool) (stepUpState, bool) {
-	protected, err := s.reg.Protected(vault)
-	if err != nil {
-		// Cannot tell is not no. Serving here would be the one failure this
-		// gate exists to prevent.
-		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
-		return stepUpState{}, false
-	}
-	if !protected {
-		return stepUpState{}, true
-	}
-
-	// Absence denies. A token that recorded nothing about this vault predates
-	// the marker, and treating silence as consent is exactly the fail-open that
-	// ruled out making this a property of the token alone.
-	if !p.StepUpDecided(vault) {
-		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
-			"this token predates step-up on "+vault+
-				" and has no recorded posture; re-mint it with -step-up or -no-step-up")
-		return stepUpState{}, false
-	}
-	if !p.NeedsStepUp(auth.StepUpVault, vault) {
+	if !p.NeedsStepUp(vault) {
 		return stepUpState{}, true
 	}
 	if skip {
@@ -285,24 +262,14 @@ func (s *Server) stepUpDecision(w http.ResponseWriter, r *http.Request, p auth.P
 }
 
 // stepUpStillPermits re-answers the gate for a stream that has already been
-// running, and returns why it must stop.
+// running, against the principal as it stands NOW.
 //
 // The admission-time decision is the right one for the request that carried it,
-// but a long-lived stream outlives the facts it was based on. Protection can
-// begin mid-stream, and the marker can become unreadable -- both of which must
-// end the stream rather than be assumed benign.
+// but a long-lived stream outlives it: the tokens file can be edited under an
+// existing hash to add a stepUp entry, and that must end the stream rather than
+// leave it running ungated.
 func (s *Server) stepUpStillPermits(p auth.Principal, vault, presented string) error {
-	protected, err := s.reg.Protected(vault)
-	if err != nil {
-		return err // cannot tell is not no, here as anywhere else
-	}
-	if !protected {
-		return nil
-	}
-	if !p.StepUpDecided(vault) {
-		return errors.New("no recorded step-up posture")
-	}
-	if !p.NeedsStepUp(auth.StepUpVault, vault) {
+	if !p.NeedsStepUp(vault) {
 		return nil
 	}
 	if s.grants == nil || !s.grants.Held(auth.HashToken(presented), vault) {
@@ -713,10 +680,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	name := r.PathValue("vault")
 
-	// The gate was decided at admission and carried here. Re-checking the marker
-	// or the grant now would be a TOCTOU window: a stream opened while the vault
-	// was unprotected would keep running after the marker appeared. A nil
-	// channel blocks forever, which is exactly right for an ungated caller.
+	// The gate was decided at admission and carried here, with the lapse channel
+	// of the exact grant it was admitted under. A nil channel blocks forever,
+	// which is exactly right for an ungated caller.
 	lapsed := stepUpFrom(r).lapsed
 
 	for {
@@ -736,11 +702,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 			if !ok || !p.Opens(name) || !p.Can(auth.ScopeRead) {
 				return // revoked, expired, or narrowed since this stream opened
 			}
-			// The vault may have been PROTECTED since this stream opened. A
-			// stream admitted while it was not has no lapse channel and would
-			// otherwise keep publishing changed paths for days after the marker
-			// appeared. Bounded by one tick, same as the revocation check above,
-			// and for the same reason: the timer already exists.
+			// The token may have GAINED a stepUp entry since this stream opened
+			// (the tokens file was edited under the same hash). A stream admitted
+			// ungated has no lapse channel and would otherwise keep publishing
+			// changed paths for days. Bounded by one tick, same as the revocation
+			// check above, and for the same reason: the timer already exists.
 			if s.stepUpStillPermits(p, name, bearer) != nil {
 				return
 			}
@@ -820,10 +786,9 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	// The gate was decided at admission and carried here. Re-checking the marker
-	// or the grant now would be a TOCTOU window: a stream opened while the vault
-	// was unprotected would keep running after the marker appeared. A nil
-	// channel blocks forever, which is exactly right for an ungated caller.
+	// The gate was decided at admission and carried here, with the lapse channel
+	// of the exact grant it was admitted under. A nil channel blocks forever,
+	// which is exactly right for an ungated caller.
 	lapsed := stepUpFrom(r).lapsed
 
 	select {
@@ -1239,37 +1204,20 @@ func (s *Server) listVaults(w http.ResponseWriter, r *http.Request) {
 		scopes = []string{}
 	}
 
-	// Two distinct facts, and a client needs both. protectedVaults is the
-	// SERVER's policy -- which vaults carry a marker. requiresStepUpAuth is THIS
-	// principal's posture. The plugin warns only where the two agree, so it
-	// cannot warn about a protected vault this token is not gated on.
-	//
-	// A vault whose protection cannot be determined fails the whole listing
-	// rather than being quietly omitted, which would read as "not protected".
+	// stepUp is here so the plugin can refuse, at setup, a token it could never
+	// sync with: it has nowhere to present an unlock code.
 	visible := p.Visible(all)
-	protected := []string{}
-	for _, name := range visible {
-		is, err := s.reg.Protected(name)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
-			return
-		}
-		if is {
-			protected = append(protected, name)
-		}
-	}
-	posture := p.RequiresStepUpAuth
-	if posture == nil {
-		posture = []string{}
+	stepUp := p.StepUp
+	if stepUp == nil {
+		stepUp = []string{}
 	}
 
 	writeJSON(w, map[string]any{
-		"vaults":             visible,
-		"canCreate":          p.CanCreateVaults,
-		"scopes":             scopes,
-		"label":              p.Label,
-		"protectedVaults":    protected,
-		"requiresStepUpAuth": posture,
+		"vaults":    visible,
+		"canCreate": p.CanCreateVaults,
+		"scopes":    scopes,
+		"label":     p.Label,
+		"stepUp":    stepUp,
 	})
 }
 

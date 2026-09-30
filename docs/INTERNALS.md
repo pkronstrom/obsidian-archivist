@@ -74,7 +74,7 @@ version.
 | `GET` | `/personal/v1/check` | working tree versus head, including paths stranded by an exclusion |
 | `GET` | `/personal/v1/events` | SSE, one event per commit |
 | `GET` | `/personal/v1/wait?since=&timeout=` | long-poll until head moves |
-| `POST` | `/personal/v1/unlock` | spend a one-time code on a protected vault |
+| `POST` | `/personal/v1/unlock` | spend a one-time code on a vault this token gates |
 | `GET` | `/v1/vaults` | which vaults this token opens, and what it may do |
 | `POST` | `/v1/vaults` | create a vault; requires write scope and `canCreateVaults` |
 | `GET` | `/personal/v1` | the endpoint list, plus `protocol` and `version` |

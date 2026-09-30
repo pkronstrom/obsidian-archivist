@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,27 +47,15 @@ func ValidScope(s string) bool {
 	return false
 }
 
-// Step-up kinds. Two, and deliberately not more: the kind decides the LIFETIME
-// of what a code buys. See docs/adr/0004-step-up-has-two-lifetimes.md.
-const (
-	// StepUpVault gates reading and writing a vault, and produces a grant.
-	StepUpVault = "vault"
-	// StepUpOps gates a destructive operation, and produces nothing: one code,
-	// one operation.
-	StepUpOps = "ops"
-)
-
-// ValidStepUp reports whether entry is in the catalog.
+// ValidStepUpName reports whether v can be a step-up entry: a plain vault name.
 //
-// `op:<name>` entries are reserved for gating individual operations and are NOT
-// accepted: nothing enforces them yet, and a token carrying one would promise a
-// gate that does not exist.
-func ValidStepUp(entry string) bool {
-	kind, name, ok := strings.Cut(entry, ":")
-	if !ok || name == "" || strings.Contains(name, ":") {
-		return false
-	}
-	return kind == StepUpVault || kind == StepUpOps
+// Refuses the wildcard, because "gate every vault" on a token that opens every
+// vault would also gate vaults created later without anyone deciding to. And
+// refuses the retired "vault:<name>" / "ops:<name>" syntax by name, so muscle
+// memory from the old CLI fails loudly instead of gating a vault called
+// "vault:work" that does not exist.
+func ValidStepUpName(v string) bool {
+	return v != "" && v != "*" && !strings.ContainsAny(v, ":/\\")
 }
 
 // Principal is what one token may do.
@@ -91,16 +80,11 @@ type Principal struct {
 	// is worthless without the first, so a stolen tokens file still yields no
 	// credential. See docs/adr/0001-totp-secret-in-the-tokens-file.md.
 	TotpSecret string `json:"totpSecret,omitempty"`
-	// RequiresStepUpAuth is what this token must prove presence for, as
-	// "<kind>:<vault>" entries validated against the catalog below.
-	RequiresStepUpAuth []string `json:"requiresStepUpAuth,omitempty"`
-	// StepUpExempt names protected vaults this token deliberately does not gate.
-	//
-	// It exists so that "decided not to gate" and "never asked" are different
-	// facts. Only the second is denied, and without this field they are
-	// indistinguishable -- which is how every token minted before a vault was
-	// protected would have stayed silently ungated.
-	StepUpExempt []string `json:"stepUpExempt,omitempty"`
+	// StepUp names the vaults this token must unlock with a TOTP code before it
+	// may read or write them. A property of the token alone: another token
+	// opening the same vault is unaffected. See
+	// docs/adr/0005-step-up-is-a-token-property.md.
+	StepUp []string `json:"stepUp,omitempty"`
 }
 
 func (p Principal) Opens(vault string) bool {
@@ -122,75 +106,30 @@ func (p Principal) Can(scope string) bool {
 	return false
 }
 
-// NeedsStepUp reports whether this token must prove presence for one kind of
-// action on one vault.
-func (p Principal) NeedsStepUp(kind, vault string) bool {
-	want := kind + ":" + vault
-	for _, e := range p.RequiresStepUpAuth {
-		if e == want {
-			return true
-		}
-	}
-	return false
-}
-
-// StepUpExemptFrom reports a RECORDED decision not to gate this vault. Absence
-// is not exemption; see StepUpDecided.
-func (p Principal) StepUpExemptFrom(vault string) bool {
-	for _, v := range p.StepUpExempt {
-		if v == vault {
-			return true
-		}
-	}
-	return false
-}
-
-// StepUpDecided reports whether this token carries any recorded decision about
-// this vault.
-//
-// A protected vault plus a token that decided nothing is refused: that token
-// predates the marker, and treating silence as consent is the fail-open this
-// design exists to avoid. See docs/adr/0003-protected-vault-and-token-posture.md.
-func (p Principal) StepUpDecided(vault string) bool {
-	return p.NeedsStepUp(StepUpVault, vault) ||
-		p.NeedsStepUp(StepUpOps, vault) ||
-		p.StepUpExemptFrom(vault)
-}
-
-// StepUpVaults lists every vault this token has a posture toward.
-func (p Principal) StepUpVaults() []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, e := range p.RequiresStepUpAuth {
-		_, name, ok := strings.Cut(e, ":")
-		if !ok || seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
+// NeedsStepUp reports whether this token must unlock vault before using it.
+func (p Principal) NeedsStepUp(vault string) bool {
+	return slices.Contains(p.StepUp, vault)
 }
 
 // validateStepUp is the shared rule for Mint and Load. Both must apply it: a
 // principal reaches the table by minting OR by being read off disk, and a
-// catalog enforced on only one path is advisory.
+// rule enforced on only one path is advisory.
 func validateStepUp(p Principal) error {
-	for _, e := range p.RequiresStepUpAuth {
-		if !ValidStepUp(e) {
-			return fmt.Errorf("%q is not a step-up entry (vault:<name>, ops:<name>)", e)
+	for i, v := range p.StepUp {
+		if !ValidStepUpName(v) {
+			return fmt.Errorf("%q is not a step-up entry: name a vault, e.g. work", v)
+		}
+		if slices.Contains(p.StepUp[:i], v) {
+			return fmt.Errorf("%q is listed twice in stepUp", v)
+		}
+		// A gate on a vault the token cannot open is a typo that would read,
+		// in a listing, as protection.
+		if !p.Opens(v) {
+			return fmt.Errorf("stepUp names %q, which this token does not open", v)
 		}
 	}
-	if len(p.RequiresStepUpAuth) > 0 && p.TotpSecret == "" {
+	if len(p.StepUp) > 0 && p.TotpSecret == "" {
 		return errors.New("a token that must step up needs a totpSecret to do it with")
-	}
-	for _, v := range p.StepUpExempt {
-		if v == "" {
-			return errors.New("an empty vault name in stepUpExempt")
-		}
-		if p.NeedsStepUp(StepUpVault, v) {
-			return fmt.Errorf("%q is both gated and exempt", v)
-		}
 	}
 	return nil
 }

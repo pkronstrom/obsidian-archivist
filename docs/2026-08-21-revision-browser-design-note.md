@@ -221,8 +221,9 @@ Plugin:
 
 Out of scope: in-place restore, diff view, historical-revision pinning, unpin
 (removing a line is a future route; hand-editing works meanwhile), `ops:`
-gating. On a protected vault the normal `vault:` step-up gate still applies to
-every route here, exactly as it does to reading a note.
+gating (since removed, ADR-0005). For a token with step-up on a vault, the
+normal gate still applies to every route here, exactly as it does to reading a
+note.
 
 ## Later: the time scrubber
 

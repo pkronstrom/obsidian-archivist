@@ -174,10 +174,10 @@ func TestContextCancellationIsHonoured(t *testing.T) {
 	}
 }
 
-func TestVaultListingCarriesPolicyAndPosture(t *testing.T) {
+func TestVaultListingCarriesStepUp(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"vaults":["personal","work"],"scopes":["read"],"label":"agent",
-			"protectedVaults":["work"],"requiresStepUpAuth":["vault:work"]}`))
+			"stepUp":["work"]}`))
 	}))
 	defer srv.Close()
 
@@ -185,11 +185,8 @@ func TestVaultListingCarriesPolicyAndPosture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.ProtectedVaults) != 1 || got.ProtectedVaults[0] != "work" {
-		t.Errorf("ProtectedVaults = %v, want [work]", got.ProtectedVaults)
-	}
-	if len(got.RequiresStepUpAuth) != 1 || got.RequiresStepUpAuth[0] != "vault:work" {
-		t.Errorf("RequiresStepUpAuth = %v, want [vault:work]", got.RequiresStepUpAuth)
+	if len(got.StepUp) != 1 || got.StepUp[0] != "work" {
+		t.Errorf("StepUp = %v, want [work]", got.StepUp)
 	}
 }
 

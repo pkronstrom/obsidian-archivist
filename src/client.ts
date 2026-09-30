@@ -193,10 +193,8 @@ export class Client {
 		scopes: string[];
 		/** What the token is called on the server. Never a secret. */
 		label?: string;
-		/** Vaults the SERVER protects with step-up. */
-		protectedVaults: string[];
-		/** What THIS token decided about them. */
-		requiresStepUpAuth: string[];
+		/** Vaults this token must unlock with a code. */
+		stepUp: string[];
 	}> {
 		const res = await this.callRoot("GET", "/v1/vaults");
 		const json = res.json;
@@ -205,8 +203,7 @@ export class Client {
 			!isStringArray(json?.scopes) ||
 			typeof json?.canCreate !== "boolean" ||
 			(json?.label !== undefined && typeof json.label !== "string") ||
-			!isStringArray(json?.protectedVaults) ||
-			!isStringArray(json?.requiresStepUpAuth)
+			!isStringArray(json?.stepUp)
 		) {
 			throw new Error("server response is missing current scoped-token metadata");
 		}
@@ -215,8 +212,7 @@ export class Client {
 			canCreate: json.canCreate,
 			scopes: json.scopes,
 			label: json.label,
-			protectedVaults: json.protectedVaults,
-			requiresStepUpAuth: json.requiresStepUpAuth,
+			stepUp: json.stepUp,
 		};
 	}
 

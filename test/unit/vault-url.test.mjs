@@ -8,7 +8,7 @@ function capturing() {
 	globalThis.fetch = async (url) => {
 		seen.push(new URL(url).pathname);
 		return new Response(
-			'{"head":"abc","vaults":[],"canCreate":false,"scopes":["read","write"],"protectedVaults":[],"requiresStepUpAuth":[]}',
+			'{"head":"abc","vaults":[],"canCreate":false,"scopes":["read","write"],"stepUp":[]}',
 			{
 			status: 200,
 			headers: { "content-type": "application/json" },
@@ -56,7 +56,7 @@ test("listVaults requires current scoped-token metadata", async () => {
 test("listVaults validates scoped-token metadata types", async () => {
 	globalThis.fetch = async () =>
 		new Response(
-			'{"vaults":["personal"],"canCreate":"no","scopes":[7],"protectedVaults":[],"requiresStepUpAuth":[]}',
+			'{"vaults":["personal"],"canCreate":"no","scopes":[7],"stepUp":[]}',
 			{
 				status: 200,
 				headers: { "content-type": "application/json" },

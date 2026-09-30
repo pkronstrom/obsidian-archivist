@@ -1,5 +1,9 @@
 # Step-Up Authentication — Design
 
+> **Superseded in part (2026-09-30):** the vault marker, token postures and
+> `ops:` step-up were removed. Step-up is now a per-token list of vault names;
+> see `docs/adr/0005-step-up-is-a-token-property.md`.
+
 Phase 3 of the scoped-tokens work. Phases 1 (scoped tokens) and 2 (relay
 pass-through, `move`, provenance) shipped in v0.6.0.
 

@@ -2,7 +2,7 @@ import { App, Notice, Platform, PluginSettingTab, Setting, setIcon } from "obsid
 import { hostname as osHostname } from "os";
 import { Client } from "./client";
 import { DeletedModal } from "./deleted-modal";
-import { scopeWarning, stepUpWarning } from "./scopes";
+import { scopeWarning, stepUpWarning, syncableVaults } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
 import { collectInventory, readInventories } from "./plugin-inventory";
@@ -437,7 +437,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					return;
 				}
 				try {
-					const { vaults, scopes, label, protectedVaults, requiresStepUpAuth } =
+					const { vaults: opened, scopes, label, stepUp } =
 						await new Client(serverUrl, token, "").listVaults();
 					// Refuse here rather than at the first save. A token without
 					// both verbs syncs down happily and then fails on a write,
@@ -448,15 +448,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						new Notice(`archivist: ${warning}`, 12000);
 						return;
 					}
-					// A token gated on vault ACCESS can never drive this plugin:
-					// there is nowhere here to type a code, and the vault lands
-					// on disk in plaintext anyway. Say so now rather than at the
-					// first sync.
-					const gated = stepUpWarning(protectedVaults, requiresStepUpAuth, label);
+					// A vault the token gates can never be synced here: there is
+					// nowhere to type a code. Offer only the rest, and say so now
+					// if nothing is left rather than at the first sync.
+					const gated = stepUpWarning(opened, stepUp, label);
 					if (gated) {
 						new Notice(`archivist: ${gated}`, 12000);
 						return;
 					}
+					const vaults = syncableVaults(opened, stepUp);
 					if (vaults.length === 0) {
 						new Notice("archivist: this token opens no vaults", 8000);
 						return;

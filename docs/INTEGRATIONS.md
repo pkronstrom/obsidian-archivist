@@ -13,7 +13,7 @@ credential so the server can enforce and record that caller's access:
 
 ```bash
 docker compose exec archivist /archivist-server token add \
-  -root /data -label claude-code -vaults personal -profile mcp-client
+  -label claude-code -vaults personal -profile mcp-client
 ```
 
 Save the printed token as `AGENT_TOKEN`, then add the relay. Use loopback when
@@ -58,7 +58,7 @@ The `mcp-client` profile has read and write but no delete scope.
 | `write_attachment` | write | write base64 content with the same stale check |
 | `move_note` | write | move or rename without delete scope |
 | `delete_note` | delete | delete a path |
-| `unlock` | none | spend a one-time code for a protected vault |
+| `unlock` | none | spend a one-time code for a vault this token gates (`-step-up`) |
 
 Every tool accepts an optional `vault`. Omit it when the token opens exactly one
 vault. If it opens several, call `list_vaults` and name one explicitly.
@@ -180,7 +180,7 @@ Webhooks are the only relay feature that needs a background token. Mint one:
 
 ```bash
 docker compose exec archivist /archivist-server token add \
-  -root /data -label relay-background -vaults personal -profile relay-background
+  -label relay-background -vaults personal -profile relay-background
 ```
 
 Save the printed token and configure the vault and targets in `.env`:

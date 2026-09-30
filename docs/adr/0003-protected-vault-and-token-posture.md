@@ -1,6 +1,6 @@
 # ADR-0003: The gate has two halves — a protected vault and a token posture
 
-**Status:** accepted
+**Status:** superseded by ADR-0005 (2026-09-30)
 **Date:** 2026-08-20
 **Context:** `docs/2026-08-20-step-up-auth-design.md`
 

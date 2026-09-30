@@ -19,7 +19,7 @@ export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR } from "../src/config-s
 export { scanForSecrets } from "../src/secrets";
 
 export { plannedInstalls, installPlugins } from "../src/plugin-install";
-export { missingPluginScopes, scopeWarning, stepUpWarning } from "../src/scopes";
+export { missingPluginScopes, scopeWarning, stepUpWarning, syncableVaults } from "../src/scopes";
 export { createSyncScheduler } from "../src/sync-schedule";
 export { clusterRevisions, materialisedName, uniqueName, SESSION_GAP_MS } from "../src/revisions";
 export { pairRenames } from "../src/scopes";

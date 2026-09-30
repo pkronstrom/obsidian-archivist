@@ -70,7 +70,7 @@ type Config struct {
 	// a threshold is tripped.
 	ThrottleMaxDebounce time.Duration
 
-	// StepUpTTL is how long one unlock lasts on a protected vault. Absolute
+	// StepUpTTL is how long one unlock lasts on a gated vault. Absolute
 	// from the unlock, never extended by use.
 	StepUpTTL time.Duration
 	// MinFreeBytes refuses writes below this much free disk.
@@ -172,7 +172,7 @@ func Load(args []string) (*Config, error) {
 	fs.DurationVar(&c.QuarantineCooldown, "quarantine-cooldown", qCooldown,
 		"how long a quarantine holds")
 	fs.DurationVar(&c.StepUpTTL, "step-up-ttl", stepUpTTL,
-		"how long one unlock lasts on a protected vault (ARCHIVIST_STEP_UP_TTL)")
+		"how long one unlock lasts on a gated vault (ARCHIVIST_STEP_UP_TTL)")
 	fs.DurationVar(&c.ThrottleMaxDebounce, "throttle-max-debounce", maxDebounce,
 		"ceiling on the local path's deferred commit cadence")
 	fs.Int64Var(&c.MinFreeBytes, "min-free-bytes",

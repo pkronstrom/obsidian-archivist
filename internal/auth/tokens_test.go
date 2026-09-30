@@ -230,65 +230,27 @@ func TestWildcardOpensEverythingButCannotCreate(t *testing.T) {
 
 const rfcSecretForAuthTest = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
-func TestStepUpCatalogRejectsUnknownKinds(t *testing.T) {
-	for _, ok := range []string{"vault:work", "ops:work"} {
-		if !ValidStepUp(ok) {
-			t.Errorf("%q was rejected", ok)
-		}
+func TestStepUpNamesAreVaultNames(t *testing.T) {
+	if !ValidStepUpName("work") {
+		t.Error("a plain vault name was rejected")
 	}
-	// op: is reserved for gating individual operations. Nothing enforces it, so
-	// a token carrying one would promise a gate that does not exist.
-	for _, bad := range []string{"op:reclaim", "work", "vault:", ":work", "vault:work:extra"} {
-		if ValidStepUp(bad) {
+	// The wildcard would gate vaults nobody has created yet; the retired
+	// kind:name syntax must fail loudly rather than gate a vault that does
+	// not exist.
+	for _, bad := range []string{"", "*", "vault:work", "ops:work", "a/b"} {
+		if ValidStepUpName(bad) {
 			t.Errorf("%q was accepted", bad)
 		}
 	}
 }
 
-func TestNeedsStepUpMatchesOnlyItsOwnVaultAndKind(t *testing.T) {
-	p := Principal{
-		Vaults:             []string{"*"},
-		Scopes:             []string{ScopeRead},
-		RequiresStepUpAuth: []string{"vault:work"},
+func TestNeedsStepUpMatchesOnlyItsOwnVault(t *testing.T) {
+	p := Principal{Vaults: []string{"*"}, Scopes: []string{ScopeRead}, StepUp: []string{"work"}}
+	if !p.NeedsStepUp("work") {
+		t.Error("stepUp work did not gate work")
 	}
-	if !p.NeedsStepUp(StepUpVault, "work") {
-		t.Error("vault:work did not gate work")
-	}
-	if p.NeedsStepUp(StepUpVault, "personal") {
-		t.Error("vault:work gated personal")
-	}
-	if p.NeedsStepUp(StepUpOps, "work") {
-		t.Error("vault:work gated destructive ops; the kinds are independent")
-	}
-}
-
-// A recorded exemption and no record at all must be different facts, because
-// only the second may be denied.
-func TestExemptIsDistinctFromSilence(t *testing.T) {
-	if !(Principal{StepUpExempt: []string{"work"}}).StepUpExemptFrom("work") {
-		t.Error("a recorded exemption did not report as one")
-	}
-	if (Principal{}).StepUpExemptFrom("work") {
-		t.Error("a token with no record reported as exempt")
-	}
-}
-
-func TestStepUpDecidedCoversBothKindsAndExemption(t *testing.T) {
-	cases := []struct {
-		name string
-		p    Principal
-		want bool
-	}{
-		{"access posture", Principal{RequiresStepUpAuth: []string{"vault:work"}}, true},
-		{"ops posture", Principal{RequiresStepUpAuth: []string{"ops:work"}}, true},
-		{"exempt", Principal{StepUpExempt: []string{"work"}}, true},
-		{"another vault only", Principal{RequiresStepUpAuth: []string{"vault:other"}}, false},
-		{"nothing", Principal{}, false},
-	}
-	for _, tc := range cases {
-		if got := tc.p.StepUpDecided("work"); got != tc.want {
-			t.Errorf("%s: StepUpDecided(work) = %v, want %v", tc.name, got, tc.want)
-		}
+	if p.NeedsStepUp("personal") {
+		t.Error("stepUp work gated personal")
 	}
 }
 
@@ -296,17 +258,27 @@ func TestMintRejectsAnUnknownStepUpEntry(t *testing.T) {
 	s := New()
 	if _, err := s.Mint(Principal{
 		Vaults: []string{"work"}, Scopes: []string{ScopeRead},
-		RequiresStepUpAuth: []string{"nonsense:work"},
+		StepUp: []string{"vault:work"}, TotpSecret: rfcSecretForAuthTest,
 	}); err == nil {
-		t.Fatal("a typo in a step-up entry minted cleanly")
+		t.Fatal("the retired vault:work syntax minted cleanly")
 	}
 }
 
-func TestMintRejectsAPostureWithNoSecret(t *testing.T) {
+func TestMintRejectsStepUpOnAVaultTheTokenDoesNotOpen(t *testing.T) {
+	s := New()
+	if _, err := s.Mint(Principal{
+		Vaults: []string{"personal"}, Scopes: []string{ScopeRead},
+		StepUp: []string{"wrok"}, TotpSecret: rfcSecretForAuthTest,
+	}); err == nil {
+		t.Fatal("a gate on a vault the token cannot open minted cleanly; it reads as protection")
+	}
+}
+
+func TestMintRejectsStepUpWithNoSecret(t *testing.T) {
 	s := New()
 	if _, err := s.Mint(Principal{
 		Vaults: []string{"work"}, Scopes: []string{ScopeRead},
-		RequiresStepUpAuth: []string{"vault:work"},
+		StepUp: []string{"work"},
 	}); err == nil {
 		t.Fatal("a token that must step up was minted with no secret to do it with")
 	}
@@ -317,7 +289,7 @@ func TestMintRejectsAPostureWithNoSecret(t *testing.T) {
 func TestLoadRejectsAnUnknownStepUpEntry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	body := `{"v":2,"tokens":{"abc":{"label":"x","vaults":["work"],` +
-		`"scopes":["read"],"requiresStepUpAuth":["nonsense:work"],` +
+		`"scopes":["read"],"stepUp":["vault:work"],` +
 		`"totpSecret":"` + rfcSecretForAuthTest + `"}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -327,14 +299,14 @@ func TestLoadRejectsAnUnknownStepUpEntry(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsAPostureWithNoSecret(t *testing.T) {
+func TestLoadRejectsStepUpWithNoSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 	body := `{"v":2,"tokens":{"abc":{"label":"x","vaults":["work"],` +
-		`"scopes":["read"],"requiresStepUpAuth":["vault:work"]}}}`
+		`"scopes":["read"],"stepUp":["work"]}}}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path); err == nil {
-		t.Fatal("a posture with no secret loaded cleanly; the token could never unlock")
+		t.Fatal("step-up with no secret loaded cleanly; the token could never unlock")
 	}
 }

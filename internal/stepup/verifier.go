@@ -88,7 +88,7 @@ func NewVerifier(now func() time.Time) *Verifier {
 }
 
 // Check verifies one code. A nil error means the caller may proceed. It does NOT
-// create a grant: a one-shot authorisation must not.
+// create a grant; the caller decides what a verified code buys.
 func (v *Verifier) Check(tokenHash, vault, secret, presented string) error {
 	now := v.now()
 	key := tokenHash + "\x00" + vault

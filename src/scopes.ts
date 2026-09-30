@@ -100,36 +100,26 @@ export function pairRenames(changes: Pending[]): Pending[] {
 	return out;
 }
 
-/** Step-up kinds, mirroring internal/auth's catalog. */
-export const STEP_UP_VAULT = "vault";
+/**
+ * syncableVaults drops the vaults this token must unlock with a code. The plugin
+ * has nowhere to present one, and it persists the whole vault to disk anyway,
+ * so a gated vault is never a candidate here -- but the same token may still
+ * sync the vaults it does not gate.
+ */
+export function syncableVaults(vaults: string[], stepUp: string[]): string[] {
+	return vaults.filter((v) => !stepUp.includes(v));
+}
 
 /**
- * stepUpWarning names the protected vaults this token is gated on for ACCESS.
- *
- * Two inputs, because they are two different facts: which vaults the server
- * protects, and what this token decided about them. Warning on either alone
- * would be wrong -- a posture for a vault the server does not protect is
- * harmless, and a protected vault this token is not gated on is somebody else's
- * problem.
- *
- * Only `vault:` entries warn. A device gated on vault ACCESS is a
- * misconfiguration: the plugin cannot present a code, and it persists the whole
- * vault to disk anyway, so a synced protected vault is plaintext on that device
- * forever. An `ops:` posture is the opposite -- confirming a destructive
- * operation triggered from the plugin is worth having.
- *
+ * stepUpWarning explains why a token that opens vaults leaves none to sync:
+ * every one of them is gated. Empty when at least one vault is syncable, or
+ * when the token opens nothing (that has its own message).
  */
-export function stepUpWarning(
-	protectedVaults: string[],
-	posture: string[],
-	label?: string,
-): string {
-	if (!protectedVaults.length || !posture.length) return "";
-	const gated = protectedVaults.filter((v) => posture.includes(`${STEP_UP_VAULT}:${v}`));
-	if (gated.length === 0) return "";
+export function stepUpWarning(vaults: string[], stepUp: string[], label?: string): string {
+	if (!vaults.length || syncableVaults(vaults, stepUp).length) return "";
 	const who = label ? ` "${label}"` : "";
 	return (
-		`this token${who} needs an unlock code for ${gated.join(", ")}, ` +
-		`and the plugin cannot supply one. Mint a token without a vault: posture for this device.`
+		`this token${who} needs an unlock code for ${vaults.join(", ")}, ` +
+		`and the plugin cannot supply one. Mint a token without -step-up for this device.`
 	);
 }

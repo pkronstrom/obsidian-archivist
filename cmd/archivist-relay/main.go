@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -155,12 +154,6 @@ func run(cfg *config, log *slog.Logger) error {
 		log.Warn("cannot reach the server yet; starting anyway", "url", cfg.url, "err", err)
 	} else {
 		log.Info("server is compatible", "url", cfg.url, "protocol", version.Version)
-		if bg != nil {
-			list, err := bg.VaultListing(checkCtx)
-			if err == nil {
-				warnIfProtected(log, cfg.vault, list.ProtectedVaults, cfg.webhooks)
-			}
-		}
 	}
 
 	// Re-check periodically. The startup check alone leaves two gaps: the server
@@ -251,26 +244,4 @@ func run(cfg *config, log *slog.Logger) error {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	return httpSrv.Shutdown(shutdownCtx)
-}
-
-// warnIfProtected says once, at startup, that webhook delivery sits outside the
-// step-up gate.
-//
-// Fan-out runs on the relay's OWN background token with no caller present, so a
-// protected vault keeps publishing its change events whether or not anyone has
-// unlocked it. That is a narrower leak than it sounds -- a webhook consumer
-// subscribes in order to act on changes, so it holds a read token anyway -- but
-// it must not be a silent one.
-//
-// It belongs here rather than at mint time: `token add` runs in the archivist
-// container and cannot know whether any relay has ARCHIVIST_WEBHOOKS set, or for
-// which vault, so a warning there could only be unconditional. An unconditional
-// warning is one people learn to skim.
-func warnIfProtected(log *slog.Logger, vault string, protected, targets []string) {
-	if len(targets) == 0 || !slices.Contains(protected, vault) {
-		return
-	}
-	log.Warn("webhooks are configured for a vault that requires step-up authentication; "+
-		"change events will keep firing whether or not anyone has unlocked it",
-		"vault", vault, "targets", len(targets))
 }

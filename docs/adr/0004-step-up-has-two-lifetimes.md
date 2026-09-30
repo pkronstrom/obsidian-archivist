@@ -1,6 +1,6 @@
 # ADR-0004: Step-up is one primitive with two lifetimes
 
-**Status:** accepted
+**Status:** superseded by ADR-0005 (2026-09-30)
 **Date:** 2026-08-20
 **Context:** `docs/2026-08-20-step-up-auth-design.md`
 
