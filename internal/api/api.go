@@ -685,8 +685,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 	ch, stop := inst.Reconciler.Subscribe()
 	defer stop()
 
+	lapsed := stepUpFrom(r).lapsed
+
 	// Send the current head immediately, so a consumer that just connected can
 	// orient itself without waiting for the next commit.
+	if closed(lapsed) {
+		return // the grant ended between admission and here
+	}
 	if head, err := inst.Repo.Head(); err == nil && head != "" {
 		writeEvent(w, map[string]any{"head": head, "count": 0, "changes": []any{}})
 	}
@@ -707,11 +712,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	name := r.PathValue("vault")
 
-	// The gate was decided at admission and carried here, with the lapse channel
-	// of the exact grant it was admitted under. A nil channel blocks forever,
-	// which is exactly right for an ungated caller.
-	lapsed := stepUpFrom(r).lapsed
-
+	// The gate was decided at admission and carried here (lapsed, above), with
+	// the lapse channel of the exact grant it was admitted under. A nil channel
+	// blocks forever, which is exactly right for an ungated caller.
 	for {
 		select {
 		case <-r.Context().Done():
@@ -719,7 +722,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 		case <-lapsed:
 			return // the consent that opened this stream has ended
 		case ev, ok := <-ch:
-			if !ok {
+			if !ok || closed(lapsed) {
+				// select picks at random among ready cases, so an event can win
+				// over a lapse that is already due. Never send it.
 				return
 			}
 			writeEvent(w, ev)
@@ -734,6 +739,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, inst *vaults.Ins
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
+	}
+}
+
+// closed reports, without blocking, whether a lapse channel has fired. A nil
+// channel (an ungated caller) never has.
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -814,7 +830,10 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 
 	select {
 	case <-lapsed:
-		return // the consent that opened this poll has ended
+		// Say why, rather than an empty 200 a client reads as "nothing new".
+		fail(w, http.StatusForbidden, protocol.CodeStepUpRequired,
+			"the unlock for "+inst.Name+" ended while waiting; unlock again")
+		return
 	case ev, ok := <-ch:
 		if !ok {
 			writeJSON(w, protocol.WaitResponse{Head: since, Changed: false})

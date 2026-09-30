@@ -368,27 +368,34 @@ func TestABlockedWaitStopsWhenItsGrantLapses(t *testing.T) {
 	srv := httptest.NewServer(s.handler)
 	defer srv.Close()
 
-	status := make(chan int, 1)
+	type answer struct {
+		status int
+		body   string
+	}
+	got := make(chan answer, 1)
 	go func() {
 		req, _ := http.NewRequest("GET", srv.URL+"/work/v1/wait?timeout=60", nil)
 		req.Header.Set("Authorization", "Bearer "+s.gated)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
-			status <- 0
+			got <- answer{}
 			return
 		}
+		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
-		status <- res.StatusCode
+		got <- answer{res.StatusCode, string(b)}
 	}()
 
 	time.Sleep(150 * time.Millisecond) // let the long poll block
 	s.expireGrant(s.gated, "work")
 
 	select {
-	case got := <-status:
-		if got != http.StatusOK {
-			t.Fatalf("status = %d, want 200: this poll was refused at admission "+
-				"rather than ended by the lapse", got)
+	case a := <-got:
+		// 403 step_up_required, and the "ended while waiting" one: a refusal
+		// at admission would prove nothing about the lapse.
+		if a.status != http.StatusForbidden || !strings.Contains(a.body, "ended while waiting") ||
+			!strings.Contains(a.body, protocol.CodeStepUpRequired) {
+			t.Fatalf("got %d %s, want 403 step_up_required ended while waiting", a.status, a.body)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("a blocked long poll outlived its grant")
