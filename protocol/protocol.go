@@ -245,7 +245,7 @@ type AppendNoteRequest struct {
 
 type EditNoteRequest struct {
 	Path            string `json:"path"`
-	ContentRevision string `json:"content_revision"`
+	ContentRevision string `json:"content_revision,omitempty"`
 	OldText         string `json:"old_text"`
 	NewText         string `json:"new_text"`
 	Device          string `json:"device,omitempty"`

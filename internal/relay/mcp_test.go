@@ -229,7 +229,8 @@ func TestListAndSearch(t *testing.T) {
 func TestHistoryAndReadAtThroughTools(t *testing.T) {
 	cs, _ := session(t)
 	call(t, cs, "write_note", map[string]any{"path": "h.md", "content": "first\n"})
-	call(t, cs, "write_note", map[string]any{"path": "h.md", "content": "second\n"})
+	first := jsonField(t, text(call(t, cs, "read_note", map[string]any{"path": "h.md"})), "revision")
+	call(t, cs, "write_note", map[string]any{"path": "h.md", "content": "second\n", "revision": first})
 
 	hist := text(call(t, cs, "note_history", map[string]any{"path": "h.md"}))
 	if strings.Count(hist, "revision") < 1 {
@@ -297,89 +298,6 @@ func TestSearchExcerptDoesNotMangleUTF8(t *testing.T) {
 	}
 	if strings.ContainsRune(got, '\ufffd') {
 		t.Errorf("excerpt was truncated mid-character: %q", got)
-	}
-}
-
-// A conflict must hand back the note as it now stands, so the agent can
-// re-apply its change in one call instead of read-then-write.
-//
-// NOT an automatic retry: write_note takes finished content, so re-sending it
-// against a fresh revision would blindly overwrite whatever the other writer
-// just did. The response carries the current state; the decision stays with the
-// caller.
-func TestWriteConflictReturnsCurrentStateForRetry(t *testing.T) {
-	cs, c := session(t)
-	ctx := context.Background()
-
-	const doc = "one\ntwo\nthree\n"
-	if _, err := c.Write(ctx, "n.md", []byte(doc)); err != nil {
-		t.Fatal(err)
-	}
-	_, base, err := c.ReadForEdit(ctx, "n.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// A person changes the middle line while the agent is thinking.
-	human := strings.Replace(doc, "two", "HUMAN EDIT", 1)
-	h := protocol.HashContent([]byte(human))
-	c.PutContent(ctx, h, []byte(human))
-	head, _ := c.Head(ctx)
-	c.Push(ctx, head, []protocol.Change{{Path: "n.md", Op: protocol.OpPut, Hash: h}})
-
-	// The agent writes its own change to the same line, against the stale base.
-	agent := strings.Replace(doc, "two", "AGENT EDIT", 1)
-	got := text(call(t, cs, "write_note", map[string]any{
-		"path": "n.md", "content": agent, "revision": base,
-	}))
-
-	var out struct {
-		Status          string `json:"status"`
-		Revision        string `json:"revision"`
-		ContentRevision string `json:"content_revision"`
-		ConflictPath    string `json:"conflictPath"`
-		CurrentContent  string `json:"currentContent"`
-		CurrentRevision string `json:"currentRevision"`
-		Note            string `json:"note"`
-	}
-	if err := json.Unmarshal([]byte(got), &out); err != nil {
-		t.Fatalf("not JSON: %v (%s)", err, got)
-	}
-	if out.Status != protocol.StatusConflict {
-		t.Fatalf("status = %q, want conflict: %s", out.Status, got)
-	}
-	stored, err := c.Read(ctx, "n.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	currentHead, err := c.Head(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Revision != currentHead || out.Revision == "" {
-		t.Errorf("revision = %q, want conflict commit head %q", out.Revision, currentHead)
-	}
-	if want := protocol.HashContent(stored); out.ContentRevision != want || len(out.ContentRevision) != 40 {
-		t.Errorf("content_revision = %q, want current stored-path hash %q", out.ContentRevision, want)
-	}
-	if out.CurrentRevision != out.Revision {
-		t.Errorf("currentRevision = %q, want returned repository revision %q", out.CurrentRevision, out.Revision)
-	}
-	if !strings.Contains(out.CurrentContent, "HUMAN EDIT") {
-		t.Errorf("currentContent does not show the human's edit: %q", out.CurrentContent)
-	}
-	if strings.Contains(out.CurrentContent, "AGENT EDIT") {
-		t.Errorf("currentContent wrongly contains the agent's rejected text: %q", out.CurrentContent)
-	}
-	if out.CurrentRevision == "" {
-		t.Error("no currentRevision, so a retry would have to guess the base")
-	}
-	if out.CurrentRevision == base {
-		t.Error("currentRevision equals the stale base; retrying with it would conflict again")
-	}
-	// The guidance has to warn against the obvious wrong move.
-	if !strings.Contains(out.Note, "Do NOT send your original content unchanged") {
-		t.Errorf("note does not warn against a blind retry: %q", out.Note)
 	}
 }
 

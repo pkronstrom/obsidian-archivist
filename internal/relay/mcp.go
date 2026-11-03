@@ -9,6 +9,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -67,14 +68,13 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "write_note",
-		Description: "Create or replace a note. If another writer changed the " +
-			"same note concurrently the server merges the two; if the edits " +
-			"overlap it keeps both and reports a conflict. If this content is an " +
-			"edit of a note you read, pass the 'revision' read_note returned -- " +
-			"without it the write silently overwrites any concurrent change. " +
-			"Always check the " +
-			"returned status: 'applied' means your exact content was stored, " +
-			"'merged' means the stored content differs from what you sent.",
+		Description: "Create a note, or replace one you have read. Replacing an " +
+			"existing note requires the 'revision' read_note returned, and is " +
+			"refused if the note changed since that revision: read_note it again " +
+			"and apply your change to what is there now. For a small change prefer " +
+			"edit_note, which still lands when other parts of the note changed. " +
+			"Always check the returned status: 'applied' means your exact content " +
+			"was stored, 'merged' means the stored content differs from what you sent.",
 	}, writeNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -87,10 +87,12 @@ func NewMCPServer(c *client.Client, name, version string) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "edit_note",
-		Description: "Replace literal text in an existing note. Requires the full " +
-			"content_revision from read_note, refuses zero or multiple matches, and " +
-			"never follows moves: a moved source returns not_found. Always check errors " +
-			"before claiming the edit landed.",
+		Description: "Replace literal text in an existing note. Lands as long as " +
+			"old_text occurs exactly once in the note as it is now, even if other parts " +
+			"changed since you read it; refuses zero or multiple matches, and never " +
+			"follows moves: a moved source returns not_found. Pass the content_revision " +
+			"from read_note so a refusal can say whether the note changed under you. " +
+			"Always check errors before claiming the edit landed.",
 	}, editNote(c))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -565,7 +567,7 @@ func appendNote(c *client.Client) mcp.ToolHandlerFor[appendNoteInput, protocol.N
 type editNoteInput struct {
 	Vault           string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path            string `json:"path" jsonschema:"existing vault-relative text note path"`
-	ContentRevision string `json:"content_revision" jsonschema:"full content_revision from read_note"`
+	ContentRevision string `json:"content_revision,omitempty" jsonschema:"full content_revision from read_note"`
 	OldText         string `json:"old_text" jsonschema:"literal text that must occur exactly once"`
 	NewText         string `json:"new_text" jsonschema:"literal replacement text"`
 }
@@ -584,10 +586,8 @@ type writeInput struct {
 	Vault   string `json:"vault,omitempty" jsonschema:"which vault to address. Omit to use the relay's default. Call list_vaults to see what this token opens"`
 	Path    string `json:"path" jsonschema:"vault-relative path, e.g. 'notes/idea.md'"`
 	Content string `json:"content" jsonschema:"the full new content of the note"`
-	// Optimistic concurrency. Without this the write is a blind overwrite and a
-	// concurrent edit is lost instead of merged, so an agent that read the note
-	// before editing it MUST send the revision back.
-	Revision string `json:"revision,omitempty" jsonschema:"the revision from read_note, if this content is an edit of what you read; omit only when creating or wholly replacing a note"`
+	// Required to replace an existing note; see requireSeen.
+	Revision string `json:"revision,omitempty" jsonschema:"the revision from read_note; required when the note already exists, omit only when creating a new note"`
 }
 
 type writeOutput struct {
@@ -622,6 +622,9 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		c := forVault(c, in.Vault)
 		if in.Path == "" {
 			return nil, writeOutput{}, fmt.Errorf("path is required")
+		}
+		if err := requireSeen(ctx, c, in.Path, in.Revision); err != nil {
+			return nil, writeOutput{}, err
 		}
 		res, revision, err := c.WriteAtWithRevision(ctx, in.Path, []byte(in.Content), in.Revision)
 		if err != nil {
@@ -667,6 +670,58 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		}
 		return nil, out, nil
 	}
+}
+
+// requireSeen refuses a write_note that would replace content the caller has
+// not read: an existing note written without a revision, or one that changed
+// since the revision given.
+//
+// The server would merge a stale write instead, which is right for a device
+// syncing its own edits but wrong here: write_note carries a whole note, and
+// merging it into someone else's change yields text nobody has read. An agent
+// that re-reads loses one call; one that merges blind can lose meaning.
+//
+// This only narrows the window. A change landing between this check and the
+// push still meets the server's merge, which is why writeNote keeps handling
+// merged and conflict results.
+func requireSeen(ctx context.Context, c *client.Client, path, revision string) error {
+	head, err := c.Head(ctx)
+	if err != nil {
+		return err
+	}
+	current, exists, err := readIfExists(ctx, c, head, path)
+	if err != nil {
+		return err
+	}
+	if revision == "" {
+		if exists {
+			return fmt.Errorf("%s already exists. Call read_note on it first and pass "+
+				"the revision it returns, so this write cannot replace changes you have "+
+				"not seen. For a small change, edit_note is simpler", path)
+		}
+		return nil
+	}
+	if revision == head {
+		return nil
+	}
+	seen, existed, err := readIfExists(ctx, c, revision, path)
+	if err != nil {
+		return err
+	}
+	if existed != exists || !bytes.Equal(seen, current) {
+		return fmt.Errorf("%s changed since you read it at revision %s, and write_note "+
+			"would replace that change. Nothing was written. Call read_note again and "+
+			"apply your change to the current content, or use edit_note", path, revision)
+	}
+	return nil
+}
+
+func readIfExists(ctx context.Context, c *client.Client, revision, path string) ([]byte, bool, error) {
+	body, err := c.ReadAt(ctx, revision, path)
+	if client.IsCode(err, protocol.CodeNotFound) {
+		return nil, false, nil
+	}
+	return body, err == nil, err
 }
 
 type deleteOutput struct {

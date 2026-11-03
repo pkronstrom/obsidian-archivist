@@ -52,9 +52,9 @@ The `mcp-client` profile has read and write but no delete scope.
 | `note_history` | read | list revisions of one note |
 | `read_note_at` | read | page a historical text revision without restoring |
 | `read_attachment` | read | read binary content as base64 |
-| `write_note` | write | replace the whole document if its repository revision is current |
+| `write_note` | write | create a note, or replace one only if it is unchanged since its revision |
 | `append_note` | write | atomically append to existing text, optionally guarded by content revision |
-| `edit_note` | write | replace one unique literal match using a required content revision |
+| `edit_note` | write | replace one unique literal match in the current text |
 | `write_attachment` | write | write base64 content with the same stale check |
 | `move_note` | write | move or rename without delete scope |
 | `delete_note` | delete | delete a path |
@@ -71,11 +71,18 @@ default; set `max_chars` up to 100,000. Start at `start_line`, then, while
 rather than mix content if the note changed or moved.
 
 For a targeted update, use `search_notes` → `read_note(start_line, max_chars)` →
-`edit_note(path, content_revision, old_text, new_text)`. The repository
-`revision` identifies the snapshot and guards whole-document `write_note`;
-`content_revision` identifies the exact note body and guards `edit_note` and,
-when supplied, `append_note`. `edit_note` requires one unique literal
-`old_text` match and refuses stale content or a moved path.
+`edit_note(path, content_revision, old_text, new_text)`. `edit_note` lands
+whenever `old_text` occurs exactly once in the note as it is now, even if other
+parts changed since the read; it refuses zero or several matches and a moved
+path. If the note changed and the match fails, it answers `stale` so the agent
+knows to read again.
+
+`write_note` replaces the whole document, so it is stricter. Replacing an
+existing note requires the repository `revision` from `read_note`, and the
+relay refuses the write if that note changed since then rather than merging a
+whole document into text the agent never saw. Creating a new note needs no
+revision. `content_revision` identifies the exact note body and guards
+`append_note` when supplied.
 
 `append_note` works only on existing text notes and is atomic. Supply
 `content_revision` for a guarded append; omit it only for an intentional blind

@@ -269,32 +269,52 @@ func TestEditNoteReplacesOneExactMatchAndReturnsRevisions(t *testing.T) {
 	assertMutationResult(t, v, r, "Triage.md", oldHead, head, contentHash, want)
 }
 
-func TestEditNoteRequiresRevision(t *testing.T) {
+func TestEditNoteWithoutRevisionReplacesUniqueMatch(t *testing.T) {
 	rc, v, r := newRec(t)
-	body := []byte("before\ntarget\nafter\n")
-	head, _ := seedMutationNote(t, rc, r, "Triage.md", body)
+	head, _ := seedMutationNote(t, rc, r, "Triage.md", []byte("before\ntarget\nafter\n"))
 
-	_, _, _, err := rc.EditNote("Triage.md",
+	_, newHead, contentHash, err := rc.EditNote("Triage.md",
 		"",
 		[]byte("target"),
 		[]byte("changed"),
 		Origin{Device: "agent"})
-	requireProtocolCode(t, err, protocol.CodeMalformed)
-	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMutationResult(t, v, r, "Triage.md", head, newHead, contentHash, []byte("before\nchanged\nafter\n"))
 }
 
-func TestEditNoteRequiresFullCurrentBlob(t *testing.T) {
+// The note changed elsewhere since the caller read it; old text still pins the
+// one place the caller meant, so the edit lands on top of the other change.
+func TestEditNoteLandsOnStaleRevisionWhenMatchIsUnique(t *testing.T) {
 	rc, v, r := newRec(t)
-	body := []byte("before\ntarget\nafter\n")
-	head, revision := seedMutationNote(t, rc, r, "Triage.md", body)
+	base, revision := seedMutationNote(t, rc, r, "Triage.md", []byte("before\ntarget\nafter\n"))
+	head := changeMutationNote(t, rc, r, base, "Triage.md", "BEFORE\ntarget\nafter\n")
+
+	_, newHead, contentHash, err := rc.EditNote("Triage.md",
+		revision,
+		[]byte("target"),
+		[]byte("changed"),
+		Origin{Device: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMutationResult(t, v, r, "Triage.md", head, newHead, contentHash, []byte("BEFORE\nchanged\nafter\n"))
+}
+
+func TestEditNoteReportsStaleWhenChangedNoteNoLongerMatches(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, revision := seedMutationNote(t, rc, r, "Triage.md", []byte("before\ntarget\nafter\n"))
+	now := []byte("before\nrewritten\nafter\n")
+	head := changeMutationNote(t, rc, r, base, "Triage.md", string(now))
 
 	_, _, _, err := rc.EditNote("Triage.md",
-		revision[:12],
+		revision,
 		[]byte("target"),
 		[]byte("changed"),
 		Origin{Device: "agent"})
 	requireProtocolCode(t, err, protocol.CodeStale)
-	assertNoteAtHead(t, v, r, "Triage.md", body, head)
+	assertNoteAtHead(t, v, r, "Triage.md", now, head)
 }
 
 func TestEditNoteRefusesEmptyOldText(t *testing.T) {
@@ -527,6 +547,16 @@ func seedMutationNote(t *testing.T, rc *Reconciler, r *repo.Repo, path string, b
 		t.Fatalf("seed results = %+v, want one applied", results)
 	}
 	return head, protocol.HashContent(body)
+}
+
+// changeMutationNote is another writer's edit landing after the caller read.
+func changeMutationNote(t *testing.T, rc *Reconciler, r *repo.Repo, base, path, body string) string {
+	t.Helper()
+	head, results, err := rc.Push(base, "other", []Change{put(t, r, path, body)})
+	if err != nil || len(results) != 1 || results[0].Status != protocol.StatusApplied {
+		t.Fatalf("changing %s: %v %+v", path, err, results)
+	}
+	return head
 }
 
 func makeRepoCommitFail(t *testing.T, r *repo.Repo) func() {

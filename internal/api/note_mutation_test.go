@@ -142,7 +142,7 @@ func TestEditNoteRouteReturnsStaleWithoutChangingBytes(t *testing.T) {
 	w := do(t, h, http.MethodPost, "/v1/note/edit", protocol.EditNoteRequest{
 		Path:            "Triage.md",
 		ContentRevision: "0000000000000000000000000000000000000000",
-		OldText:         "target",
+		OldText:         "gone",
 		NewText:         "changed",
 	}, true)
 	requireMutationError(t, w, http.StatusConflict, protocol.CodeStale)

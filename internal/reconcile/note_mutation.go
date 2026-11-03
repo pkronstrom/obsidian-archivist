@@ -58,7 +58,13 @@ func (rc *Reconciler) AppendNote(path string, suffix []byte, expectedHash string
 }
 
 // EditNote replaces the one exact occurrence of oldText in the current text at
-// path. expectedHash is required so the replacement cannot land on unseen text.
+// path.
+//
+// A unique match lands even when the note changed since the caller read it:
+// oldText is the caller's proof of what it is replacing, so an edit elsewhere
+// in the note cannot make it wrong. expectedHash, when given, only decides how
+// a failed match is reported: as stale when the note moved on, so the caller
+// knows to re-read rather than to fix its oldText.
 func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byte, origin Origin) (effectivePath, head, contentHash string, err error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -68,9 +74,6 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 	}
 	if err := validateMutationPath(path); err != nil {
 		return "", "", "", err
-	}
-	if expectedHash == "" {
-		return "", "", "", mutationError(protocol.CodeMalformed, "content revision is required")
 	}
 	if len(oldText) == 0 {
 		return "", "", "", mutationError(protocol.CodeMalformed, "old text is empty")
@@ -82,16 +85,20 @@ func (rc *Reconciler) EditNote(path, expectedHash string, oldText, newText []byt
 		return "", "", "", mutationError(protocol.CodeMalformed, "old text and new text are identical")
 	}
 
-	body, err := currentText(rc.v, path, expectedHash)
+	body, err := currentText(rc.v, path, "")
 	if err != nil {
 		return "", "", "", err
 	}
-	switch matches := overlappingMatchCount(body, oldText); matches {
-	case 0:
-		return "", "", "", mutationError(protocol.CodeNoMatch, "old text was not found")
-	case 1:
-	default:
-		return "", "", "", mutationError(protocol.CodeMultipleMatches, "old text occurs more than once")
+	if matches := overlappingMatchCount(body, oldText); matches != 1 {
+		switch {
+		case expectedHash != "" && protocol.HashContent(body) != expectedHash:
+			return "", "", "", mutationError(protocol.CodeStale,
+				path+" changed since it was read and old text no longer occurs exactly once; read it again")
+		case matches == 0:
+			return "", "", "", mutationError(protocol.CodeNoMatch, "old text was not found")
+		default:
+			return "", "", "", mutationError(protocol.CodeMultipleMatches, "old text occurs more than once")
+		}
 	}
 
 	remaining := len(body) - len(oldText)

@@ -40,59 +40,73 @@ func concurrentEdit(t *testing.T, c interface {
 }
 
 // An agent that reads a note, edits it and writes it back must not silently
-// discard a change that landed in between. read_note hands back a revision and
-// write_note takes it; this checks the round trip actually protects the note.
-func TestMCPReadEditWriteDoesNotLoseAConcurrentEdit(t *testing.T) {
+// discard a change that landed in between. write_note carries a whole note, so
+// rather than merging it into text the agent never saw, the relay refuses and
+// sends the agent back to read_note.
+func TestMCPStaleWriteIsRefusedAndLosesNothing(t *testing.T) {
 	cs, c := session(t)
 	ctx := context.Background()
 	c.Write(ctx, "n.md", []byte(doc))
 
-	// The agent reads, and gets a revision with the content.
 	readOut := text(call(t, cs, "read_note", map[string]any{"path": "n.md"}))
 	rev := jsonField(t, readOut, "revision")
 	if rev == "" {
 		t.Fatal("read_note returned no revision; an agent cannot write back safely")
 	}
 
-	concurrentEdit(t, c, strings.Replace(doc, "line5", "line5 THEIRS", 1))
+	theirs := strings.Replace(doc, "line5", "line5 THEIRS", 1)
+	concurrentEdit(t, c, theirs)
+	head, _ := c.Head(ctx)
 
-	// The agent writes its edit back, echoing the revision.
-	writeResult := call(t, cs, "write_note", map[string]any{
+	res := call(t, cs, "write_note", map[string]any{
 		"path":     "n.md",
 		"content":  strings.Replace(doc, "line1", "line1 MINE", 1),
 		"revision": rev,
 	})
-	if writeResult.IsError {
-		t.Fatalf("write_note failed: %s", text(writeResult))
+	if !res.IsError {
+		t.Fatalf("a stale write_note was accepted: %s", text(res))
 	}
-	var out struct {
-		Status          string `json:"status"`
-		Revision        string `json:"revision"`
-		ContentRevision string `json:"content_revision"`
+	if !strings.Contains(text(res), "read_note") {
+		t.Errorf("refusal does not tell the agent to re-read: %s", text(res))
 	}
-	if err := json.Unmarshal([]byte(text(writeResult)), &out); err != nil {
-		t.Fatalf("decode write_note result: %v (%s)", err, text(writeResult))
+	if final, _ := c.Read(ctx, "n.md"); string(final) != theirs {
+		t.Errorf("stale write changed the note: %q", final)
 	}
+	if after, _ := c.Head(ctx); after != head {
+		t.Errorf("stale write moved head %s -> %s", head, after)
+	}
+}
 
-	final, _ := c.Read(ctx, "n.md")
-	if !strings.Contains(string(final), "THEIRS") {
-		t.Errorf("LOST UPDATE through MCP: %q", final)
+func TestMCPWriteWithoutRevisionCannotReplaceAnExistingNote(t *testing.T) {
+	cs, c := session(t)
+	ctx := context.Background()
+	c.Write(ctx, "n.md", []byte(doc))
+
+	res := call(t, cs, "write_note", map[string]any{"path": "n.md", "content": "replaced\n"})
+	if !res.IsError || !strings.Contains(text(res), "read_note") {
+		t.Fatalf("write_note without a revision replaced an existing note: %s", text(res))
 	}
-	if !strings.Contains(string(final), "MINE") {
-		t.Errorf("the agent's own edit is gone: %q", final)
+	if final, _ := c.Read(ctx, "n.md"); string(final) != doc {
+		t.Errorf("note changed: %q", final)
 	}
-	if out.Status != protocol.StatusMerged {
-		t.Errorf("status = %q, want merged", out.Status)
+}
+
+// Other notes changing moves the vault revision but not this note, so the write
+// is not stale.
+func TestMCPWriteLandsWhenOnlyOtherNotesChanged(t *testing.T) {
+	cs, c := session(t)
+	ctx := context.Background()
+	c.Write(ctx, "n.md", []byte(doc))
+	rev := jsonField(t, text(call(t, cs, "read_note", map[string]any{"path": "n.md"})), "revision")
+	concurrentEditPath(t, c, "other.md", "elsewhere\n")
+
+	mine := strings.Replace(doc, "line1", "line1 MINE", 1)
+	res := call(t, cs, "write_note", map[string]any{"path": "n.md", "content": mine, "revision": rev})
+	if res.IsError || jsonField(t, text(res), "status") != protocol.StatusApplied {
+		t.Fatalf("write_note = %s, want applied", text(res))
 	}
-	head, err := c.Head(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Revision != head || out.Revision == "" {
-		t.Errorf("revision = %q, want merge commit head %q", out.Revision, head)
-	}
-	if want := protocol.HashContent(final); out.ContentRevision != want || len(out.ContentRevision) != 40 {
-		t.Errorf("content_revision = %q, want merged stored-path hash %q", out.ContentRevision, want)
+	if final, _ := c.Read(ctx, "n.md"); string(final) != mine {
+		t.Errorf("stored %q, want %q", final, mine)
 	}
 }
 

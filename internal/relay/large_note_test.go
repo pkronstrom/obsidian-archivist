@@ -426,23 +426,18 @@ func TestAppendNoteNeverCreatesAMissingPath(t *testing.T) {
 	}
 }
 
-func TestEditNoteRequiresRevisionAndReplacesOneLiteralTarget(t *testing.T) {
+// The note changed elsewhere after the agent read it. old_text still pins the
+// one place the agent meant, so the edit lands on top of the other change.
+func TestEditNoteReplacesOneLiteralTargetDespiteStaleRevision(t *testing.T) {
 	cs, c := session(t)
 	const (
 		path    = "notes/exact-edit.md"
 		initial = "prefix literal target suffix\n"
-		final   = "prefix exact replacement suffix\n"
+		theirs  = "PREFIX literal target suffix\n"
+		final   = "PREFIX exact replacement suffix\n"
 	)
 	writeClientNote(t, c, path, initial)
-	head, err := c.Head(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	readRefusal(t, cs, "edit_note", map[string]any{
-		"path": path, "old_text": "literal target", "new_text": "exact replacement",
-	})
-	requireStoredNote(t, c, path, initial, head)
+	concurrentEditPath(t, c, path, theirs)
 
 	out := noteMutation(t, cs, "edit_note", map[string]any{
 		"path":             path,
@@ -469,8 +464,8 @@ func TestEditNoteRefusalsDoNotMutate(t *testing.T) {
 		code     string
 	}{
 		{
-			name: "stale content revision", initial: "one target\n", oldText: "target",
-			revision: func(string) string { return protocol.HashContent([]byte("older bytes\n")) },
+			name: "stale content revision, target gone", initial: "one target\n", oldText: "older",
+			revision: func(string) string { return protocol.HashContent([]byte("one older\n")) },
 			code:     protocol.CodeStale,
 		},
 		{
