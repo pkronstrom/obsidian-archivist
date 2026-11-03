@@ -34,16 +34,12 @@ func TestPushRefusesQuarantinedPath(t *testing.T) {
 		now = now.Add(time.Second)
 	}
 
-	_, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "third")})
-	if err == nil {
-		t.Fatal("a push to a quarantined path succeeded")
+	_, results, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "third")})
+	if err != nil {
+		t.Fatalf("a quarantine refused the whole push: %v", err)
 	}
-	var pe *protocol.Error
-	if !errors.As(err, &pe) {
-		t.Fatalf("err = %v, want a *protocol.Error", err)
-	}
-	if pe.Code != protocol.CodeQuarantined {
-		t.Fatalf("code = %q, want %q", pe.Code, protocol.CodeQuarantined)
+	if len(results) != 1 || results[0].Status != StatusRefused {
+		t.Fatalf("results = %+v, want a.md refused", results)
 	}
 }
 
@@ -61,8 +57,10 @@ func TestPushToOtherPathsStillWorksWhileOneIsQuarantined(t *testing.T) {
 	}
 }
 
-// A refused push must leave the tree untouched rather than half-written.
-func TestRefusedPushAppliesNothing(t *testing.T) {
+// A quarantined path is refused alone. The rest of its batch lands: a client
+// pushes every pending change at once, so refusing the batch let one stuck
+// attachment block every other edit from that device -- seen live, 2026-11-03.
+func TestQuarantinedPathIsRefusedAloneInABatch(t *testing.T) {
 	rc, v, r := newRec(t)
 	now := time.Unix(1000, 0)
 	rc.SetGuard(tightGuard(2, &now))
@@ -72,16 +70,45 @@ func TestRefusedPushAppliesNothing(t *testing.T) {
 		now = now.Add(time.Second)
 	}
 
-	// hot.md is quarantined; cold.md is not. The batch must be refused whole.
-	_, _, err := rc.Push("", "mac", []Change{
-		put(t, r, "cold.md", "should not land"),
+	_, results, err := rc.Push("", "mac", []Change{
+		put(t, r, "cold.md", "lands"),
 		put(t, r, "hot.md", "blocked"),
 	})
-	if err == nil {
-		t.Fatal("a batch containing a quarantined path succeeded")
+	if err != nil {
+		t.Fatalf("the batch was refused whole: %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(v.Dir(), "cold.md")); statErr == nil {
-		t.Fatal("a refused push wrote part of its batch")
+	status := map[string]string{}
+	for _, res := range results {
+		status[res.Path] = res.Status
+	}
+	if status["cold.md"] != StatusApplied || status["hot.md"] != StatusRefused {
+		t.Fatalf("statuses = %v, want cold.md applied and hot.md refused", status)
+	}
+	if b, _ := os.ReadFile(filepath.Join(v.Dir(), "hot.md")); string(b) == "blocked" {
+		t.Fatal("the quarantined path was written")
+	}
+	if b, _ := os.ReadFile(filepath.Join(v.Dir(), "cold.md")); string(b) != "lands" {
+		t.Fatalf("cold.md = %q, want it applied", b)
+	}
+}
+
+// The vault-wide throttle is not about one path, so it still refuses the
+// whole push and leaves the tree untouched.
+func TestThrottledPushAppliesNothing(t *testing.T) {
+	rc, v, r := newRec(t)
+	now := time.Unix(1000, 0)
+	rc.SetGuard(guard.New(guard.Limits{TotalBytes: 3, Window: 5 * time.Minute}, func() time.Time { return now }, nil))
+
+	_, _, err := rc.Push("", "mac", []Change{
+		put(t, r, "a.md", "aa"),
+		put(t, r, "b.md", "bb"),
+	})
+	var pe *protocol.Error
+	if !errors.As(err, &pe) || pe.Code != protocol.CodeThrottled {
+		t.Fatalf("err = %v, want a throttle", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(v.Dir(), "a.md")); statErr == nil {
+		t.Fatal("a throttled push wrote part of its batch")
 	}
 }
 

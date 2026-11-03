@@ -12,6 +12,7 @@
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -200,13 +201,29 @@ func (rc *Reconciler) PushWithOrigin(base string, origin Origin, changes []Chang
 		}
 	}
 
-	// Guard every path before anything is applied, so a refused push leaves
-	// the tree untouched rather than half-written.
+	// Guard every path before anything is applied.
+	//
+	// A quarantined path is refused on its own and the rest of the batch
+	// proceeds: quarantine is a per-path control, and a client pushes every
+	// pending change in one batch, so refusing the whole push let one stuck
+	// attachment block every other edit from that device for the full
+	// cooldown. The vault-wide throttle and the disk floor are about the vault,
+	// not a path, so they still refuse the push whole and leave the tree
+	// untouched.
+	var refused []Result
+	admitted := make([]Change, 0, len(changes))
 	for _, ch := range changes {
 		if err := rc.admit(ch.Path, changeSize(rc.r, ch)); err != nil {
+			var pe *protocol.Error
+			if errors.As(err, &pe) && pe.Code == protocol.CodeQuarantined {
+				refused = append(refused, Result{Path: ch.Path, Status: StatusRefused, Reason: pe.Message})
+				continue
+			}
 			return "", nil, err
 		}
+		admitted = append(admitted, ch)
 	}
+	changes = admitted
 
 	head, err := rc.r.Head()
 	if err != nil {
@@ -266,7 +283,7 @@ func (rc *Reconciler) PushWithOrigin(base string, origin Origin, changes []Chang
 		}
 	}
 
-	results := make([]Result, 0, len(changes))
+	results := append(make([]Result, 0, len(changes)+len(refused)), refused...)
 	for _, ch := range changes {
 		res, err := rc.applyOne(base, device, head, moved, ch)
 		if err != nil {
