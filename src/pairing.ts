@@ -22,14 +22,63 @@
 export type PairingChoice = "adopt" | "publish" | "merge";
 
 /**
+ * How this device's files line up with the server's, by path and content hash.
+ *
+ * "Both sides have content" alone is frightening and usually wrong in spirit:
+ * the common case is a device that already holds a copy of the same vault, so
+ * nearly everything is identical. The user can only choose well once they can
+ * see that.
+ */
+export type VaultComparison = {
+	/** Same path, same content. Every choice leaves these alone. */
+	identical: number;
+	/** Here and not on the server. */
+	onlyHere: string[];
+	/** On the server and not here. */
+	onlyServer: string[];
+	/** Same path, different content -- the only files a choice can affect. */
+	differ: string[];
+};
+
+/**
+ * Compares path -> hash maps from both sides.
+ *
+ * Paths are matched in NFC. macOS hands out decomposed names, so without it a
+ * note called "Päivä.md" would be listed once as only here and once as only on
+ * the server while being the same file.
+ */
+export function compareVaults(
+	local: Record<string, string>,
+	server: Record<string, string>,
+): VaultComparison {
+	const remote = new Map(Object.entries(server).map(([p, h]) => [p.normalize("NFC"), h]));
+	const out: VaultComparison = { identical: 0, onlyHere: [], onlyServer: [], differ: [] };
+	const seen = new Set<string>();
+	for (const [path, hash] of Object.entries(local)) {
+		const key = path.normalize("NFC");
+		seen.add(key);
+		const theirs = remote.get(key);
+		if (theirs === undefined) out.onlyHere.push(path);
+		else if (theirs === hash) out.identical++;
+		else out.differ.push(path);
+	}
+	for (const path of remote.keys()) if (!seen.has(path)) out.onlyServer.push(path);
+	out.onlyHere.sort();
+	out.onlyServer.sort();
+	out.differ.sort();
+	return out;
+}
+
+/**
  * Thrown before anything is read or written, so both vaults are untouched when
- * it surfaces. Carries the numbers the user needs to choose: how much is here,
- * and that the server has a history at all.
+ * it surfaces. Carries what the user needs to choose: how much is here, that the
+ * server has a history at all, and how the two sides actually compare.
  */
 export class PairingHazardError extends Error {
 	constructor(
 		readonly localFiles: number,
 		readonly serverHead: string,
+		readonly comparison: VaultComparison,
 	) {
 		super(
 			`this vault holds ${localFiles} file(s) and has never synced, but the ` +
@@ -37,7 +86,7 @@ export class PairingHazardError extends Error {
 				`vaults and turn every same-path collision into a conflict file. ` +
 				`Choose one: "Adopt server" (move local files aside, then pull), ` +
 				`"Publish local" (this vault wins every collision), or ` +
-				`"Merge anyway" (the union, with conflict files).`,
+				`"Merge" (the union, with conflict files).`,
 		);
 		this.name = "PairingHazardError";
 	}

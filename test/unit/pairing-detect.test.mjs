@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Sync, PairingHazardError } from "../../dist-test/entry.mjs";
+import { Sync, PairingHazardError, compareVaults } from "../../dist-test/entry.mjs";
 import { FakeApp } from "../obsidian-shim.mjs";
 
 /** A Client stub: only the calls the detection path makes. */
-function fakeClient({ head = "", vault = "personal" } = {}) {
+function fakeClient({ head = "", vault = "personal", files = {} } = {}) {
 	return {
 		calls: [],
 		async index() {
@@ -24,7 +25,7 @@ function fakeClient({ head = "", vault = "personal" } = {}) {
 		},
 		async snapshot() {
 			this.calls.push("snapshot");
-			return { head, files: {} };
+			return { head, files };
 		},
 		async missing(h) {
 			return h;
@@ -132,4 +133,46 @@ test("re-bootstrap does not trip the pairing guard", async () => {
 	await sync.forceRebootstrap(); // must not throw
 	assert.ok(client.calls.includes("snapshot") || client.calls.includes("changes"),
 		"re-bootstrap never reached the server");
+});
+
+/** The git blob hash, which is what the server reports for each path. */
+function blob(text) {
+	const body = Buffer.from(text);
+	return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+}
+
+test("the hazard reports how the two sides compare, without writing", async () => {
+	const { root, app } = await device();
+	await fs.writeFile(path.join(root, "same.md"), "same\n");
+	await fs.writeFile(path.join(root, "edited.md"), "mine\n");
+	await fs.writeFile(path.join(root, "new.md"), "only here\n");
+
+	const client = fakeClient({
+		head: "serverhead",
+		files: {
+			"same.md": { hash: blob("same\n"), size: 5 },
+			"edited.md": { hash: blob("theirs\n"), size: 7 },
+			"remote.md": { hash: blob("only there\n"), size: 11 },
+		},
+	});
+	const sync = new Sync(app, () => client, () => "mac", () => {});
+
+	await assert.rejects(() => sync.run(), (err) => {
+		assert.ok(err instanceof PairingHazardError, `got ${err}`);
+		assert.deepEqual(err.comparison, {
+			identical: 1,
+			onlyHere: ["new.md"],
+			onlyServer: ["remote.md"],
+			differ: ["edited.md"],
+		});
+		return true;
+	});
+	assert.ok(!client.calls.includes("push"), "it pushed before refusing");
+	assert.ok(!client.calls.includes("putContent"), "it uploaded before refusing");
+});
+
+test("paths compare in NFC, so a decomposed Mac name matches the server's", () => {
+	const nfd = "Päivä.md".normalize("NFD");
+	const c = compareVaults({ [nfd]: "h" }, { ["Päivä.md".normalize("NFC")]: "h" });
+	assert.deepEqual(c, { identical: 1, onlyHere: [], onlyServer: [], differ: [] });
 });

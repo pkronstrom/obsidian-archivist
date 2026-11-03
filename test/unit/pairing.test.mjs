@@ -19,12 +19,12 @@ test("rescueFolder does not start with a dot, so the rescued files sync", () => 
 });
 
 test("the hazard error names both sides", () => {
-	const err = new PairingHazardError(42, "abc123");
+	const err = new PairingHazardError(42, "abc123", { identical: 0, onlyHere: [], onlyServer: [], differ: [] });
 	assert.equal(err.name, "PairingHazardError");
 	assert.equal(err.localFiles, 42);
 	assert.equal(err.serverHead, "abc123");
 	assert.match(err.message, /42/);
 	assert.match(err.message, /Adopt server/);
 	assert.match(err.message, /Publish local/);
-	assert.match(err.message, /Merge anyway/);
+	assert.match(err.message, /"Merge"/);
 });

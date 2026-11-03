@@ -156,15 +156,18 @@ vault recognizes the same vault even if its hostname changes.
 ## Connect a vault that already has notes
 
 First pairing is automatic when at least one side is empty. When an unsynced
-device and the server both contain notes, the plugin stops before writing and
-offers three choices:
+device and the server both contain notes, the plugin stops before writing,
+compares the two by content hash, and shows how many files are identical, differ,
+or exist on only one side, with each list expandable. Then it offers three
+choices:
 
 - **Adopt server** moves the device's files into a dated
   `_archivist-rescued-…/` folder, then pulls the server copy.
 - **Publish local** makes local versions win where paths collide. Server-only
   files remain and arrive on the next sync.
-- **Merge anyway** keeps the union. Same-path collisions become conflict copies
-  for manual resolution.
+- **Merge** keeps the union. Files that differ keep the server's version at the
+  path and the device's in a conflict copy. When nothing differs it is marked
+  recommended, since it only copies missing files across.
 
 Nothing changes until you choose. Dismissing the dialog is safe.
 

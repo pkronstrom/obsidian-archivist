@@ -1,12 +1,17 @@
 import { App, Modal, Setting } from "obsidian";
-import type { PairingChoice, PairingHazardError } from "./pairing";
+import type { PairingChoice, PairingHazardError, VaultComparison } from "./pairing";
+
+/** A first connect against an unrelated vault can differ in thousands of
+ *  files; past this the list stops being readable anyway. */
+const MAX_LISTED = 200;
 
 /**
  * Asks which of the three recoveries to take.
  *
- * A modal rather than a Notice, and no default action, because every option
- * moves files and there is no safe guess. Dismissing it does nothing at all,
- * which is the correct outcome for someone who wants to think about it.
+ * A modal rather than a Notice, and no default action: dismissing it does
+ * nothing at all, which is the correct outcome for someone who wants to think
+ * about it. It does show what each side holds, and marks Merge recommended
+ * when no file differs -- then merging can only copy missing files across.
  *
  * The UI lives here rather than in sync.ts so the sync engine stays free of
  * Obsidian's UI classes and can be bundled and driven from Node.
@@ -31,51 +36,63 @@ export class PairingModal extends Modal {
 
 	onOpen(): void {
 		const { contentEl } = this;
+		const c = this.hazard.comparison;
+		const n = this.hazard.localFiles;
 		contentEl.empty();
-		contentEl.createEl("h2", { text: "Both this vault and the server have content" });
+		contentEl.addClass("archivist-pairing");
+		contentEl.createEl("h2", { text: "This vault has not synced with this server yet" });
 
 		contentEl.createEl("p", {
 			text:
-				`This vault holds ${this.hazard.localFiles} file(s) and has never synced ` +
-				`with this server, and the server already has a history of its own. ` +
-				`Syncing now would merge two unrelated vaults into both, and every ` +
-				`file that exists on both sides under the same name would become a ` +
-				`conflict pair.`,
+				`Both sides already hold files, so Archivist compared them before ` +
+				`doing anything. Nothing has been changed yet.`,
 		});
-		contentEl.createEl("p", { text: "Nothing has been changed. Choose what should happen:" });
+
+		const list = contentEl.createEl("ul", { cls: "archivist-pairing-summary" });
+		list.createEl("li", {
+			text: `${c.identical} of this vault's ${plural(n, "file")} match the server exactly. Every choice leaves them alone.`,
+		});
+		this.group(list, c.differ, "differ from the server's version");
+		this.group(list, c.onlyHere, "only on this device");
+		this.group(list, c.onlyServer, "only on the server");
+
+		contentEl.createEl("p", { text: mergeOutcome(c) });
+
+		const safe = c.differ.length === 0;
+		new Setting(contentEl)
+			.setName(safe ? "Merge (recommended)" : "Merge")
+			.setDesc(
+				"Keep everything from both sides. Files only on one side are copied " +
+					"to the other. " +
+					(safe
+						? "No file differs, so nothing is overwritten or duplicated."
+						: "Each file that differs keeps the server's version at its path " +
+							"and this device's in a .conflict file beside it."),
+			)
+			.addButton((b) => {
+				b.setButtonText("Merge").onClick(() => this.choose("merge"));
+				if (safe) b.setCta();
+			});
 
 		new Setting(contentEl)
-			.setName("Adopt server")
+			.setName("Use the server's vault")
 			.setDesc(
-				"Move this vault's files into a dated _archivist-rescued-… folder, then " +
-					"pull the server's. Nothing is deleted, and the rescued folder syncs " +
-					"to your other devices too.",
+				`Move all ${plural(n, "file")} on this device into a dated ` +
+					"_archivist-rescued-… folder, then download the server's. Nothing is " +
+					"deleted, and the rescued folder syncs to your other devices too.",
 			)
 			.addButton((b) => b.setButtonText("Adopt server").onClick(() => this.choose("adopt")));
 
 		new Setting(contentEl)
-			.setName("Publish local")
+			.setName("Use this device's vault")
 			.setDesc(
-				"Push this vault over the server's. No rescue folder is needed: every " +
-					"version of every server file is already in git history. Files only " +
+				(c.differ.length > 0
+					? `This device's version wins for the ${plural(c.differ.length, "file")} that differ. `
+					: "") +
+					"The server's older versions stay in its history, and files only " +
 					"the server has are kept and arrive on the next sync.",
 			)
 			.addButton((b) => b.setButtonText("Publish local").onClick(() => this.choose("publish")));
-
-		new Setting(contentEl)
-			.setName("Merge anyway")
-			.setDesc(
-				"Take the union of both. Files present on both sides under the same " +
-					"name become conflict pairs you resolve by hand. If this device's " +
-					"notes already match the server, this is a no-op: identical files " +
-					"are recognised by hash and never transferred.",
-			)
-			.addButton((b) =>
-				b
-					.setWarning()
-					.setButtonText("Merge anyway")
-					.onClick(() => this.choose("merge")),
-			);
 
 		// An explicit way out. Without one the only exit is dismissing the
 		// modal, and because runSync fires on an interval, on focus, on blur
@@ -88,6 +105,19 @@ export class PairingModal extends Modal {
 					"meanwhile — reopen the choice from Archivist's settings.",
 			)
 			.addButton((b) => b.setButtonText("Not now").onClick(() => this.dismiss()));
+	}
+
+	/** One summary line, with the paths behind a disclosure. Empty groups are
+	 *  left out: "0 files only on the server" is noise. */
+	private group(list: HTMLElement, paths: string[], what: string): void {
+		if (paths.length === 0) return;
+		const details = list.createEl("li").createEl("details");
+		details.createEl("summary", { text: `${plural(paths.length, "file")} ${what}` });
+		const ul = details.createEl("ul", { cls: "archivist-pairing-paths" });
+		for (const p of paths.slice(0, MAX_LISTED)) ul.createEl("li", { text: p });
+		if (paths.length > MAX_LISTED) {
+			ul.createEl("li", { text: `…and ${paths.length - MAX_LISTED} more` });
+		}
 	}
 
 	private dismiss(): void {
@@ -104,4 +134,22 @@ export class PairingModal extends Modal {
 		this.close();
 		this.onChoice(choice);
 	}
+}
+
+function plural(n: number, word: string): string {
+	return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/** What Merge would do, in one sentence, from the comparison alone. */
+export function mergeOutcome(c: VaultComparison): string {
+	if (c.differ.length === 0 && c.onlyHere.length === 0 && c.onlyServer.length === 0) {
+		return "This device already matches the server. Merging changes nothing.";
+	}
+	if (c.differ.length === 0) {
+		return "No file differs, so merging only copies the missing files across. Nothing is lost.";
+	}
+	return (
+		`Merging keeps both versions of the ${plural(c.differ.length, "file")} that differ, ` +
+		"so nothing is lost either way."
+	);
 }

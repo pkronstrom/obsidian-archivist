@@ -534,3 +534,13 @@
 	width: auto !important;
 	max-width: min(48vw, 16rem) !important;
 }
+
+.archivist-pairing-summary > li { margin-bottom: var(--size-4-1); }
+.archivist-pairing-summary summary { cursor: pointer; }
+.archivist-pairing-paths {
+	max-height: 12rem;
+	overflow-y: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}

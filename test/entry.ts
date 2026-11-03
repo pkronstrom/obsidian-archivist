@@ -8,7 +8,7 @@
 export { Sync, skip, skipDir, conflictName, localOnly, localOnlyDir } from "../src/sync";
 export { Client, UnknownBaseError, requireCurrentIndex } from "../src/client";
 
-export { PairingHazardError, rescueFolder } from "../src/pairing";
+export { PairingHazardError, rescueFolder, compareVaults } from "../src/pairing";
 
 export { isRescuePath } from "../src/pairing";
 

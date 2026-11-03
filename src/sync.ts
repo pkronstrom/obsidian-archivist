@@ -12,7 +12,14 @@ import {
 	type FileState,
 	type SyncState,
 } from "./state";
-import { PairingHazardError, isRescuePath, rescueFolder, type PairingChoice } from "./pairing";
+import {
+	PairingHazardError,
+	compareVaults,
+	isRescuePath,
+	rescueFolder,
+	type PairingChoice,
+	type VaultComparison,
+} from "./pairing";
 import {
 	DEFAULT_CONFIG_SYNC,
 	type ConfigSyncSettings,
@@ -217,8 +224,14 @@ export class Sync {
 				// populated. Pairing guards protect the user's notes.
 				const localFiles = (await this.listAll("")).filter(
 					(p) => !inventoryPathAllowed(p),
-				).length;
-				if (localFiles > 0) throw new PairingHazardError(localFiles, serverHead);
+				);
+				if (localFiles.length > 0) {
+					throw new PairingHazardError(
+						localFiles.length,
+						serverHead,
+						await this.compareWithServer(client, localFiles),
+					);
+				}
 			}
 		}
 
@@ -503,6 +516,27 @@ export class Sync {
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
 		return pairRenames(out as Pending[]) as PendingChange[];
+	}
+
+	/**
+	 * Read-only: hashes the local files and lists the server's, so the pairing
+	 * question can say what is actually different instead of only that both
+	 * sides hold something. Server paths this device would not sync are left
+	 * out, or they would read as "only on the server" for ever.
+	 */
+	private async compareWithServer(client: Client, paths: string[]): Promise<VaultComparison> {
+		const local: Record<string, string> = {};
+		for (const p of paths) {
+			// An unreadable file has no hash; "" never matches, so it lands in
+			// differ rather than being silently counted as identical.
+			local[p] = (await this.readState(p))?.hash ?? "";
+		}
+		const server: Record<string, string> = {};
+		for (const [p, e] of Object.entries((await client.snapshot()).files)) {
+			if (skip(p, this.config()) || inventoryPathAllowed(p)) continue;
+			server[p] = e.hash;
+		}
+		return compareVaults(local, server);
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {

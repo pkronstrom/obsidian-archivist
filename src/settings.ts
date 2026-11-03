@@ -267,9 +267,10 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("This device is not syncing")
 			.setDesc(
-				`It holds ${hazard.localFiles} file(s) and has never synced, and the ` +
-					`server already has content. Nothing has been changed. Until you ` +
-					`choose, this device stays paused.`,
+				`It holds ${hazard.localFiles} file(s) and has never synced with this ` +
+					`server; ${hazard.comparison.differ.length} of them differ from the ` +
+					`server's version. Nothing has been changed. Until you choose, this ` +
+					`device stays paused.`,
 			)
 			.addButton((b) =>
 				b
