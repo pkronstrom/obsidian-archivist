@@ -5,7 +5,6 @@ import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
 import {
 	checkVault,
-	emptyState,
 	isFirstRun,
 	loadState,
 	saveState,
@@ -726,10 +725,17 @@ export class Sync {
 	 * a local file that differs from the server is moved aside under a conflict
 	 * name and the server's version lands at the real path, and a local-only
 	 * file is simply pushed on the next cycle.
+	 *
+	 * The adopted state is saved BEFORE the sync. Saving an empty state and
+	 * leaving the rebuild to run() meant a failed first cycle left the device
+	 * looking never-synced, and pairingResolved lives only in memory -- so
+	 * after a restart the device asked the first-connect question about its
+	 * own vault. The vault name is dropped so the cycle adopts the server's:
+	 * this is also the documented way to repoint a device on purpose.
 	 */
 	async forceRebootstrap(): Promise<SyncReport | null> {
-		saveState(this.app, emptyState());
 		this.pairingResolved = true;
+		saveState(this.app, await this.rebootstrap());
 		return this.run();
 	}
 }

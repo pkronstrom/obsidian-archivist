@@ -176,3 +176,33 @@ test("paths compare in NFC, so a decomposed Mac name matches the server's", () =
 	const c = compareVaults({ [nfd]: "h" }, { ["Päivä.md".normalize("NFC")]: "h" });
 	assert.deepEqual(c, { identical: 1, onlyHere: [], onlyServer: [], differ: [] });
 });
+
+// Reported from a real Mac: re-bootstrap's first sync failed (a quarantined
+// path refused the push), the empty state it had saved survived, and after a
+// restart the device asked the first-connect question about its own vault.
+test("a re-bootstrap whose sync fails does not leave the device looking never-synced", async () => {
+	const { root, app } = await device();
+	await fs.writeFile(path.join(root, "same.md"), "same\n");
+	await fs.writeFile(path.join(root, "new.md"), "only here\n");
+	app.saveLocalStorage("archivist.state", {
+		base: "oldhead",
+		files: { "same.md": { hash: "x", mtime: 1, size: 1 } },
+		vault: "personal",
+	});
+
+	const client = fakeClient({
+		head: "serverhead",
+		files: { "same.md": { hash: blob("same\n"), size: 5 } },
+	});
+	client.push = async () => {
+		throw new Error("path is quarantined after repeated writes");
+	};
+	await assert.rejects(() => new Sync(app, () => client, () => "mac", () => {}).forceRebootstrap());
+
+	// A fresh Sync is what a restart gives you: no in-memory decisions.
+	const restarted = new Sync(app, () => client, () => "mac", () => {});
+	await assert.rejects(() => restarted.run(), (err) => {
+		assert.ok(!(err instanceof PairingHazardError), "a restart asked the pairing question");
+		return true;
+	});
+});
