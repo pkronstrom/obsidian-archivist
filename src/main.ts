@@ -18,6 +18,8 @@ export default class ArchivistPlugin extends Plugin {
 	sync!: Sync;
 	inventoryProblem?: string;
 	private layoutReady = false;
+	/** The last sync error shown as a Notice, so a repeat is not shown again. */
+	private lastSyncError?: string;
 
 	private status?: HTMLElement;
 	private revisions?: HTMLElement;
@@ -384,6 +386,7 @@ export default class ArchivistPlugin extends Plugin {
 		try {
 			const report = await this.sync.run();
 			if (report === null) return; // coalesced into an in-flight cycle
+			this.lastSyncError = undefined;
 			if (report.conflicts.length > 0) {
 				// Conflicts are the one outcome worth interrupting for: a file
 				// now exists that the user has to resolve by hand.
@@ -415,7 +418,11 @@ export default class ArchivistPlugin extends Plugin {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error("[archivist] sync failed", err);
 			this.setStatus("error");
-			new Notice(`archivist: ${msg}`, 8000);
+			// Once per distinct failure. A stuck cycle retries -- on the
+			// watcher's backoff, the interval, every focus -- and a Notice per
+			// attempt buries the screen in copies of one message.
+			if (msg !== this.lastSyncError) new Notice(`archivist: ${msg}`, 8000);
+			this.lastSyncError = msg;
 		}
 	}
 
