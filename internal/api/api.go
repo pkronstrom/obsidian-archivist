@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -38,6 +39,7 @@ type Server struct {
 	tokens   *auth.Set
 	grants   *stepup.Grants
 	verifier *stepup.Verifier
+	log      *slog.Logger
 }
 
 // Option configures the server. Variadic because step-up is additive: every
@@ -52,6 +54,11 @@ type Option func(*Server)
 // build that forgot to wire this: unavailable, not unguarded.
 func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
 	return func(s *Server) { s.grants, s.verifier = g, v }
+}
+
+// WithLog supplies the logger. Without it the server logs nothing.
+func WithLog(l *slog.Logger) Option {
+	return func(s *Server) { s.log = l }
 }
 
 // stepUpState is the gate decision made at admission.
@@ -85,7 +92,7 @@ const (
 // from the SAME route table that generates the index. A route still cannot
 // exist without being documented, or be documented without existing.
 func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
-	s := &Server{reg: reg, tokens: tokens}
+	s := &Server{reg: reg, tokens: tokens, log: slog.New(slog.DiscardHandler)}
 	for _, o := range opts {
 		o(s)
 	}
@@ -525,6 +532,10 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 		reconcile.Origin{Device: req.Device, Token: p.Label, Via: sanitiseVia(via)},
 		req.Changes)
 	if err != nil {
+		// A failed push changes nothing, so nothing else records it -- and a
+		// client that retries a failing push is invisible without this line.
+		s.log.Warn("push failed", "vault", inst.Name, "device", req.Device,
+			"token", p.Label, "changes", len(req.Changes), "err", err)
 		var pe *protocol.Error
 		switch {
 		// A guard refusal already names its own code; use it rather than
@@ -545,6 +556,14 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Insta
 			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		}
 		return
+	}
+	for _, res := range results {
+		if res.Status == reconcile.StatusRefused {
+			// A refused path stays pending on the client and comes back every
+			// cycle; the reason is the only clue to why it never lands.
+			s.log.Warn("push refused a path", "vault", inst.Name, "device", req.Device,
+				"token", p.Label, "path", res.Path, "reason", res.Reason)
+		}
 	}
 	writeJSON(w, protocol.PushResponse{Head: head, Results: results})
 }

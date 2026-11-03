@@ -234,7 +234,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(reg, tokens, api.WithStepUp(grants, verifier)),
+		Handler:           api.New(reg, tokens, api.WithStepUp(grants, verifier), api.WithLog(log)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
