@@ -168,10 +168,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		OnTrip: func(vaultName, code, path, reason string) {
 			log.Warn("guard refused a write", "vault", vaultName, "code", code,
 				"path", path, "reason", reason)
-			// Keyed by vault too, so a trip in one vault does not suppress the
-			// alert for the same path in another.
-			n.SendKeyed(vaultName+":"+code+":"+path,
-				"archivist: "+code+" in "+vaultName, path+" -- "+reason, true)
+			// The alert says only that something tripped; the log line above has
+			// the rest. An ntfy topic can be readable by anyone who knows its
+			// name, and vault paths can name people and clients.
+			n.SendKeyed(code, "archivist: "+code, "A write was refused. Details are in the server log.", true)
 		},
 		Log: log,
 		Now: time.Now,
@@ -191,8 +191,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	if cfg.NtfyURL == "" {
 		log.Info("ntfy alerts are disabled; set ARCHIVIST_NTFY_URL to enable them")
-	} else if err := n.Verify("archivist: started",
-		fmt.Sprintf("guards armed on %s", layout.Describe(names))); err != nil {
+	} else if err := n.Verify("archivist: started", "guards armed"); err != nil {
 		// Loud, but NOT fatal. A broken notifier is not a reason to stop
 		// serving the vaults -- it is a reason to know before the guards need it.
 		log.Error("ntfy startup check FAILED; guard alerts will not reach you",

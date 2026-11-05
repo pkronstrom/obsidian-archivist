@@ -327,6 +327,9 @@ fills. These defaults limit remote write loops and low-disk writes:
 | `ARCHIVIST_MIN_FREE_BYTES` | `20GB` | refuse remote writes below this floor |
 | `ARCHIVIST_NTFY_URL` | unset | full ntfy URL for alerts |
 
+Alerts carry only the kind of refusal, never a vault name or path, so a public
+ntfy topic does not expose them. The server log has the details.
+
 `0` disables an individual counter. A quarantine blocks only the affected path.
 One large upload does not count as a loop, and single uploads have separate
 size caps: 512 MB through the server and 32 MB through the relay.
