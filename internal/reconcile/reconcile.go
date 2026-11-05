@@ -395,7 +395,7 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		// re-sent on the next cycle with a fresh base, so the staleness check
 		// above no longer fires, and the SERVER's newer bytes get carried to
 		// the new path while the client records its own older snapshot there.
-		if ch.Hash != "" && vault.Hash(content) != ch.Hash {
+		if ch.Hash != "" && protocol.HashContent(content) != ch.Hash {
 			res.Status, res.Reason = StatusRefused, "the source changed since it was read: "+ch.From
 			return res, nil
 		}

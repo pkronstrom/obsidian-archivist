@@ -734,6 +734,34 @@ func TestMoveRefusesWhenTheSourceChangedSinceItWasRead(t *testing.T) {
 	}
 }
 
+// The hash on a move is the git blob hash every client names content by. This is
+// the case the plugin always sends: comparing it in any other format refuses
+// every rename while the refusal above still passes.
+func TestMoveWithTheSourcesCurrentHashLands(t *testing.T) {
+	rc, v, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "a.md", "original\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, results, err := rc.Push(base, "mac", []Change{{
+		Path: "b.md", Op: protocol.OpMove, From: "a.md",
+		Hash: protocol.HashContent([]byte("original\n")),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusApplied {
+		t.Fatalf("move = %s (%s), want applied", results[0].Status, results[0].Reason)
+	}
+	if got, err := v.Read("b.md"); err != nil || string(got) != "original\n" {
+		t.Errorf("b.md = %q, %v", got, err)
+	}
+	if _, err := v.Read("a.md"); err == nil {
+		t.Error("the source is still there")
+	}
+}
+
 // Device reaches the commit message from the client, so it needs the same
 // guard Via has -- otherwise it forges a trailer beside the unforgeable one.
 func TestDeviceCannotForgeATrailer(t *testing.T) {

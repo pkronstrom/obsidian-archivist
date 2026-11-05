@@ -96,6 +96,24 @@ await mac.sync.run();
 await phone.sync.run();
 check("deletion propagates", !(await phone.app.vault.adapter.exists("notes/a.md")));
 
+// --- 5b. a rename lands as a rename -----------------------------------------
+// The plugin sends the source's hash with a move. The server once compared it in
+// a different format and refused every rename, so nothing else here noticed.
+await fs.writeFile(path.join(mac.root, "notes/before.md"), "renamed content\n");
+await mac.sync.run();
+await phone.sync.run();
+await fs.mkdir(path.join(mac.root, "moved"), { recursive: true });
+await fs.rename(path.join(mac.root, "notes/before.md"), path.join(mac.root, "moved/after.md"));
+r = await mac.sync.run();
+check("a rename is not refused", r.refused.length === 0, JSON.stringify(r.refused));
+r = await mac.sync.run();
+check("and is not re-sent on the next cycle", r.pushed === 0 && r.refused.length === 0, JSON.stringify(r));
+await phone.sync.run();
+check("the other device gets the new path", (await phone.read("moved/after.md")) === "renamed content\n");
+check("and loses the old one", !(await phone.app.vault.adapter.exists("notes/before.md")));
+await mac.sync.run();
+check("the old path does not come back", !(await mac.app.vault.adapter.exists("notes/before.md")));
+
 // --- 6. offline edits, then reconnect ---------------------------------------
 // No syncing at all while "offline", then one cycle. The diff is computed from
 // the snapshot, so the length of the outage is irrelevant.
