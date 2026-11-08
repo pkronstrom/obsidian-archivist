@@ -1,9 +1,6 @@
-# Backlog
+# Hidden paths — sync and back up, never expose to integrations
 
-Potential features, not commitments. Each entry says what it is for and links
-the design note when one exists. Move an item to a design note when work starts.
-
-## Hidden paths — sync and back up, never expose to integrations
+Idea note, moved from BACKLOG.md. Not scheduled.
 
 **Added:** 2026-10-01 · **Status:** idea
 
@@ -43,48 +40,8 @@ Things to settle when designing:
 - **Relation to encryption.** This is an exposure gate, like step-up (ADR-0002),
   against integrations with a valid token. It does nothing against an
   infostealer on a device, which is what
-  [encrypted paths](docs/2026-08-21-encrypted-paths-design-note.md) addresses.
+  [encrypted paths](2026-08-21-encrypted-paths-design-note.md) addresses.
   The two compose: `.secret.md` hidden from integrations, optionally also
   client-side encrypted.
 - **Relation to `.local`.** `.local` never leaves the device; hidden syncs to
   every granted device. Different rules, same naming-convention style.
-
-## Step-up setup wizard
-
-**Added:** 2026-09-30 · **Status:** idea
-
-`token add/update -step-up` prints an `otpauth://` URL and a `qrencode` command
-that is installed on neither aarni nor the Mac. Draw the QR in the terminal and
-save only after one code from the authenticator verifies, so a mistyped secret
-cannot lock an agent out.
-
-## Online prune
-
-**Status:** investigated, not built ·
-[design note](docs/2026-09-05-online-prune-design-note.md)
-
-Reclaim history space without stopping the server, without a data-loss window.
-
-## Time scrubber
-
-**Status:** idea, not scheduled ·
-[revision browser note, "Later"](docs/2026-08-21-revision-browser-design-note.md)
-
-Drag a slider through one note's revisions. Builds on the shipped revision
-browser and restore.
-
-## Structural Markdown patch tool for MCP
-
-**Status:** deferred ·
-[large-note MCP design, "Deferred work"](docs/2026-08-26-large-note-mcp-design.md)
-
-Heading, block or frontmatter targeted edits, only if exact-replace `edit_note`
-proves insufficient.
-
-## Encrypted paths
-
-**Status:** explored, not planned ·
-[design note](docs/2026-08-21-encrypted-paths-design-note.md)
-
-Client-side encryption of marked paths; the server refuses plaintext there.
-Defends against an infostealer on a device. See also *Hidden paths* above.
