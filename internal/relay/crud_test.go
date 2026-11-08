@@ -4,11 +4,14 @@ import (
 	"bytes"
 
 	"encoding/json"
+	"fmt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/client"
 	"github.com/pkronstrom/obsidian-archivist/internal/relay"
@@ -257,6 +260,63 @@ func TestOversizedBodyIs413(t *testing.T) {
 	big := bytes.Repeat([]byte("x"), (32<<20)+64)
 	if got := req(t, srv, "PUT", "/file/big.md", big, true).StatusCode; got != 413 {
 		t.Errorf("code = %d, want 413", got)
+	}
+}
+
+// GET /file is where read_attachment sends a file too big for context, so it
+// must pass bytes on as they arrive rather than hold the whole file first. The
+// upstream sends a first part and then waits; a relay that buffered would never
+// deliver it.
+func TestGetFileStreamsRatherThanBuffering(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/personal/v1/head" {
+			json.NewEncoder(w).Encode(map[string]any{"head": "abc"})
+			return
+		}
+		// Past the relay's own response buffer, so what it has must go out.
+		w.Write(bytes.Repeat([]byte("x"), 64<<10))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	srv := httptest.NewServer(relay.NewHandler(relay.NewPool(upstream.URL, "relay"), nil, quiet(), nil, nil))
+	defer srv.Close()
+	// Last deferred, so first run: both Closes wait for in-flight handlers, and
+	// on failure the relay's is still waiting on the upstream's.
+	defer close(release)
+
+	// Not req(): it calls t.Fatal, which must not run off the test goroutine.
+	r, err := http.NewRequest("GET", srv.URL+"/file/att/big.mp4?vault=personal", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Authorization", "Bearer "+relayTok)
+	got := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			got <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.Header.Get("ETag") != `"abc"` {
+			got <- fmt.Errorf("ETag = %q, want the revision read at", resp.Header.Get("ETag"))
+			return
+		}
+		_, err = io.ReadFull(resp.Body, make([]byte, 1<<10))
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no bytes arrived while the upstream was still sending; the relay is buffering the file")
 	}
 }
 

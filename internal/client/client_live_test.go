@@ -153,8 +153,8 @@ func TestLiveConflictReportsBothSides(t *testing.T) {
 		t.Fatalf("conflict result is not self-describing: %+v", r)
 	}
 	// Both versions must be fetchable without downloading the whole snapshot.
-	kept, _ := c.GetContent(ctx, r.Hash)
-	aside, _ := c.GetContent(ctx, r.ConflictHash)
+	kept, _ := c.GetContent(ctx, r.Hash, 1<<20)
+	aside, _ := c.GetContent(ctx, r.ConflictHash, 1<<20)
 	if string(kept) != "from A\n" {
 		t.Errorf("server did not keep its own version: %q", kept)
 	}
@@ -210,7 +210,7 @@ func TestLiveHistoryAndReadAt(t *testing.T) {
 	if len(revs) != 2 {
 		t.Fatalf("history = %d revisions, want 2", len(revs))
 	}
-	old, err := c.ReadAt(ctx, revs[1].Short, "notes/h.md")
+	old, err := c.ReadAt(ctx, revs[1].Short, "notes/h.md", 1<<20)
 	if err != nil {
 		t.Fatalf("ReadAt: %v", err)
 	}

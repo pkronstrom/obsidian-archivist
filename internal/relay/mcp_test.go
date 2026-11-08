@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -371,10 +372,54 @@ func TestReadAttachmentRefusesOversizeRatherThanTruncating(t *testing.T) {
 	if err == nil && !res.IsError {
 		t.Fatalf("oversize read succeeded; half an attachment is a corrupt one: %s", text(res))
 	}
-	// The message has to carry the real size, or the caller cannot choose a
-	// max_bytes that would work.
-	if msg := text(res); !strings.Contains(msg, "8192") {
-		t.Errorf("refusal does not name the actual size: %s", msg)
+	// The read stops past the limit, so the real size is unknown. The message
+	// has to name the limit it hit and the knob that raises it instead.
+	if msg := text(res); !strings.Contains(msg, "100-byte limit") || !strings.Contains(msg, "max_bytes") {
+		t.Errorf("refusal does not name the limit and how to raise it: %s", msg)
+	}
+}
+
+// The refusal is only worth having if it comes BEFORE the file is in relay
+// memory. An upstream serving far more than the limit must be cut off, not
+// drained and then refused.
+func TestReadAttachmentStopsReadingAtTheLimit(t *testing.T) {
+	const served = 64 << 20
+	var drained atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/personal/v1/head" {
+			json.NewEncoder(w).Encode(map[string]any{"head": "abc"})
+			return
+		}
+		chunk := make([]byte, 32<<10)
+		for n := 0; n < served; n += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return // the relay hung up, which is the point
+			}
+		}
+		drained.Store(true)
+	}))
+	t.Cleanup(upstream.Close)
+
+	mcpSrv := relay.NewMCPServer(client.New(upstream.URL, "tok", "relay").WithVault("personal"), "archivist", "test")
+	ct, st := mcp.NewInMemoryTransports()
+	go func() { mcpSrv.Run(context.Background(), st) }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, nil).
+		Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "read_attachment", Arguments: map[string]any{"path": "att/huge.mp4"}})
+	if err == nil && !res.IsError {
+		t.Fatal("a file over the limit was returned")
+	}
+	if msg := text(res); !strings.Contains(msg, "over the 1048576-byte limit") {
+		t.Errorf("refusal = %s, want it to name the default limit", msg)
+	}
+	if drained.Load() {
+		t.Errorf("the relay read all %d bytes before refusing a 1 MB limit", served)
 	}
 }
 
@@ -483,6 +528,10 @@ func TestMoveRefusesToOverwriteTheDestination(t *testing.T) {
 		Name: "move_note", Arguments: map[string]any{"from": "Inbox/a.md", "to": "Inbox/b.md"}})
 	if err == nil && !res.IsError {
 		t.Fatalf("move onto an existing path succeeded: %s", text(res))
+	}
+	// The server refuses under its lock; the caller needs its reason to act.
+	if msg := text(res); !strings.Contains(msg, "already exists") {
+		t.Errorf("refusal does not say why: %s", msg)
 	}
 
 	kept := call(t, cs, "read_note", map[string]any{"path": "Inbox/b.md"})

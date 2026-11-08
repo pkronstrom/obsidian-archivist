@@ -24,7 +24,7 @@ func interleave(t *testing.T, theirs, mine string, useBase bool) (protocol.Resul
 	ctx := context.Background()
 	c.Write(ctx, "n.md", []byte(doc))
 
-	seen, base, err := c.ReadForEdit(ctx, "n.md")
+	seen, base, err := c.ReadForEdit(ctx, "n.md", 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestWriteAtConflictKeepsBothVersions(t *testing.T) {
 	if res.ConflictPath == "" || res.ConflictHash == "" {
 		t.Fatalf("conflict is not self-describing: %+v", res)
 	}
-	aside, err := c.GetContent(context.Background(), res.ConflictHash)
+	aside, err := c.GetContent(context.Background(), res.ConflictHash, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

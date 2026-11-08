@@ -204,7 +204,14 @@ func run(cfg *config, log *slog.Logger) error {
 				return nil
 			}
 			return srv
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{
+			// Without it a session lives until the relay restarts: every agent
+			// run that never sends DELETE leaves one behind, held in memory for
+			// good. The clock only runs between POSTs, so a session mid-call
+			// is never cut; a client back after half an hour gets "session not
+			// found" and initialises again, as the MCP spec requires of it.
+			SessionTimeout: 30 * time.Minute,
+		})
 	}
 
 	var hooks *relay.Webhooks

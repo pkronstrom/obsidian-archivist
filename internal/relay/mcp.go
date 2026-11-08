@@ -450,7 +450,7 @@ func readNote(c *client.Client) mcp.ToolHandlerFor[readInput, readOutput] {
 		if in.Path == "" {
 			return nil, readOutput{}, fmt.Errorf("path is required")
 		}
-		body, base, err := c.ReadForEdit(ctx, in.Path)
+		body, base, err := c.ReadForEdit(ctx, in.Path, maxNoteRead)
 		if err != nil {
 			return nil, readOutput{}, err
 		}
@@ -641,7 +641,7 @@ func writeNote(c *client.Client) mcp.ToolHandlerFor[writeInput, writeOutput] {
 		// must not turn a reported conflict into a reported error, which would
 		// lose the fact that the write was set aside safely.
 		if res.Status != protocol.StatusApplied {
-			if body, rev, err := c.ReadForEdit(ctx, in.Path); err == nil {
+			if body, rev, err := c.ReadForEdit(ctx, in.Path, maxNoteRead); err == nil {
 				out.CurrentContent, out.CurrentRevision = string(body), rev
 			}
 		}
@@ -717,7 +717,7 @@ func requireSeen(ctx context.Context, c *client.Client, path, revision string) e
 }
 
 func readIfExists(ctx context.Context, c *client.Client, revision, path string) ([]byte, bool, error) {
-	body, err := c.ReadAt(ctx, revision, path)
+	body, err := c.ReadAt(ctx, revision, path, maxNoteRead)
 	if client.IsCode(err, protocol.CodeNotFound) {
 		return nil, false, nil
 	}
@@ -743,6 +743,10 @@ const (
 	defaultAttachmentRead = 1 << 20  // 1 MB
 	maxAttachmentRead     = 10 << 20 // 10 MB
 	maxAttachmentWrite    = 25 << 20 // 25 MB
+
+	// maxNoteRead bounds a note the text tools hold in relay memory to page,
+	// compare or re-send. See maxBody.
+	maxNoteRead = maxBody
 )
 
 type readAttachmentInput struct {
@@ -779,19 +783,20 @@ func readAttachment(c *client.Client) mcp.ToolHandlerFor[readAttachmentInput, re
 				"max_bytes %d exceeds the hard limit of %d", limit, maxAttachmentRead)
 		}
 
-		body, base, err := c.ReadForEdit(ctx, in.Path)
-		if err != nil {
-			return nil, readAttachmentOutput{}, err
-		}
 		// Refuse rather than truncate. A caller that receives half a PNG has no
-		// way to know, and every use of it is wrong.
-		if len(body) > limit {
+		// way to know, and every use of it is wrong. The read stops one byte past
+		// the limit, so the refusal cannot name the real size.
+		body, base, err := c.ReadForEdit(ctx, in.Path, int64(limit))
+		if client.IsCode(err, protocol.CodeTooLarge) {
 			return nil, readAttachmentOutput{}, fmt.Errorf(
-				"%s is %d bytes, over the %d-byte limit; raise max_bytes (hard maximum %d) if you "+
+				"%s is over the %d-byte limit; raise max_bytes (hard maximum %d) if you "+
 					"really want it in context. To get the file WITHOUT spending context, fetch it "+
 					"straight to disk instead: GET <relay>/file/%s with your usual Authorization "+
 					"header streams the raw bytes, no base64 and no size cap",
-				in.Path, len(body), limit, maxAttachmentRead, in.Path)
+				in.Path, limit, maxAttachmentRead, in.Path)
+		}
+		if err != nil {
+			return nil, readAttachmentOutput{}, err
 		}
 
 		return nil, readAttachmentOutput{
@@ -883,7 +888,6 @@ type moveOutput struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Status string `json:"status"`
-	Note   string `json:"note,omitempty"`
 }
 
 func moveNote(c *client.Client) mcp.ToolHandlerFor[moveInput, moveOutput] {
@@ -896,25 +900,19 @@ func moveNote(c *client.Client) mcp.ToolHandlerFor[moveInput, moveOutput] {
 			return nil, moveOutput{}, fmt.Errorf("from and to are the same path: %s", in.From)
 		}
 
-		// Refuse rather than overwrite. A move that silently replaced the
-		// destination would destroy a file the caller never named, and the
-		// caller cannot see what is at the destination from here.
-		if existing, err := c.List(ctx, in.To); err == nil {
-			if _, taken := existing[in.To]; taken {
-				return nil, moveOutput{}, fmt.Errorf(
-					"refusing to move onto %s: something is already there. Delete it first, or choose another destination", in.To)
-			}
-		}
-
 		res, err := c.MoveAt(ctx, in.From, in.To, in.Revision)
 		if err != nil {
 			return nil, moveOutput{}, err
 		}
-		out := moveOutput{From: in.From, To: res.Path, Status: res.Status}
+		// A refusal is a tool error, not a result with a note. The common one
+		// is an occupied destination, which the server checks under its lock
+		// (a relay-side check could only race it), and a caller skimming for
+		// success must not read "refused" as "moved".
 		if res.Status == protocol.StatusRefused {
-			out.Note = "the server declined this move: " + res.Reason
+			return nil, moveOutput{}, fmt.Errorf(
+				"the server declined to move %s to %s: %s. Nothing was moved", in.From, in.To, res.Reason)
 		}
-		return nil, out, nil
+		return nil, moveOutput{From: in.From, To: res.Path, Status: res.Status}, nil
 	}
 }
 
@@ -980,7 +978,7 @@ func readNoteAt(c *client.Client) mcp.ToolHandlerFor[readAtInput, readOutput] {
 		if in.Path == "" || in.Revision == "" {
 			return nil, readOutput{}, fmt.Errorf("path and revision are both required")
 		}
-		body, err := c.ReadAt(ctx, in.Revision, in.Path)
+		body, err := c.ReadAt(ctx, in.Revision, in.Path, maxNoteRead)
 		if err != nil {
 			return nil, readOutput{}, err
 		}
@@ -1012,6 +1010,10 @@ type searchOutput struct {
 	Count   int         `json:"count"`
 	Matches []searchHit `json:"matches"`
 }
+
+// maxSearchBytes is the largest file search_notes will read: the size past
+// which a file is taken not to be a note.
+const maxSearchBytes = 1 << 20
 
 // searchNotes reads and scans client-side.
 //
@@ -1053,11 +1055,15 @@ func searchNotes(c *client.Client) mcp.ToolHandlerFor[searchInput, searchOutput]
 				continue
 			}
 			// Skip anything too big to be a note; fetching a 200 MB attachment
-			// to grep it would be worse than missing it.
-			if files[p].Size > 1<<20 {
+			// to grep it would be worse than missing it. An attachment type is
+			// skipped at any size: fetching every PNG and PDF only to find a
+			// NUL byte in it is a download per file for no possible match. Its
+			// name was already matched above.
+			ext := strings.ToLower(strings.TrimPrefix(path.Ext(p), "."))
+			if files[p].Size > maxSearchBytes || allowedAttachmentExt[ext] {
 				continue
 			}
-			body, err := c.GetContent(ctx, files[p].Hash)
+			body, err := c.GetContent(ctx, files[p].Hash, maxSearchBytes)
 			if err != nil || isBinary(body) {
 				continue
 			}

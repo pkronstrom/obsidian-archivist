@@ -301,10 +301,6 @@ func postJSON[T any](ctx context.Context, c *Client, path string, in any) (T, er
 
 // ---- the endpoints ---------------------------------------------------------
 
-func (c *Client) Index(ctx context.Context) (protocol.IndexResponse, error) {
-	return getJSON[protocol.IndexResponse](ctx, c, "/v1")
-}
-
 // CheckCompatible refuses a server speaking a protocol this client does not.
 //
 // It compares `protocol`, never `version`: the build number changes every
@@ -395,13 +391,37 @@ func (c *Client) PutContent(ctx context.Context, hash string, content []byte) er
 	return nil
 }
 
-func (c *Client) GetContent(ctx context.Context, hash string) ([]byte, error) {
+// GetContent returns a blob, refusing one over max bytes; see readLimited.
+func (c *Client) GetContent(ctx context.Context, hash string, max int64) ([]byte, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/v1/content/"+hash, nil, "")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
+	return readLimited(resp.Body, max, hash)
+}
+
+// readLimited reads a whole body, but refuses one over max bytes instead of
+// buffering it.
+//
+// Every read here lands in the caller's memory, and for the relay that is one
+// process shared by every agent: a read of a 400 MB video, or a search over a
+// vault that holds one, would otherwise pull the whole file in before anything
+// got the chance to say no. Reading max+1 is what tells "exactly max" from
+// "more"; the real size beyond that is never learned, which is the point.
+func readLimited(body io.Reader, max int64, what string) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, &Error{
+			Code:    protocol.CodeTooLarge,
+			Message: fmt.Sprintf("%s is over the %d-byte read limit", what, max),
+			Status:  http.StatusRequestEntityTooLarge,
+		}
+	}
+	return b, nil
 }
 
 // Push applies a change set against base.
@@ -431,8 +451,19 @@ func (c *Client) History(ctx context.Context, path string, limit int) ([]protoco
 }
 
 // ReadAt returns a path's content as it was at a revision, without restoring
-// it. "head" or "" means the current version.
-func (c *Client) ReadAt(ctx context.Context, rev, path string) ([]byte, error) {
+// it. "head" or "" means the current version. Content over max bytes is
+// refused with CodeTooLarge rather than read; see readLimited.
+func (c *Client) ReadAt(ctx context.Context, rev, path string, max int64) ([]byte, error) {
+	body, err := c.openAt(ctx, rev, path)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return readLimited(body, max, path)
+}
+
+// openAt is ReadAt without the read: the caller gets the body and closes it.
+func (c *Client) openAt(ctx context.Context, rev, path string) (io.ReadCloser, error) {
 	if rev == "" {
 		rev = "head"
 	}
@@ -440,12 +471,7 @@ func (c *Client) ReadAt(ctx context.Context, rev, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	return io.ReadAll(resp.Body)
-}
-
-func (c *Client) Check(ctx context.Context) (protocol.CheckResponse, error) {
-	return getJSON[protocol.CheckResponse](ctx, c, "/v1/check")
+	return resp.Body, nil
 }
 
 // escapePath escapes each segment but keeps the slashes: the route is a
@@ -460,9 +486,11 @@ func escapePath(p string) string {
 
 // ---- convenience -----------------------------------------------------------
 
-// Read returns a path's current content.
+// Read returns a path's current content, bounded only by what the server will
+// store at all. For tests and callers that own their memory; the relay passes a
+// real limit to ReadAt instead.
 func (c *Client) Read(ctx context.Context, path string) ([]byte, error) {
-	return c.ReadAt(ctx, "head", path)
+	return c.ReadAt(ctx, "head", path, protocol.MaxUploadBytes)
 }
 
 // ReadForEdit reads a note AND the revision it was read at, for a caller that
@@ -472,16 +500,31 @@ func (c *Client) Read(ctx context.Context, path string) ([]byte, error) {
 // pair is a consistent snapshot: reading content and then asking for head could
 // return a revision newer than the bytes in hand, which is the same lost-update
 // bug in a subtler form.
-func (c *Client) ReadForEdit(ctx context.Context, path string) (content []byte, base string, err error) {
+//
+// Content over max bytes is refused with CodeTooLarge; see readLimited.
+func (c *Client) ReadForEdit(ctx context.Context, path string, max int64) (content []byte, base string, err error) {
+	body, base, err := c.OpenForEdit(ctx, path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer body.Close()
+	if content, err = readLimited(body, max, path); err != nil {
+		return nil, "", err
+	}
+	return content, base, nil
+}
+
+// OpenForEdit is ReadForEdit for a caller that streams the bytes on rather than
+// holding them, so it takes no limit. The caller closes the body.
+func (c *Client) OpenForEdit(ctx context.Context, path string) (body io.ReadCloser, base string, err error) {
 	base, err = c.Head(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	content, err = c.ReadAt(ctx, base, path)
-	if err != nil {
+	if body, err = c.openAt(ctx, base, path); err != nil {
 		return nil, "", err
 	}
-	return content, base, nil
+	return body, base, nil
 }
 
 // WriteAt stores content as an edit derived from `base`.
@@ -568,7 +611,9 @@ func (c *Client) DeleteAt(ctx context.Context, path, base string) (protocol.Resu
 	return resp.Results[0], nil
 }
 
-// Move renames a path, preserving its content and its history as one file.
+// MoveAt renames a path, preserving its content and its history as one file.
+// The base lets the server notice that the source changed after the caller
+// decided to move it; an empty base means "move whatever is there now".
 //
 // It is not delete-plus-write. That pairing needs the delete scope, which no
 // agent token holds, splits the file's history in two, and destroys content the
@@ -577,13 +622,6 @@ func (c *Client) DeleteAt(ctx context.Context, path, base string) (protocol.Resu
 //
 // Works for any file the vault holds -- a note or an attachment. The server
 // moves a blob by path and never inspects what is in it.
-func (c *Client) Move(ctx context.Context, from, to string) (protocol.Result, error) {
-	return c.MoveAt(ctx, from, to, "")
-}
-
-// MoveAt renames a path as of `base`, so the server can notice that the source
-// changed after the caller decided to move it. An empty base means "move
-// whatever is there now".
 func (c *Client) MoveAt(ctx context.Context, from, to, base string) (protocol.Result, error) {
 	var zero protocol.Result
 	if from == "" || to == "" {

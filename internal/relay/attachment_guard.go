@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -141,15 +142,7 @@ func allowedExtList() string {
 	for ext := range allowedAttachmentExt {
 		out = append(out, ext)
 	}
-	sortStrings(out)
+	// Sorted so the error message is stable across runs; map order is not.
+	sort.Strings(out)
 	return strings.Join(out, ", ")
-}
-
-// sortStrings keeps the error message stable across runs; map order is not.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }

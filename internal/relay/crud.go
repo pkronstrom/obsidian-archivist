@@ -17,6 +17,10 @@ import (
 // maxBody bounds a single upload through the relay. Lower than the server's
 // limit on purpose: this surface is for scripts and automations writing notes,
 // and anything approaching the server's ceiling should be talking to the server.
+//
+// It also bounds a note the MCP text tools read into memory (maxNoteRead):
+// whatever this surface let in can be read back out, and nothing bigger is
+// buffered whole just to be paged or compared.
 const maxBody = 32 << 20
 
 // Handler is the relay's own HTTP surface: a plain file API for scripts and
@@ -149,16 +153,26 @@ func (h *Handler) read(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, protocol.CodeInvalidPath, err.Error())
 		return
 	}
-	body, base, err := c.ReadForEdit(r.Context(), p)
+	// Streamed, not buffered: this is the route read_attachment sends a caller
+	// to for a file too big for its context, so it must not hold the file in
+	// relay memory either.
+	body, base, err := c.OpenForEdit(r.Context(), p)
 	if err != nil {
 		h.relayError(w, err)
 		return
 	}
+	defer body.Close()
 	// The ETag is the vault revision this content was read at. Send it back as
 	// If-Match on the write and a concurrent edit is merged instead of lost.
 	w.Header().Set("ETag", `"`+base+`"`)
 	w.Header().Set("Content-Type", contentType(p))
-	w.Write(body)
+	if _, err := io.Copy(w, body); err != nil {
+		// The status is already sent, so the only honest signal left is a cut
+		// connection. Returning normally would end the chunked response cleanly
+		// and hand the caller a truncated file that looks complete.
+		h.log.Warn("relay: GET /file broke off mid-stream", "err", err)
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (h *Handler) write(w http.ResponseWriter, r *http.Request) {
