@@ -28,9 +28,10 @@ const Version = 2
 const (
 	OpPut = "put"
 	OpDel = "del"
-	// OpMove renames a path. It carries From and no Hash: the content is
-	// already on the server, which is the whole point -- a move preserves it
-	// where a delete destroys it, so a move needs only the write scope.
+	// OpMove renames a path. It carries From, and Hash as If-Match on the
+	// source: the content is already on the server, which is the whole point
+	// -- a move preserves it where a delete destroys it, so a move needs only
+	// the write scope.
 	//
 	// Without this op a rename arrived as del+put and a token with write but
 	// not delete could not rename at all. Inferring it from a del+put pair with
@@ -121,7 +122,7 @@ type Entry struct {
 type Change struct {
 	Path string `json:"path"`
 	Op   string `json:"op"`
-	Hash string `json:"hash,omitempty"` // absent for OpDel and OpMove
+	Hash string `json:"hash,omitempty"` // absent for OpDel; for OpMove, what the source must hold
 	From string `json:"from,omitempty"` // OpMove only: the path being renamed
 	Size int64  `json:"size"`
 	Ext  string `json:"ext"`  // lowercase, no leading dot

@@ -383,13 +383,6 @@ func (r *Repo) ReadBlob(hash string) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
-// HashContent is protocol.HashContent. Kept as a name here because callers
-// read better for it, but there is exactly one implementation, in the leaf
-// package that both the server and every client can import.
-func HashContent(content []byte) (string, error) {
-	return protocol.HashContent(content), nil
-}
-
 func (r *Repo) HasBlob(hash string) bool {
 	_, err := r.git.BlobObject(plumbing.NewHash(hash))
 	return err == nil

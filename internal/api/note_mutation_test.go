@@ -472,7 +472,7 @@ func TestAppendNoteRouteAcceptsBodyAtExactRequestLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	padding := int64(maxNoteMutationRequestBytes) - int64(len(body))
+	padding := int64(maxJSONRequestBytes) - int64(len(body))
 	reader := io.MultiReader(
 		strings.NewReader(string(body)),
 		&repeatedByteReader{remaining: padding, value: ' '},

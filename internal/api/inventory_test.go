@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
@@ -15,10 +14,7 @@ func TestInventoryTransportAcrossDevices(t *testing.T) {
 	h, _, r := newServer(t)
 	path := ".archivist/plugin-inventory/01234567-89ab-cdef-0123-456789abcdef.json"
 	content := []byte(`{"schemaVersion":1,"installationId":"01234567-89ab-cdef-0123-456789abcdef","deviceName":"Mac","platform":"desktop","updatedAt":"2026-09-09T12:00:00Z","plugins":[]}`)
-	hash, err := repo.HashContent(content)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hash := protocol.HashContent(content)
 	putContent(t, h, hash, content)
 	w := do(t, h, "POST", "/v1/push", protocol.PushRequest{
 		Device: "mac", Changes: []reconcile.Change{{Path: path, Op: "put", Hash: hash}},
@@ -101,10 +97,7 @@ func TestLiveSyncFiltersLegacyConfigButHistoryRemains(t *testing.T) {
 	if got, err := r.ReadAt(legacy, config); err != nil || string(got) != string(old) {
 		t.Fatalf("history lost: %q %v", got, err)
 	}
-	hash, err := repo.HashContent(old)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hash := protocol.HashContent(old)
 	w = do(t, h, "GET", "/v1/content/"+hash, nil, true)
 	if w.Code != http.StatusOK || string(w.Body.Bytes()) != string(old) {
 		t.Fatalf("historical content: %d %s", w.Code, w.Body)

@@ -154,10 +154,7 @@ func TestContentUploadRejectsAHashMismatch(t *testing.T) {
 func TestContentRoundTrip(t *testing.T) {
 	h, _, r := newServer(t)
 	content := []byte("# a note\n")
-	hash, err := repo.HashContent(content)
-	if err != nil {
-		t.Fatal(err)
-	}
+	hash := protocol.HashContent(content)
 
 	req := httptest.NewRequest("PUT", "/personal/v1/content/"+hash, bytes.NewReader(content))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -218,7 +215,7 @@ func TestChangesFromUnknownCursorIs409(t *testing.T) {
 func TestPushSnapshotAndChangesFlow(t *testing.T) {
 	h, _, _ := newServer(t)
 	content := []byte("hello\n")
-	hash, _ := repo.HashContent(content)
+	hash := protocol.HashContent(content)
 
 	req := httptest.NewRequest("PUT", "/personal/v1/content/"+hash, bytes.NewReader(content))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -286,7 +283,7 @@ func TestMethodMismatchIs405(t *testing.T) {
 func TestEventsStreamsHeadOnConnectAndOnCommit(t *testing.T) {
 	h, _, r := newServer(t)
 	content := []byte("first\n")
-	hash, _ := repo.HashContent(content)
+	hash := protocol.HashContent(content)
 	putContent(t, h, hash, content)
 	first := pushOne(t, h, "", "notes/a.md", hash)
 
@@ -317,7 +314,7 @@ func TestEventsStreamsHeadOnConnectAndOnCommit(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		c2 := []byte("second\n")
-		h2, _ := repo.HashContent(c2)
+		h2 := protocol.HashContent(c2)
 		putContent(t, h, h2, c2)
 		pushOne(t, h, first, "notes/b.md", h2)
 	}()
@@ -402,7 +399,7 @@ func TestEventsDistinguishBinaryFromText(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		blob := []byte("\x00\x01\x02 a pretend PDF")
-		bh, _ := repo.HashContent(blob)
+		bh := protocol.HashContent(blob)
 		putContent(t, h, bh, blob)
 		pushOne(t, h, "", "att/scan.pdf", bh)
 	}()
@@ -595,7 +592,7 @@ func min(a, b int) int {
 func TestExportDoesNotDependOnTmp(t *testing.T) {
 	h, _, r := newServer(t)
 	content := []byte("archive me\n")
-	hash, _ := repo.HashContent(content)
+	hash := protocol.HashContent(content)
 	putContent(t, h, hash, content)
 	pushOne(t, h, "", "a.md", hash)
 
@@ -625,7 +622,7 @@ func TestExportDoesNotDependOnTmp(t *testing.T) {
 func TestExportOfAnUnchangedVaultIsReproducible(t *testing.T) {
 	h, _, _ := newServer(t)
 	content := []byte("stable\n")
-	hash, _ := repo.HashContent(content)
+	hash := protocol.HashContent(content)
 	putContent(t, h, hash, content)
 	pushOne(t, h, "", "a.md", hash)
 
@@ -907,5 +904,26 @@ func TestMoveNeedsOnlyWrite(t *testing.T) {
 	// own reasons. Asserting only that the DELETE scope check did not fire.
 	if w := doAs(t, h, "POST", "/v1/push", body, tok); w.Code == 403 {
 		t.Error("a move was refused for lack of the delete scope; that is what move exists to avoid")
+	}
+}
+
+// Every JSON body is bounded. /v1/have is read-scoped, so before this any
+// token at all could make the server buffer a body of any size.
+func TestOversizedJSONBodiesAreRefused(t *testing.T) {
+	h, _, _ := newServer(t)
+	for _, tc := range []struct{ path, prefix string }{
+		{"/personal/v1/have", `{"hashes":["`},
+		{"/personal/v1/push", `{"base":"`},
+		{"/v1/vaults", `{"name":"`},
+	} {
+		body := io.MultiReader(strings.NewReader(tc.prefix),
+			&repeatedByteReader{remaining: maxJSONRequestBytes + 1, value: 'a'})
+		req := httptest.NewRequest(http.MethodPost, tc.path, body)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("POST %s with an oversized body = %d %s, want 413", tc.path, w.Code, w.Body.String())
+		}
 	}
 }

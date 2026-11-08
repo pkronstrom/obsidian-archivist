@@ -342,7 +342,7 @@ func TestResultsReportTheResultingHash(t *testing.T) {
 	if results[0].Status != StatusMerged {
 		t.Fatalf("status = %s", results[0].Status)
 	}
-	merged, _ := repo.HashContent([]byte("ONE\ntwo\nTHREE\n"))
+	merged := protocol.HashContent([]byte("ONE\ntwo\nTHREE\n"))
 	if results[0].Hash != merged {
 		t.Errorf("merged result hash = %q, want the merged content %q", results[0].Hash, merged)
 	}
@@ -789,5 +789,35 @@ func TestConflictFragmentIsWideEnoughToKeepBoth(t *testing.T) {
 	frag := name[i+1 : strings.LastIndex(name, ".")]
 	if len(frag) < 12 {
 		t.Errorf("fragment %q is %d chars; too few to promise keep-both", frag, len(frag))
+	}
+}
+
+// macOS hands out decomposed names; the vault holds the composed one. A move
+// whose source arrives decomposed must still find it.
+//
+// Only Linux can fail this. APFS matches either spelling of a name, so on a
+// Mac the source is found with or without normalisation; the server runs on
+// Linux, and so does CI.
+func TestMoveFindsADecomposedSource(t *testing.T) {
+	rc, v, r := newRec(t)
+	rc.SetNormalizeNFC(true)
+	composed, decomposed := "Päivä.md", "Päivä.md"
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, composed, "body\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, results, err := rc.Push(base, "mac", []Change{{
+		Path: "renamed.md", Op: protocol.OpMove, From: decomposed,
+		Hash: protocol.HashContent([]byte("body\n")),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusApplied {
+		t.Fatalf("move = %s (%s), want applied", results[0].Status, results[0].Reason)
+	}
+	if got, err := v.Read("renamed.md"); err != nil || string(got) != "body\n" {
+		t.Errorf("renamed.md = %q, %v", got, err)
 	}
 }

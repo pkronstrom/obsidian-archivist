@@ -195,9 +195,16 @@ func (rc *Reconciler) PushWithOrigin(base string, origin Origin, changes []Chang
 	// same note. Normalising here means every writer converges on one path,
 	// which is the whole point -- doing it only on disk at startup would leave
 	// the next push to undo it.
+	//
+	// From too. A move names the file it renames by the spelling the client
+	// holds, and the vault only has the composed one: left alone, a Mac
+	// renaming a decomposed name was refused "no such path" on every cycle.
 	if rc.normalizeNFC {
 		for i := range changes {
 			changes[i].Path = vault.ToNFC(changes[i].Path)
+			if changes[i].From != "" {
+				changes[i].From = vault.ToNFC(changes[i].From)
+			}
 		}
 	}
 
@@ -502,9 +509,7 @@ func (rc *Reconciler) keepBoth(device, path string, theirs, marked []byte) (Resu
 	// The hash describes what is AT ConflictPath, so a client can fetch exactly
 	// what it will find there. The client's own unmarked version is still in the
 	// object store -- it uploaded it before pushing -- so nothing is unreachable.
-	if h, err := repo.HashContent(body); err == nil {
-		res.ConflictHash = h
-	}
+	res.ConflictHash = protocol.HashContent(body)
 	return res, rc.write(cp, body)
 }
 
@@ -568,10 +573,7 @@ func (rc *Reconciler) write(path string, content []byte) error {
 // that got StatusMerged knows only that its bytes were not kept -- not what
 // replaced them -- and must fetch the whole snapshot to repair one file.
 func (rc *Reconciler) resultFor(res Result, content []byte) Result {
-	h, err := repo.HashContent(content)
-	if err == nil {
-		res.Hash = h
-	}
+	res.Hash = protocol.HashContent(content)
 	res.Size = int64(len(content))
 	return res
 }
@@ -656,14 +658,17 @@ func (rc *Reconciler) admit(path string, n int64) error {
 }
 
 // changeSize reports how many bytes a change costs. A delete has no content
-// and costs nothing.
+// and costs nothing, and neither does a move: its bytes are already stored, so
+// it adds a tree entry and no blob. Charging a move its file size let a client
+// retrying one refused rename of an 18 MB PDF quarantine the path on bytes that
+// never entered the vault.
 //
 // Size is a client-supplied wire field, so it is a hint: used when present,
 // and the stored blob measured otherwise. A client understating its own
 // writes gains little -- it still had to upload the content before the push,
 // and the vault-wide counter and the disk floor both measure what landed.
 func changeSize(r *repo.Repo, ch Change) int64 {
-	if ch.Hash == "" {
+	if ch.Hash == "" || ch.Op == protocol.OpMove {
 		return 0
 	}
 	if ch.Size > 0 {

@@ -387,8 +387,8 @@ func (s *Server) changes(w http.ResponseWriter, r *http.Request, inst *vaults.In
 
 func (s *Server) have(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.HaveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes)).Decode(&req); err != nil {
+		failDecode(w, err)
 		return
 	}
 	missing := []string{}
@@ -466,11 +466,7 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults
 	// Verify the address before storing. A store that trusts the client's hash
 	// is not content-addressed, and every downstream guarantee -- dedup,
 	// idempotency, the merge base -- rests on the address being true.
-	actual, err := repo.HashContent(body)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
-		return
-	}
+	actual := protocol.HashContent(body)
 	if !strings.EqualFold(actual, claimed) {
 		fail(w, http.StatusBadRequest, protocol.CodeHashMismatch,
 			"content hash mismatch: claimed "+claimed+", actual "+actual)
@@ -495,8 +491,8 @@ func (s *Server) getContent(w http.ResponseWriter, r *http.Request, inst *vaults
 
 func (s *Server) push(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.PushRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes)).Decode(&req); err != nil {
+		failDecode(w, err)
 		return
 	}
 	// Delete is not a route, so the routes table cannot gate it: it is an op
@@ -590,7 +586,7 @@ func failNoteMutation(w http.ResponseWriter, err error) {
 	fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 }
 
-func failNoteMutationDecode(w http.ResponseWriter, err error) {
+func failDecode(w http.ResponseWriter, err error) {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		fail(w, http.StatusRequestEntityTooLarge, protocol.CodeTooLarge, "request body is too large")
@@ -599,7 +595,10 @@ func failNoteMutationDecode(w http.ResponseWriter, err error) {
 	fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
 }
 
-const maxNoteMutationRequestBytes = 16 << 20
+// maxJSONRequestBytes bounds every JSON request body. Without it any token,
+// read-only included, could post a body as large as the server has memory:
+// /v1/have is read-scoped and decoded whatever arrived.
+const maxJSONRequestBytes = 16 << 20
 
 func decodeOneJSON(body io.Reader, dst any) error {
 	decoder := json.NewDecoder(body)
@@ -619,8 +618,8 @@ func decodeOneJSON(body io.Reader, dst any) error {
 
 func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.AppendNoteRequest
-	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxNoteMutationRequestBytes), &req); err != nil {
-		failNoteMutationDecode(w, err)
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes), &req); err != nil {
+		failDecode(w, err)
 		return
 	}
 	effectivePath, head, contentRevision, err := inst.Reconciler.AppendNote(
@@ -643,8 +642,8 @@ func (s *Server) appendNote(w http.ResponseWriter, r *http.Request, inst *vaults
 
 func (s *Server) editNote(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
 	var req protocol.EditNoteRequest
-	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxNoteMutationRequestBytes), &req); err != nil {
-		failNoteMutationDecode(w, err)
+	if err := decodeOneJSON(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes), &req); err != nil {
+		failDecode(w, err)
 		return
 	}
 	effectivePath, head, contentRevision, err := inst.Reconciler.EditNote(
@@ -1315,8 +1314,8 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "malformed body: "+err.Error())
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		failDecode(w, err)
 		return
 	}
 	if err := s.reg.Create(req.Name); err != nil {

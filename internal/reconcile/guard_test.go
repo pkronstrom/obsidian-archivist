@@ -172,3 +172,41 @@ func TestNilGuardAllowsEverything(t *testing.T) {
 		}
 	}
 }
+
+// A move adds no bytes to the vault, so it must not count against the byte
+// limit. The live failure: a client retried one refused rename of an 18 MB PDF
+// every cycle, each attempt was charged the whole file, and the path was
+// quarantined for content that never entered the vault.
+func TestRefusedMovesAreNotChargedTheirFileSize(t *testing.T) {
+	rc, _, r := newRec(t)
+	base, _, err := rc.Push("", "mac", []Change{put(t, r, "big.pdf", "0123456789")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	rc.SetGuard(guard.New(guard.Limits{PathBytes: 5, Window: 5 * time.Minute, Cooldown: 15 * time.Minute},
+		func() time.Time { return now }, nil))
+
+	stale := protocol.HashContent([]byte("not what is there"))
+	for i := 0; i < 3; i++ {
+		_, results, err := rc.Push(base, "mac",
+			[]Change{{Path: "moved.pdf", Op: protocol.OpMove, From: "big.pdf", Hash: stale}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if results[0].Reason == "byte rate exceeded for this path" || results[0].Reason == "path is quarantined after repeated writes" {
+			t.Fatalf("retry %d was quarantined: %+v", i, results[0])
+		}
+	}
+
+	_, results, err := rc.Push(base, "mac", []Change{{
+		Path: "moved.pdf", Op: protocol.OpMove, From: "big.pdf",
+		Hash: protocol.HashContent([]byte("0123456789")),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != StatusApplied {
+		t.Fatalf("the move after the retries = %s (%s), want applied", results[0].Status, results[0].Reason)
+	}
+}

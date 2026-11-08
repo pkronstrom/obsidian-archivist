@@ -15,7 +15,6 @@ import (
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
 	"github.com/pkronstrom/obsidian-archivist/internal/reconcile"
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/stepup"
 	"github.com/pkronstrom/obsidian-archivist/internal/vaults"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
@@ -473,7 +472,7 @@ func (f *stepUpFixture) commitTo(t *testing.T, vault, path, body string) {
 		Head string `json:"head"`
 	}
 	json.Unmarshal(f.as(t, "GET", "/"+vault+"/v1/head", nil, f.writer).Body.Bytes(), &head)
-	hash, _ := repo.HashContent([]byte(body))
+	hash := protocol.HashContent([]byte(body))
 	req := httptest.NewRequest("PUT", "/"+vault+"/v1/content/"+hash, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+f.writer)
 	w := httptest.NewRecorder()

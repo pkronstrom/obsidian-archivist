@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -38,7 +37,7 @@ func waitFor(t *testing.T, url, since, timeout string) (protocol.WaitResponse, t
 // commit writes one file through the API and returns the new head.
 func commit(t *testing.T, h http.Handler, base, path, body string) string {
 	t.Helper()
-	hash, _ := repo.HashContent([]byte(body))
+	hash := protocol.HashContent([]byte(body))
 	putContent(t, h, hash, []byte(body))
 	return pushOne(t, h, base, path, hash)
 }
