@@ -68,7 +68,11 @@ export class Watcher {
 				const res = await client.wait(since, this.timeoutSeconds);
 				if (mine !== this.generation) return; // stopped while we waited
 				this.backoff = 1000;
-				if (res.changed) {
+				// A wait opened before our own push answers "changed" for the
+				// commit that push made. The sync that made it has already
+				// recorded that head, so a second cycle would walk the whole
+				// vault to find nothing -- on every edit.
+				if (res.changed && res.head !== this.cursor()) {
 					this.log("remote change, syncing");
 					await this.onChange();
 					// A cycle that failed saves no base, so the cursor is where

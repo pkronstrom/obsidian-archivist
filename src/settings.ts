@@ -624,10 +624,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"this device at a different vault.",
 			)
 			.addButton((b) =>
-				b.setWarning().setButtonText("Re-bootstrap").onClick(async () => {
-					await this.plugin.sync.forceRebootstrap();
-					new Notice("archivist: re-bootstrapped");
-				}),
+				b.setWarning().setButtonText("Re-bootstrap").onClick(() => void this.plugin.rebootstrap()),
 			);
 	}
 

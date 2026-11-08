@@ -1,16 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { configSyncable, DEFAULT_CONFIG_SYNC, skip } from "../../dist-test/entry.mjs";
+import { skip } from "../../dist-test/entry.mjs";
 
-test("legacy config choices cannot reactivate config transfer", () => {
- for (const level of ["files", "appearance", "plugins"]) {
-  const config = {level, acceptedPlugins: ["dataview"], acceptAllPlugins: true};
-  for (const p of [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/hotkeys.json", ".obsidian/community-plugins.json", ".obsidian/core-plugins.json", ".obsidian/plugins/dataview/data.json", ".obsidian/themes/Minimal/theme.css", ".obsidian/snippets/dark.css"]) {
-   assert.equal(configSyncable(p, config), false, p);
-   assert.equal(skip(p, config), true, p);
-  }
-  assert.equal(skip("notes/a.md", config), false);
+test("live Obsidian config never syncs", () => {
+ for (const p of [".obsidian/app.json", ".obsidian/appearance.json", ".obsidian/hotkeys.json", ".obsidian/community-plugins.json", ".obsidian/core-plugins.json", ".obsidian/plugins/dataview/data.json", ".obsidian/themes/Minimal/theme.css", ".obsidian/snippets/dark.css"]) {
+  assert.equal(skip(p), true, p);
  }
+ assert.equal(skip("notes/a.md"), false);
 });
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -18,12 +14,12 @@ import path from "node:path";
 import { Sync } from "../../dist-test/entry.mjs";
 import { FakeApp } from "../obsidian-shim.mjs";
 
-test("turning the level DOWN does not delete the config off the server", async () => {
+test("config recorded by the retired config sync is never deleted off the server", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "downgrade-"));
 	const app = new FakeApp(root);
 
-	// This device synced config at the appearance level, so its snapshot holds
-	// the config paths.
+	// This device synced config before config sync was retired, so its
+	// snapshot still holds the config paths.
 	app.saveLocalStorage("archivist.state", {
 		base: "serverhead",
 		vault: "personal",
@@ -36,8 +32,6 @@ test("turning the level DOWN does not delete the config off the server", async (
 	await fs.mkdir(path.join(root, "notes"), { recursive: true });
 	await fs.writeFile(path.join(root, "notes/a.md"), "still here\n");
 
-	// Now it is set back to Files only.
-	const level = { ...DEFAULT_CONFIG_SYNC, level: "plugins", acceptAllPlugins: true };
 	const pushes = [];
 	const client = {
 		async index() {
@@ -58,18 +52,18 @@ test("turning the level DOWN does not delete the config off the server", async (
 			return { head: "serverhead", results: [] };
 		},
 	};
-	const sync = new Sync(app, () => client, () => "mac", () => {}, () => level);
+	const sync = new Sync(app, () => client, () => "mac", () => {});
 	await sync.run();
 
 	const deleted = pushes.filter((c) => c.op === "del").map((c) => c.path);
 	assert.deepEqual(
 		deleted.filter((p) => p.startsWith(".obsidian/")),
 		[],
-		"downgrading the level pushed deletes for config, which would wipe it for every device",
+		"forgetting config pushed deletes for it, which would wipe it for every device",
 	);
 });
 
-test("pull and bootstrap preserve live config despite legacy choices", async t => {
+test("pull and bootstrap preserve live config", async t => {
  const root = await fs.mkdtemp(path.join(os.tmpdir(),"config-migration-"));
  t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const app=new FakeApp(root);
@@ -82,7 +76,7 @@ test("pull and bootstrap preserve live config despite legacy choices", async t =
   async snapshot(){return {head:"head",files:{[configPath]:{hash:"remote",size:10}}};},
   async getContent(){throw new Error("must not download live config");},
  };
- const sync=new Sync(app,()=>client,()=>"Mac",()=>{},()=>({level:"plugins",acceptedPlugins:[],acceptAllPlugins:true}));
+ const sync=new Sync(app,()=>client,()=>"Mac",()=>{});
  await sync.run();
  assert.equal(await app.vault.adapter.read(configPath),'["local"]');
  const {UnknownBaseError}=await import("../../dist-test/entry.mjs");

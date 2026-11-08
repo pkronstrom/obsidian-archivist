@@ -93,7 +93,6 @@ export default class ArchivistPlugin extends Plugin {
 			() => new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
-			undefined,
 			async () => {
 				if (!this.layoutReady) return;
 				try {
@@ -173,11 +172,7 @@ export default class ArchivistPlugin extends Plugin {
 		this.addCommand({
 			id: "rebootstrap",
 			name: "Re-bootstrap from server",
-			callback: async () => {
-				const report = await this.sync.forceRebootstrap();
-				this.reportInventoryRefusal(report);
-				new Notice("archivist: re-bootstrapped");
-			},
+			callback: () => void this.rebootstrap(),
 		});
 
 		// Title case, because this string is a UI LABEL rather than a toast
@@ -508,15 +503,29 @@ export default class ArchivistPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * rebootstrap is the repair tool, so its failures must be visible: it is
+	 * used exactly when the server is unreachable or the token is wrong, and an
+	 * uncaught rejection reached only the console, which a phone does not have.
+	 */
+	async rebootstrap(): Promise<void> {
+		this.setStatus("syncing…");
+		try {
+			const report = await this.sync.forceRebootstrap();
+			this.reportInventoryRefusal(report);
+			new Notice("archivist: re-bootstrapped");
+			this.setStatus(report?.refused.length ? "some changes refused" : "idle");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error("[archivist] re-bootstrap failed", err);
+			this.setStatus("error");
+			new Notice(`archivist: re-bootstrap failed: ${msg}`, 8000);
+		}
+	}
+
 	/** All three of URL, token and vault are needed before anything can sync. */
 	private configured(): boolean {
 		return Boolean(this.settings.serverUrl && loadToken(this.app) && this.settings.vault);
-	}
-
-	/** Force a sync and wait for it. The settings tab needs this before
-	 *  pinning, so a pin names the state the user is actually looking at. */
-	flushSync(): Promise<void> {
-		return this.syncScheduler.flush({ force: true });
 	}
 
 	/** The client, or null when the plugin is not configured yet. */

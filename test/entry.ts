@@ -6,7 +6,7 @@
 // The plugin itself is one bundle, so this only ever bit the harness -- but it
 // bit it silently, as an unhandled rejection three tests later.
 export { Sync, skip, skipDir, conflictName, localOnly, localOnlyDir } from "../src/sync";
-export { Client, UnknownBaseError, requireCurrentIndex } from "../src/client";
+export { Client, ServerError, UnknownBaseError, requireCurrentIndex } from "../src/client";
 
 export { PairingHazardError, rescueFolder, compareVaults } from "../src/pairing";
 
@@ -14,11 +14,8 @@ export { isRescuePath } from "../src/pairing";
 
 export { loadToken, saveToken } from "../src/credentials";
 
-export { configSyncable, DEFAULT_CONFIG_SYNC, CONFIG_DIR } from "../src/config-sync";
 
-export { scanForSecrets } from "../src/secrets";
 
-export { plannedInstalls, installPlugins } from "../src/plugin-install";
 export { missingPluginScopes, scopeWarning, stepUpWarning, syncableVaults } from "../src/scopes";
 export { createSyncScheduler } from "../src/sync-schedule";
 export { Watcher } from "../src/watch";

@@ -188,6 +188,25 @@ check("a local delete racing a remote edit is not silently discarded",
   !resurrected || serverStill,
   `resurrected=${resurrected} serverStill=${serverStill}`);
 check("and the remote edit is not lost either", serverStill);
+// One cycle was not enough to see it: the refused delete used to be resent on
+// the next cycle, against a cursor already past the edit, and then it landed.
+await phone.sync.run();
+await mac.sync.run();
+check("nor on the cycle after",
+  (await mac.app.vault.adapter.exists("notes/d.md")) && (await phone.read("notes/d.md")) === "edited elsewhere\n");
+
+// --- 10b. a rename racing a remote edit converges -------------------------
+await fs.writeFile(path.join(mac.root, "notes/r.md"), "r1\n");
+await mac.sync.run();
+await phone.sync.run();
+await fs.writeFile(path.join(mac.root, "notes/r.md"), "r2 from the mac\n");
+await mac.sync.run();
+await fs.rename(path.join(phone.root, "notes/r.md"), path.join(phone.root, "notes/r-renamed.md"));
+r = await phone.sync.run();
+check("a rename racing a remote edit is refused", r.refused.length === 1, JSON.stringify(r.refused));
+r = await phone.sync.run();
+check("and not resent", r.refused.length === 0 && r.pushed === 0, JSON.stringify(r));
+check("and the remote edit reaches this device", (await phone.read("notes/r.md")) === "r2 from the mac\n");
 
 // --- 11. dotfiles never enter the synced set --------------------------------
 await fs.mkdir(path.join(mac.root, ".obsidian"), { recursive: true });
@@ -343,7 +362,6 @@ async function inventoryDevice(label, platform, plugins) {
   await d.app.vault.adapter.write(`.obsidian/plugins/${id}/data.json`, '{"local":"settings"}');
  }
  d.sync = new Sync(d.app, () => new Client(SERVER,TOKEN,VAULT), () => label, () => {},
-  () => ({level:"plugins",acceptedPlugins:["dataview"],acceptAllPlugins:true}),
   async () => { d.inventory = await publishInventory(d.app,label,platform); });
  return d;
 }

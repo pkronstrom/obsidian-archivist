@@ -59,3 +59,21 @@ test("progress resets the backoff", async () => {
 	await run(h);
 	assert.deepEqual(h.sleeps, [1000, 2000, 1000]);
 });
+
+test("a wake for the head our own sync already recorded does not sync again", async () => {
+	// The wait was opened before our push; it answers "changed" for the commit
+	// that push made, which the cursor already names.
+	let syncs = 0;
+	let w;
+	let waits = 0;
+	const client = {
+		wait: async () => {
+			if (++waits >= 3) w.stop();
+			return { changed: true, head: "ours" };
+		},
+	};
+	w = new Watcher(() => client, () => "ours", async () => { syncs++; }, () => {}, 60, async () => {});
+	w.start();
+	for (let n = 0; n < 200 && w.active; n++) await new Promise((r) => setImmediate(r));
+	assert.equal(syncs, 0);
+});

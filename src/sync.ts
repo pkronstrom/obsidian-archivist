@@ -1,6 +1,14 @@
 import type { App, DataAdapter } from "obsidian";
 import { inventoryPathAllowed, inventoryDirectory } from "./plugin-inventory";
-import { Client, UnknownBaseError, requireCurrentIndex, type Change, type Result } from "./client";
+import {
+	Client,
+	Code,
+	ServerError,
+	UnknownBaseError,
+	requireCurrentIndex,
+	type Change,
+	type Result,
+} from "./client";
 import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
 import {
@@ -19,10 +27,6 @@ import {
 	type PairingChoice,
 	type VaultComparison,
 } from "./pairing";
-import {
-	DEFAULT_CONFIG_SYNC,
-	type ConfigSyncSettings,
-} from "./config-sync";
 
 export type SyncReport = {
 	pulled: number;
@@ -108,15 +112,12 @@ export function localOnlyDir(path: string): boolean {
 	return path.split("/").some((s) => s.endsWith(".local") && s.length > ".local".length);
 }
 
-export function skip(
-	path: string,
-	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
-): boolean {
+export function skip(path: string): boolean {
 	// Before the dotfile rules, and never widened by the inventory allowance: the
 	// user picked this name to stop the file syncing, so it outranks every
 	// other rule including the allowlist that lets some config paths through.
 	if (localOnly(path)) return true;
-	return skipDir(path, config);
+	return skipDir(path);
 }
 
 /**
@@ -129,10 +130,7 @@ export function skip(
  * .local marks FILES the user wants kept local; it was never meant to hide
  * directories.
  */
-export function skipDir(
-	path: string,
-	config: ConfigSyncSettings = DEFAULT_CONFIG_SYNC,
-): boolean {
+export function skipDir(path: string): boolean {
 	// A folder deliberately marked .local is skipped whole -- that IS the
 	// feature. Only the accidental file-grammar match is exempted here.
 	if (localOnlyDir(path)) return true;
@@ -166,8 +164,6 @@ export class Sync {
 		private client: () => Client,
 		private device: () => string,
 		private log: Logger = () => {},
-		/** Legacy call signature; no stored choice enables config transfer. */
-		private config: () => ConfigSyncSettings = () => DEFAULT_CONFIG_SYNC,
 		private prepareLocal: () => Promise<void> = async () => {},
 	) {}
 
@@ -247,7 +243,7 @@ export class Sync {
 			const { head, entries } = await client.changes(state.base);
 			let deferred = 0;
 			for (const e of entries) {
-				if (skip(e.path, this.config())) continue;
+				if (skip(e.path)) continue;
 				const outcome = await this.applyRemote(e, state);
 				if (outcome === "applied") report.pulled++;
 				if (outcome === "deferred") deferred++;
@@ -329,8 +325,28 @@ export class Sync {
 				}
 			}
 			for (const f of needsRefetch) {
-				if (skip(f.path, this.config())) continue;
+				if (skip(f.path)) continue;
 				state.files[f.path] = await this.materialise(f.path, f.hash, f.size);
+			}
+
+			// A refused delete or move is the server keeping something this
+			// device dropped, usually because another device edited it since our
+			// base. The cursor has just moved past that edit, so nothing will
+			// ever pull it: without this the next cycle resends the delete, which
+			// now lands and takes the edit out of head, and a refused move is
+			// resent and refused for ever while this device never sees the edit.
+			//
+			// So every path the op touched is made to match the server again.
+			// That undoes a refused rename here, which loses nothing: a move is
+			// only ever paired from content identical to the last synced
+			// version, and history holds that.
+			for (const c of local) {
+				if (byPath.get(c.path)?.status !== "refused") continue;
+				if (c.op === "del") await this.matchServer(c.path, head, state, null);
+				if (c.op === "move") {
+					await this.matchServer(c.from!, head, state, null);
+					await this.matchServer(c.path, head, state, c.hash!);
+				}
 			}
 		}
 
@@ -411,6 +427,40 @@ export class Sync {
 	}
 
 	/**
+	 * matchServer makes one path hold what the server has at rev, or nothing if
+	 * the server has nothing there.
+	 *
+	 * expect is what the path must hold locally for this to touch it: null for
+	 * absent, otherwise a hash. Anything else means the user changed it after
+	 * the push was computed, and that edit wins; the next cycle sends it.
+	 */
+	private async matchServer(path: string, rev: string, state: SyncState, expect: string | null): Promise<void> {
+		const cur = await this.readState(path);
+		if ((cur?.hash ?? null) !== expect) {
+			this.log(`leaving ${path} as it is: it changed here after the push`);
+			return;
+		}
+		let content: ArrayBuffer;
+		try {
+			content = await this.client().readAt(rev, path);
+		} catch (err) {
+			if (!(err instanceof ServerError && err.code === Code.NotFound)) throw err;
+			if (cur) await this.adapter.remove(path);
+			delete state.files[path];
+			return;
+		}
+		await this.mkdirs(path);
+		await this.adapter.writeBinary(path, content);
+		const st = await this.adapter.stat(path);
+		state.files[path] = {
+			hash: await gitHash(content),
+			mtime: st?.mtime ?? Date.now(),
+			size: st?.size ?? content.byteLength,
+		};
+		this.log(`the server refused a change to ${path}; restored its version`);
+	}
+
+	/**
 	 * rebootstrap adopts the server's state wholesale.
 	 *
 	 * It deliberately DELETES NOTHING. We have no valid base, so a local file
@@ -421,7 +471,7 @@ export class Sync {
 		const { head, files } = await this.client().snapshot();
 		const state: SyncState = { base: head, files: {} };
 		for (const [path, entry] of Object.entries(files)) {
-			if (skip(path, this.config())) continue;
+			if (skip(path)) continue;
 			const cur = await this.readState(path);
 			if (cur && cur.hash === entry.hash) {
 				state.files[path] = cur;
@@ -492,16 +542,16 @@ export class Sync {
 		// is the only way we can know that, which is precisely why a client
 		// with no snapshot must never delete.
 		//
-		// EXCEPT for config paths this device no longer syncs. Turning the level
-		// down from "plugins" to "files", or switching one plugin's opt-in off,
-		// removes those paths from listAll -- and without this guard they would
-		// look exactly like local deletions and be pushed as such, wiping the
-		// shared config off the server and out of every other device. A device
-		// choosing to stop RECEIVING config must never thereby delete it.
+		// EXCEPT for paths sync now excludes: config recorded by the retired
+		// config sync, or a file the user renamed into .local. listAll no
+		// longer returns them, so without this guard they would look exactly
+		// like local deletions and be pushed as such, wiping them off the
+		// server and out of every other device. Stopping syncing a path must
+		// never thereby delete it.
 		if (!isFirstRun(state)) {
 			for (const path of Object.keys(state.files)) {
 				if (seen.has(path)) continue;
-				if (skip(path, this.config())) {
+				if (skip(path)) {
 					// Retired config is forgotten locally, never deleted remotely.
 					delete state.files[path];
 					continue;
@@ -532,7 +582,7 @@ export class Sync {
 		}
 		const server: Record<string, string> = {};
 		for (const [p, e] of Object.entries((await client.snapshot()).files)) {
-			if (skip(p, this.config()) || inventoryPathAllowed(p)) continue;
+			if (skip(p) || inventoryPathAllowed(p)) continue;
 			server[p] = e.hash;
 		}
 		return compareVaults(local, server);
@@ -585,14 +635,28 @@ export class Sync {
 	private async listAll(dir: string): Promise<string[]> {
 		const out: string[] = [];
 		const listing = await this.adapter.list(dir);
-		for (const f of listing.files) {
-			if (!skip(f, this.config())) out.push(f);
+		const listed = new Set(listing.files);
+		for (let f of listing.files) {
+			// The server composes every incoming path (NFC) and answers with
+			// that spelling, so a decomposed name -- what macOS hands out for a
+			// file made outside Obsidian -- never matched its own push result:
+			// it was re-pushed every cycle, and once the composed spelling came
+			// back from another device the next diff paired the two into a move
+			// onto itself, which fails the whole push.
+			//
+			// Only when the composed spelling opens the same file, as it does on
+			// APFS. On a filesystem that keeps the spellings apart, using it
+			// would make the file unreadable, and if both exist they are two
+			// files.
+			const nfc = f.normalize("NFC");
+			if (nfc !== f && !listed.has(nfc) && (await this.adapter.exists(nfc))) f = nfc;
+			if (!skip(f)) out.push(f);
 		}
 		for (const d of listing.folders) {
 			// A directory is worth descending into if anything under it could
 			// sync. skip() answers that for a FILE path; for a directory the
 			// inventory ancestors are excluded as files but contain allowed JSON.
-			if (skipDir(d, this.config()) && !inventoryDirectory(d)) continue;
+			if (skipDir(d) && !inventoryDirectory(d)) continue;
 			out.push(...(await this.listAll(d)));
 		}
 		return out;
@@ -734,8 +798,19 @@ export class Sync {
 	 * this is also the documented way to repoint a device on purpose.
 	 */
 	async forceRebootstrap(): Promise<SyncReport | null> {
-		this.pairingResolved = true;
-		saveState(this.app, await this.rebootstrap());
+		// A cycle in flight would finish by saving the snapshot it loaded,
+		// over the one rebuilt here: the disk would hold the server's files
+		// while the state still named the old hashes, and the next diff would
+		// push every touched file back. Holding `running` also makes any cycle
+		// asked for meanwhile wait for the run() below.
+		if (this.running) throw new Error("a sync is running; try again in a moment");
+		this.running = true;
+		try {
+			this.pairingResolved = true;
+			saveState(this.app, await this.rebootstrap());
+		} finally {
+			this.running = false;
+		}
 		return this.run();
 	}
 }
