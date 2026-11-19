@@ -55,6 +55,16 @@ func main() {
 		return
 	}
 
+	// Creating a vault is offline for the same reason token administration
+	// is: it takes shell access to this host, not a credential on the network.
+	if len(os.Args) > 1 && os.Args[1] == "vault" {
+		if err := runVault(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "archivist:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Subcommands are dispatched before anything else, so they work against a
 	// stopped server -- which is exactly when `check` and `export` matter.
 	if len(os.Args) > 1 && cli.Handles(os.Args[1]) {
@@ -94,6 +104,36 @@ func main() {
 
 // runCommand handles the offline subcommands. They need only the paths, so
 // they deliberately do not require a token.
+// runVault executes `vault add [-root DIR] [-encrypted] NAME`.
+func runVault(args []string) error {
+	if len(args) == 0 || args[0] != "add" {
+		return errors.New("vault: need a subcommand: add")
+	}
+	fs := flag.NewFlagSet("vault add", flag.ContinueOnError)
+	root := fs.String("root", envOr("ARCHIVIST_ROOT", ""), "root holding vaults/ and .archivist/")
+	encrypted := fs.Bool("encrypted", false,
+		"store only content and names encrypted by a client; cannot be changed afterwards")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *root == "" {
+		return errors.New("root directory is required (-root or ARCHIVIST_ROOT)")
+	}
+	if fs.NArg() != 1 {
+		return errors.New("vault add: need exactly one vault name")
+	}
+	name := fs.Arg(0)
+	if err := vaults.Add(vaults.Layout{Root: *root}, name, *encrypted); err != nil {
+		return err
+	}
+	kind := "ordinary"
+	if *encrypted {
+		kind = "encrypted"
+	}
+	fmt.Printf("created %s vault %q\n", kind, name)
+	return nil
+}
+
 func runCommand(name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	root := fs.String("root", envOr("ARCHIVIST_ROOT", ""),

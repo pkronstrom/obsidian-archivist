@@ -68,6 +68,22 @@ type Client struct {
 	// so one check answers for all of them. (`go vet` catches the copy-a-lock
 	// form; the sharing is the reason to prefer this shape anyway.)
 	compat *compatCache
+
+	// kinds remembers which vaults are encrypted. Shared across copies for the
+	// same reason compat is: the kind is a property of the server's vault, not
+	// of the token or the copy asking.
+	kinds *kindCache
+}
+
+// kindCache maps a vault name to whether it is encrypted. Only confirmed
+// answers are stored; a failed lookup is retried on the next call.
+//
+// Entries never expire. A vault's kind is fixed when it is created, so the
+// only way one goes stale is a vault deleted and recreated under the same
+// name -- and then the server's own guards still refuse every plaintext write.
+type kindCache struct {
+	mu        sync.Mutex
+	encrypted map[string]bool
 }
 
 type compatCache struct {
@@ -88,6 +104,7 @@ func New(baseURL, token, device string) *Client {
 		// context the caller passes.
 		http:   &http.Client{},
 		compat: &compatCache{},
+		kinds:  &kindCache{encrypted: map[string]bool{}},
 	}
 }
 
@@ -217,6 +234,58 @@ func (c *Client) Unlock(ctx context.Context, code string) (expiresAt int64, err 
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	if err := c.refuseEncrypted(ctx); err != nil {
+		return nil, err
+	}
+	return c.send(ctx, method, path, body, contentType)
+}
+
+// refuseEncrypted stops every call to an encrypted vault.
+//
+// This client is the relay's: MCP tools, the file API and webhooks all go
+// through it, and all of them deal in note text. An encrypted vault's text
+// exists only on devices holding the key, so there is nothing here the relay
+// could usefully read, and nothing it may write. Refusing in one place, below
+// every caller, is what keeps a future tool from forgetting to.
+//
+// A lookup that fails decides nothing: the call goes out and fails on its own
+// terms, the same way ensureCompatible treats an unreachable server.
+func (c *Client) refuseEncrypted(ctx context.Context) error {
+	if c.vault == "" || c.kinds == nil {
+		return nil
+	}
+	c.kinds.mu.Lock()
+	encrypted, known := c.kinds.encrypted[c.vault]
+	c.kinds.mu.Unlock()
+	if !known {
+		resp, err := c.send(ctx, "GET", "/v1", nil, "")
+		if err != nil {
+			return nil
+		}
+		var index struct {
+			Encrypted bool `json:"encrypted"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&index)
+		resp.Body.Close()
+		if err != nil {
+			return nil
+		}
+		encrypted = index.Encrypted
+		c.kinds.mu.Lock()
+		c.kinds.encrypted[c.vault] = encrypted
+		c.kinds.mu.Unlock()
+	}
+	if encrypted {
+		return &Error{
+			Code:    protocol.CodeEncryptedVault,
+			Message: c.vault + " is an encrypted vault; only a device holding its key can read or write it",
+			Status:  http.StatusUnprocessableEntity,
+		}
+	}
+	return nil
+}
+
+func (c *Client) send(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.qualify(path), body)
 	if err != nil {
 		return nil, err

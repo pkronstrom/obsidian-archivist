@@ -92,3 +92,17 @@ func (r *Repo) SetEncrypted() error {
 	}
 	return nil
 }
+
+// SetWorkTree rewrites core.worktree, relative to the git directory. For a
+// repository initialised against a staging directory that is then renamed.
+func (r *Repo) SetWorkTree(rel string) error {
+	cfg, err := r.git.Config()
+	if err != nil {
+		return fmt.Errorf("repo: reading config: %w", err)
+	}
+	cfg.Core.Worktree = rel
+	if err := r.git.SetConfig(cfg); err != nil {
+		return fmt.Errorf("repo: writing config: %w", err)
+	}
+	return nil
+}
