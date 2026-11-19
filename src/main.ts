@@ -13,6 +13,9 @@ import { loadToken, loadVaultKey, saveVaultKey } from "./credentials";
 import { VaultCrypt, hex, unhex } from "./crypt";
 import { KeyModal } from "./key-modal";
 import { KeyRequiredError } from "./sync";
+import { saveToken } from "./credentials";
+import { SwitchModal } from "./switch-modal";
+import { beginSwitch, finishSwitch, loadSwitchBackup, planSwitch, undoSwitch, type SwitchPlan } from "./switch";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
@@ -174,6 +177,15 @@ export default class ArchivistPlugin extends Plugin {
 			id: "sync-now",
 			name: "Sync now",
 			callback: () => void this.forceSync(),
+		});
+		this.addCommand({
+			id: "switch-vault",
+			name: "Switch this folder to another vault",
+			checkCallback: (checking) => {
+				if (!this.configured() || loadSwitchBackup(this.app)) return false;
+				if (!checking) this.openSwitchModal();
+				return true;
+			},
 		});
 		this.addCommand({
 			id: "revisions",
@@ -399,11 +411,15 @@ export default class ArchivistPlugin extends Plugin {
 			const report = await this.sync.run();
 			if (report === null) return; // coalesced into an in-flight cycle
 			this.lastSyncError = undefined;
+			this.completeSwitch(report);
 			if (report.conflicts.length > 0) {
 				// Conflicts are the one outcome worth interrupting for: a file
-				// now exists that the user has to resolve by hand.
+				// now exists that the user has to resolve by hand. An encrypted
+				// vault's server names no copy; this device made it, beside the
+				// note.
+				const first = report.conflicts[0];
 				new Notice(
-					`archivist: ${report.conflicts.length} conflict(s); see ${report.conflicts[0].conflictPath}`,
+					`archivist: ${report.conflicts.length} conflict(s); see ${first.conflictPath ?? `the copy beside ${first.path}`}`,
 					8000,
 				);
 			}
@@ -586,6 +602,87 @@ export default class ArchivistPlugin extends Plugin {
 	/** The recovery key for the configured vault, or "" when it has none. */
 	vaultKeyHex(): string {
 		return loadVaultKey(this.app, this.settings.vault);
+	}
+
+	/** Open the switch dialog. Also called from the settings tab. */
+	openSwitchModal(): void {
+		const current = this.settings.vault;
+		new SwitchModal(
+			this.app,
+			current,
+			async (vault, token, skipSync) => {
+				await this.loadCrypt();
+				return planSwitch({
+					state: loadState(this.app),
+					current: this.clientOrNull(),
+					// No key here, on purpose: the checks read only the index and
+					// the head, and the key for a new vault does not exist yet.
+					target: new Client(this.settings.serverUrl, token || loadToken(this.app), vault),
+					syncCurrent: () => this.sync.run(),
+					skipSync,
+				});
+			},
+			(plan, token) => void this.applySwitch(plan, token),
+		).open();
+	}
+
+	private async applySwitch(plan: SwitchPlan, token: string): Promise<void> {
+		// Backup first, then the pointers. From here until the first sync with
+		// the new vault succeeds, undoSwitchNow puts everything back.
+		beginSwitch(this.app, { vault: this.settings.vault, token: loadToken(this.app) }, plan.to.vault);
+		this.settings.vault = plan.to.vault;
+		await this.saveSettings();
+		if (token) saveToken(this.app, token);
+		this.crypt = undefined;
+		this.pendingPairing = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		new Notice(`archivist: switched to "${plan.to.vault}"; publishing this folder`, 8000);
+		await this.forceSync();
+	}
+
+	/** The switch that has been started and not yet completed, if any. */
+	pendingSwitch(): { from: string; to: string } | null {
+		const backup = loadSwitchBackup(this.app);
+		return backup ? { from: backup.vault, to: backup.to } : null;
+	}
+
+	/** Go back to the vault this folder synced before the switch. */
+	async undoSwitchNow(): Promise<void> {
+		const backup = undoSwitch(this.app);
+		if (!backup) return;
+		this.settings.vault = backup.vault;
+		await this.saveSettings();
+		saveToken(this.app, backup.token);
+		this.crypt = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		new Notice(`archivist: back on "${backup.vault}"; nothing there was changed`, 8000);
+		await this.forceSync();
+	}
+
+	/**
+	 * The first successful sync after a switch: let the old state go and say
+	 * what was published, so the old vault is deleted on evidence.
+	 */
+	private completeSwitch(report: SyncReport): void {
+		const backup = loadSwitchBackup(this.app);
+		if (!backup || loadState(this.app).vault !== backup.to) return;
+		finishSwitch(this.app);
+		const skipped = report.refused.length
+			? ` ${report.refused.length} could not be published: ` +
+				report.refused
+					.slice(0, 5)
+					.map((r) => `${r.path} (${r.reason ?? "refused"})`)
+					.join(", ") +
+				(report.refused.length > 5 ? ", …" : "") +
+				"."
+			: "";
+		new Notice(
+			`archivist: published ${report.pushed} file(s) to "${backup.to}".${skipped} ` +
+				`"${backup.vault}" is unchanged on the server; delete it there once you have checked the new vault.`,
+			0,
+		);
 	}
 
 	/** Open the key question. Also called from the settings tab. */

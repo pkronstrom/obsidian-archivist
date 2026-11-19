@@ -52,3 +52,12 @@ export {
 } from "../src/crypt";
 export { KeyRequiredError } from "../src/sync";
 export { loadVaultKey, saveVaultKey } from "../src/credentials";
+export {
+	SwitchRefused,
+	planSwitch,
+	beginSwitch,
+	finishSwitch,
+	undoSwitch,
+	loadSwitchBackup,
+} from "../src/switch";
+export { loadState, saveState } from "../src/state";

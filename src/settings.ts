@@ -226,6 +226,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		void this.refreshStatus(dot, detailEl, accessEl);
 
 		this.renderPairingHazard(containerEl);
+		this.renderSwitch(containerEl);
 		this.renderVaultKey(containerEl);
 	}
 
@@ -281,6 +282,36 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					.onClick(() => {
 						this.plugin.openPairingModal();
 					}),
+			);
+	}
+
+	/** A switch that has started and not completed can still be undone. */
+	private renderSwitch(containerEl: HTMLElement): void {
+		const pending = this.plugin.pendingSwitch();
+		if (!pending) {
+			// Only for a folder that has synced: one that never has can simply
+			// have its vault setting changed.
+			if (isFirstRun(loadState(this.app))) return;
+			new Setting(containerEl)
+				.setName("Switch to another vault")
+				.setDesc(
+					"Point this folder at a new, empty vault and publish every note there. " +
+						"This is how an existing vault is moved to an encrypted one.",
+				)
+				.addButton((b) => b.setButtonText("Switch…").onClick(() => this.plugin.openSwitchModal()));
+			return;
+		}
+		new Setting(containerEl)
+			.setName("Switch not finished")
+			.setDesc(
+				`This folder was switched from "${pending.from}" to "${pending.to}" and has not ` +
+					`completed a sync there yet. "${pending.from}" is unchanged.`,
+			)
+			.addButton((b) =>
+				b.setButtonText(`Go back to "${pending.from}"`).onClick(async () => {
+					await this.plugin.undoSwitchNow();
+					this.display();
+				}),
 			);
 	}
 

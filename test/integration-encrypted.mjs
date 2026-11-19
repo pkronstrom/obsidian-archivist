@@ -9,6 +9,8 @@
 //
 //   archivist-server vault add -root <root> -encrypted work
 //   archivist-server vault add -root <root> personal
+//   archivist-server vault add -root <root> old
+//   archivist-server vault add -root <root> -encrypted moved
 //
 // The root is read directly, because the property under test is what the
 // SERVER ends up holding: no readable name and no readable content.
@@ -26,6 +28,11 @@ import {
 	PairingHazardError,
 	ENVELOPE,
 	generateKey,
+	SwitchRefused,
+	planSwitch,
+	beginSwitch,
+	finishSwitch,
+	loadState,
 } from "../dist-test/entry.mjs";
 
 const [, , SERVER, TOKEN, ROOT] = process.argv;
@@ -220,6 +227,51 @@ err = await thrown(() => fooled.sync.run());
 check("a device holding a key refuses a vault that claims to be ordinary", err instanceof Error && /Refusing to sync/.test(err.message), String(err));
 const leaked = await fs.readdir(path.join(ROOT, "vaults", "personal"));
 check("and nothing was uploaded", leaked.filter((f) => !f.startsWith(".")).length === 0, leaked.join(", "));
+
+// --- 10. moving an existing ordinary vault to an encrypted one ---------------
+// The folder stays where it is; only what the plugin remembers is cleared.
+{
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "ve-mover-"));
+	const app = new FakeApp(root);
+	const moveKey = await VaultCrypt.fromKey(generateKey());
+	let current = new Client(SERVER, TOKEN, "old");
+	const sync = new Sync(app, () => current, () => "mover", () => {});
+	const names = ["Plan.md", "People/Anna.md", "People/Ben.md"];
+	for (const n of names) {
+		await fs.mkdir(path.dirname(path.join(root, n)), { recursive: true });
+		await fs.writeFile(path.join(root, n), `private: ${n}\n`);
+	}
+	r = await sync.run();
+	check("the folder syncs with its ordinary vault first", r.pushed === 3, JSON.stringify(r));
+
+	const full = new Client(SERVER, TOKEN, "work");
+	err = await thrown(() => planSwitch({ state: loadState(app), current, target: full, syncCurrent: () => sync.run() }));
+	check("switching to a vault that has content is refused", err instanceof SwitchRefused && /already has content/.test(err.message), String(err));
+
+	const target = new Client(SERVER, TOKEN, "moved");
+	const plan = await planSwitch({ state: loadState(app), current, target, syncCurrent: () => sync.run() });
+	check(
+		"the plan names both vaults and their kinds",
+		plan.from.vault === "old" && !plan.from.encrypted && plan.to.vault === "moved" && plan.to.encrypted && !plan.exposes,
+		JSON.stringify(plan),
+	);
+
+	beginSwitch(app, { vault: "old", token: TOKEN }, "moved");
+	current = new Client(SERVER, TOKEN, "moved", moveKey);
+	r = await sync.run();
+	check("the first sync after the switch publishes every note", r.pushed === 3 && r.pulled === 0 && r.refused.length === 0, JSON.stringify(r));
+	check("the folder now belongs to the new vault", loadState(app).vault === "moved" && loadState(app).encrypted === true);
+	finishSwitch(app);
+
+	const moved = await fs.readdir(path.join(ROOT, "vaults", "moved"), { recursive: true });
+	const movedFiles = moved.map(String).filter((f) => !f.startsWith(".git"));
+	check("the new vault holds one folder and three files, all with encrypted names", movedFiles.length === 4 && movedFiles.every((f) => /^[a-z2-7/]+$/.test(f)), movedFiles.join(", "));
+	const kept = (await fs.readdir(path.join(ROOT, "vaults", "old"), { recursive: true })).map(String);
+	check("the old vault is untouched on the server", names.every((n) => kept.includes(n)), kept.join(", "));
+	check("and the notes on the device were not changed", (await fs.readFile(path.join(root, "People/Anna.md"), "utf8")) === "private: People/Anna.md\n");
+	r = await sync.run();
+	check("the switched folder then settles", r.pushed === 0 && r.pulled === 0, JSON.stringify(r));
+}
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
