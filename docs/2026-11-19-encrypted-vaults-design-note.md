@@ -109,9 +109,12 @@ already archives `config` (`internal/repo/archive.go`), so a restored vault
 comes back encrypted with its guards. There is no precedent to copy: the
 step-up marker of ADR-0003 was removed by ADR-0005.
 
-- The kind is set only when the vault is created, through the server
-  (`POST /v1/vaults` with a flag, and the matching CLI). A directory added by
-  hand under `vaults/` is always an ordinary vault.
+- The kind is set only when the vault is created. The documented way is the
+  offline command `archivist-server vault add -encrypted NAME`, run on the
+  host. A directory added by hand under `vaults/` is always an ordinary vault.
+- `POST /v1/vaults` also accepts `encrypted`, for the tokens minted with
+  `-can-create-vaults`. That capability is off by default and the plugin does
+  not use it.
 - `GET /{vault}/v1` reports `encrypted: true`.
 
 **Key check.** The server stores one value per encrypted vault, also in the git
