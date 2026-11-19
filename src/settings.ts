@@ -5,6 +5,7 @@ import { DeletedModal } from "./deleted-modal";
 import { scopeWarning, stepUpWarning, syncableVaults } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
+import { encodeRecoveryKey, unhex } from "./crypt";
 import { collectInventory, readInventories } from "./plugin-inventory";
 import { renderInventoryView } from "./plugin-inventory-view";
 import { VaultPickerModal } from "./vault-picker";
@@ -225,6 +226,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		void this.refreshStatus(dot, detailEl, accessEl);
 
 		this.renderPairingHazard(containerEl);
+		this.renderVaultKey(containerEl);
 	}
 
 	/** The live checks: index() for reachability, listVaults() for scopes.
@@ -279,6 +281,49 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					.onClick(() => {
 						this.plugin.openPairingModal();
 					}),
+			);
+	}
+
+	/** The key question, deferred, and the recovery key once there is one. */
+	private renderVaultKey(containerEl: HTMLElement): void {
+		const need = this.plugin.pendingKey;
+		if (need) {
+			new Setting(containerEl)
+				.setName("This device is not syncing")
+				.setDesc(
+					`"${need.vault}" is an encrypted vault and this device does not have its key. ` +
+						`Nothing has been sent or received.`,
+				)
+				.addButton((b) =>
+					b
+						.setCta()
+						.setButtonText(need.hasKey ? "Enter the key" : "Create the key")
+						.onClick(() => this.plugin.openKeyModal()),
+				);
+			return;
+		}
+		const key = this.plugin.vaultKeyHex();
+		if (!key) return;
+		// Shown again on request, not hidden: the key is in this device's
+		// local storage either way, so withholding it here protects nothing
+		// and only makes adding a second device harder.
+		const setting = new Setting(containerEl)
+			.setName("Recovery key")
+			.setDesc(
+				"This vault is encrypted. The recovery key adds another device and reads a backup. " +
+					"Keep a copy in your password manager.",
+			);
+		setting
+			.addButton((b) =>
+				b.setButtonText("Show").onClick(async () => {
+					setting.setDesc(await encodeRecoveryKey(unhex(key)));
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Copy").onClick(async () => {
+					await navigator.clipboard.writeText(await encodeRecoveryKey(unhex(key)));
+					new Notice("archivist: recovery key copied");
+				}),
 			);
 	}
 
@@ -374,7 +419,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						return;
 					}
 					try {
-						const client = new Client(serverUrl, token, this.plugin.settings.vault);
+						const client = this.plugin.makeClient();
 						const idx = await client.index();
 						const { files } = await client.snapshot();
 						const entries = Object.values(files);
@@ -575,13 +620,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			)
 			.addButton((b) =>
 				b.setButtonText("Browse deleted").onClick(() => {
-					const { serverUrl, vault } = this.plugin.settings;
+					const { serverUrl } = this.plugin.settings;
 					const token = loadToken(this.app);
 					if (!serverUrl || !token) {
 						new Notice("archivist: set the server URL and token first");
 						return;
 					}
-					new DeletedModal(this.app, () => new Client(serverUrl, token, vault)).open();
+					new DeletedModal(this.app, () => this.plugin.makeClient()).open();
 				}),
 			);
 

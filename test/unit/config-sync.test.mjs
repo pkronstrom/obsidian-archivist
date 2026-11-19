@@ -35,7 +35,7 @@ test("config recorded by the retired config sync is never deleted off the server
 	const pushes = [];
 	const client = {
 		async index() {
-			return { service: "archivist", version: "t", protocol: 2, vault: "personal" };
+			return { service: "archivist", version: "t", protocol: 2, vault: "personal", encrypted: false, keyCheck: "" };
 		},
 		async head() {
 			return "serverhead";
@@ -70,7 +70,7 @@ test("pull and bootstrap preserve live config", async t => {
  const configPath=".obsidian/community-plugins.json";
  await app.vault.adapter.write(configPath,'["local"]');
  const client={
-  async index(){return {service:"archivist",protocol:2,version:"t",vault:"personal"};},
+  async index(){return {service:"archivist",protocol:2,version:"t",vault:"personal",encrypted:false,keyCheck:""};},
   async head(){return "head";},
   async changes(){return {head:"head",entries:[{op:"put",path:configPath,hash:"remote"},{op:"del",path:".obsidian/app.json"}]};},
   async snapshot(){return {head:"head",files:{[configPath]:{hash:"remote",size:10}}};},

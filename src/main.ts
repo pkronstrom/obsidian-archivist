@@ -9,7 +9,10 @@ import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
 import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
-import { loadToken } from "./credentials";
+import { loadToken, loadVaultKey, saveVaultKey } from "./credentials";
+import { VaultCrypt, hex, unhex } from "./crypt";
+import { KeyModal } from "./key-modal";
+import { KeyRequiredError } from "./sync";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
@@ -34,6 +37,18 @@ export default class ArchivistPlugin extends Plugin {
 	 * within seconds and there was no way to defer at all.
 	 */
 	pendingPairing?: PairingHazardError;
+	/** An encrypted vault this device has no key for; see openKeyModal. */
+	pendingKey?: KeyRequiredError;
+	private keyDeferred = false;
+	private keyModal: KeyModal | null = null;
+	/**
+	 * The current vault's cipher, built from the key in local storage.
+	 *
+	 * Cached because building it is async and the client factories are not.
+	 * Tagged with its vault name so a stale one is never used after the vault
+	 * setting changes: a key applied to the wrong vault must fail closed.
+	 */
+	private crypt?: { vault: string; crypt: VaultCrypt };
 	private pairingDeferred = false;
 	/** The pairing modal while it is on screen -- see openPairingModal. */
 	private pairingModal: PairingModal | null = null;
@@ -87,10 +102,13 @@ export default class ArchivistPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		// Before anything can build a client: the revision browser and the
+		// deleted-files list read notes without going through a sync first.
+		await this.loadCrypt().catch((err) => console.error("[archivist] could not load the vault key", err));
 
 		this.sync = new Sync(
 			this.app,
-			() => new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault),
+			() => this.makeClient(),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
 			async () => {
@@ -110,9 +128,7 @@ export default class ArchivistPlugin extends Plugin {
 		// long-polling and not the server's SSE stream.
 		this.watcher = new Watcher(
 			() =>
-				this.configured()
-					? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
-					: null,
+				this.configured() ? this.makeClient() : null,
 			() => loadState(this.app).base,
 			() => this.forceSync(),
 			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
@@ -379,6 +395,7 @@ export default class ArchivistPlugin extends Plugin {
 		}
 		this.setStatus("syncing…");
 		try {
+			await this.loadCrypt();
 			const report = await this.sync.run();
 			if (report === null) return; // coalesced into an in-flight cycle
 			this.lastSyncError = undefined;
@@ -397,6 +414,18 @@ export default class ArchivistPlugin extends Plugin {
 					: `↓${report.pulled} ↑${report.pushed}`,
 			);
 		} catch (err) {
+			if (err instanceof KeyRequiredError) {
+				// A question, like the pairing hazard: nothing was read or
+				// written, and the device stays paused until it is answered.
+				this.pendingKey = err;
+				if (this.keyDeferred) {
+					this.setStatus("paused — needs its key");
+					return;
+				}
+				this.setStatus("needs its key");
+				this.openKeyModal();
+				return;
+			}
 			if (err instanceof PairingHazardError) {
 				// Not an error to report and move past: it is a question, and
 				// until it is answered this device does not sync at all.
@@ -530,9 +559,66 @@ export default class ArchivistPlugin extends Plugin {
 
 	/** The client, or null when the plugin is not configured yet. */
 	private clientOrNull(): Client | null {
-		return this.configured()
-			? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
-			: null;
+		return this.configured() ? this.makeClient() : null;
+	}
+
+	/** The client for the configured vault, with its key when it has one.
+	 *  Every client that reads or writes notes must come from here. */
+	makeClient(): Client {
+		const vault = this.settings.vault;
+		return new Client(
+			this.settings.serverUrl,
+			loadToken(this.app),
+			vault,
+			this.crypt?.vault === vault ? this.crypt.crypt : undefined,
+		);
+	}
+
+	/** Build the cipher for the configured vault if this device holds its key.
+	 *  Called before each sync, so a changed vault setting is picked up. */
+	private async loadCrypt(): Promise<void> {
+		const vault = this.settings.vault;
+		if (this.crypt?.vault === vault) return;
+		const key = loadVaultKey(this.app, vault);
+		this.crypt = key ? { vault, crypt: await VaultCrypt.fromKey(unhex(key)) } : undefined;
+	}
+
+	/** The recovery key for the configured vault, or "" when it has none. */
+	vaultKeyHex(): string {
+		return loadVaultKey(this.app, this.settings.vault);
+	}
+
+	/** Open the key question. Also called from the settings tab. */
+	openKeyModal(): void {
+		const need = this.pendingKey;
+		if (!need || this.keyModal) return;
+		const modal = new KeyModal(
+			this.app,
+			need,
+			(key) => void this.adoptKey(need.vault, key),
+			() => {
+				this.keyDeferred = true;
+				this.setStatus("paused — needs its key");
+				new Notice(
+					"archivist: not syncing this encrypted vault until it has its key. " +
+						"Reopen this in Archivist's settings when you are ready.",
+					8000,
+				);
+			},
+		);
+		modal.onClosed = () => {
+			this.keyModal = null;
+		};
+		this.keyModal = modal;
+		modal.open();
+	}
+
+	private async adoptKey(vault: string, key: Uint8Array): Promise<void> {
+		saveVaultKey(this.app, vault, hex(key));
+		this.crypt = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		await this.forceSync();
 	}
 
 	/**

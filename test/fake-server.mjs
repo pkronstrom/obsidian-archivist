@@ -63,7 +63,7 @@ export class FakeServer {
 		const srv = this;
 		return {
 			async index() {
-				return { service: "archivist", version: "test", protocol: 2, vault: "personal" };
+				return { service: "archivist", version: "test", protocol: 2, vault: "personal", encrypted: false, keyCheck: "" };
 			},
 			async head() {
 				return srv.head;

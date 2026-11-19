@@ -36,3 +36,19 @@ export { openSyncedNote } from "../src/open-synced";
 
 export * from "../src/plugin-inventory";
 export * from "../src/plugin-inventory-view";
+
+export {
+	VaultCrypt,
+	NameTooLongError,
+	WrongKeyError,
+	ENVELOPE,
+	generateKey,
+	encodeRecoveryKey,
+	decodeRecoveryKey,
+	base32,
+	unbase32,
+	hex,
+	unhex,
+} from "../src/crypt";
+export { KeyRequiredError } from "../src/sync";
+export { loadVaultKey, saveVaultKey } from "../src/credentials";

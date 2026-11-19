@@ -22,3 +22,28 @@ export function loadToken(app: App): string {
 export function saveToken(app: App, token: string): void {
 	app.saveLocalStorage(KEY, token);
 }
+
+/**
+ * Vault keys, by server vault name. Device-local for the same reason the token
+ * is, and more so: a key that synced would sit on the server next to the
+ * ciphertext it opens.
+ *
+ * Not protected beyond that. The device already holds every note in plaintext
+ * in its vault folder, so the key at rest here gives away nothing extra.
+ */
+const KEYS = "archivist.vaultKeys";
+
+function loadKeys(app: App): Record<string, string> {
+	const raw = app.loadLocalStorage(KEYS);
+	return raw && typeof raw === "object" ? (raw as Record<string, string>) : {};
+}
+
+/** The key for a vault as lowercase hex, or "" when this device has none. */
+export function loadVaultKey(app: App, vault: string): string {
+	const key = loadKeys(app)[vault];
+	return typeof key === "string" ? key : "";
+}
+
+export function saveVaultKey(app: App, vault: string, keyHex: string): void {
+	app.saveLocalStorage(KEYS, { ...loadKeys(app), [vault]: keyHex });
+}

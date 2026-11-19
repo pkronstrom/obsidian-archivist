@@ -544,3 +544,11 @@
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
 }
+
+/* The key dialog for an encrypted vault. */
+.archivist-key-box {
+	width: 100%;
+	font-family: var(--font-monospace);
+	resize: none;
+}
+.archivist-key-problem { color: var(--text-error); }

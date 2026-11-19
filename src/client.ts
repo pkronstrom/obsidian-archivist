@@ -1,4 +1,5 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
+import type { VaultCrypt } from "./crypt";
 
 export type Entry = { hash: string; size: number };
 export type Change = {
@@ -26,7 +27,16 @@ export type Result = {
 };
 
 export const PROTOCOL_VERSION = 2;
-export type ServerIndex = { service: string; version: string; protocol: number; vault: string };
+export type ServerIndex = {
+	service: string;
+	version: string;
+	protocol: number;
+	vault: string;
+	/** The server stores only what a client encrypted, and holds no key. */
+	encrypted: boolean;
+	/** What a key is verified against. "" until the first device installs it. */
+	keyCheck: string;
+};
 
 export function requireCurrentIndex(value: unknown): ServerIndex {
 	if (!value || typeof value !== "object") {
@@ -43,7 +53,9 @@ export function requireCurrentIndex(value: unknown): ServerIndex {
 		index.service !== "archivist" ||
 		typeof index.version !== "string" ||
 		!index.version ||
-		typeof index.vault !== "string"
+		typeof index.vault !== "string" ||
+		typeof index.encrypted !== "boolean" ||
+		typeof index.keyCheck !== "string"
 	) {
 		throw new Error("server response is missing current index metadata");
 	}
@@ -69,6 +81,8 @@ export const Code = {
 	Internal: "internal",
 	/** A precondition failure: the head named is no longer the tip. */
 	StaleHead: "stale_head",
+	/** A second attempt to install an encrypted vault's key check. */
+	KeyCheckSet: "key_check_set",
 } as const;
 
 /** One point in a path's history, as /v1/history returns it. */
@@ -156,7 +170,31 @@ export class Client {
 		 * cannot reach that if the vault is part of the base URL.
 		 */
 		private vault: string,
+		/**
+		 * Set for an encrypted vault. Then this class is the boundary: paths
+		 * and downloaded content are plaintext above it and ciphertext below,
+		 * so the rest of the plugin never sees an encrypted name.
+		 *
+		 * Uploads are the exception. putContent takes bytes that are already
+		 * sealed, because the caller needs their hash before it can upload.
+		 */
+		readonly crypt?: VaultCrypt,
 	) {}
+
+	private enc(path: string): string {
+		return this.crypt ? this.crypt.encryptPath(path) : path;
+	}
+
+	/** undefined for a name this key did not produce. Callers drop those: a
+	 *  file we cannot name is one we cannot sync, and must not delete. */
+	private dec(path: string): string | undefined {
+		if (!this.crypt) return path;
+		try {
+			return this.crypt.decryptPath(path);
+		} catch {
+			return undefined;
+		}
+	}
 
 	/**
 	 * The ONE place a request URL is built, called only by call(). That is what
@@ -228,7 +266,7 @@ export class Client {
 		limit = 50,
 		before?: string,
 	): Promise<{ revisions: Revision[]; hasMore: boolean; next?: string }> {
-		let q = `/v1/history?path=${encodeURIComponent(path)}&limit=${limit}`;
+		let q = `/v1/history?path=${encodeURIComponent(this.enc(path))}&limit=${limit}`;
 		if (before) q += `&before=${encodeURIComponent(before)}`;
 		const j = (await this.call("GET", q)).json;
 		return {
@@ -248,20 +286,28 @@ export class Client {
 	 * contain.
 	 */
 	async readAt(rev: string, path: string): Promise<ArrayBuffer> {
-		const escaped = path.split("/").map(encodeURIComponent).join("/");
+		const escaped = this.enc(path).split("/").map(encodeURIComponent).join("/");
 		const res = await this.call("GET", `/v1/at/${encodeURIComponent(rev)}/${escaped}`);
-		return res.arrayBuffer;
+		return this.crypt ? this.crypt.open(res.arrayBuffer) : res.arrayBuffer;
 	}
 
 	/** deleted lists paths history holds that head does not, newest first. */
 	async deleted(): Promise<DeletedPath[]> {
 		const j = (await this.call("GET", "/v1/deleted")).json;
-		return (j?.deleted ?? []) as DeletedPath[];
+		const out: DeletedPath[] = [];
+		for (const d of (j?.deleted ?? []) as DeletedPath[]) {
+			const path = this.dec(d.path);
+			if (path !== undefined) out.push({ ...d, path });
+		}
+		return out;
 	}
 
 	/** pins lists named restore points. `path` filters to one file; "*" asks
 	 *  for vault-wide pins only; omitted returns every pin. */
 	async pins(path?: string): Promise<Pin[]> {
+		// The server keeps pin names as plaintext in the vault, so an encrypted
+		// vault has no pins.
+		if (this.crypt) return [];
 		const q = path ? `/v1/pins?path=${encodeURIComponent(path)}` : "/v1/pins";
 		const j = (await this.call("GET", q)).json;
 		return (j?.pins ?? []) as Pin[];
@@ -276,6 +322,7 @@ export class Client {
 	 * flush and retry once.
 	 */
 	async pin(name: string, expectedHead: string, path?: string): Promise<{ id: string; head: string }> {
+		if (this.crypt) throw new Error("pins are not available in an encrypted vault");
 		const j = (await this.call("POST", "/v1/pin", { name, path, expectedHead })).json;
 		return { id: j?.id as string, head: j?.head as string };
 	}
@@ -361,12 +408,28 @@ export class Client {
 
 	async snapshot(): Promise<{ head: string; files: Record<string, Entry> }> {
 		const j = (await this.call("GET", "/v1/snapshot")).json;
-		return { head: j.head as string, files: (j.files ?? {}) as Record<string, Entry> };
+		const raw = (j.files ?? {}) as Record<string, Entry>;
+		if (!this.crypt) return { head: j.head as string, files: raw };
+		const files: Record<string, Entry> = {};
+		for (const [p, e] of Object.entries(raw)) {
+			const path = this.dec(p);
+			if (path !== undefined) files[path] = e;
+		}
+		return { head: j.head as string, files };
 	}
 
 	async changes(since: string): Promise<{ head: string; entries: Change[] }> {
 		const j = (await this.call("GET", `/v1/changes?since=${encodeURIComponent(since)}`)).json;
-		return { head: j.head as string, entries: (j.entries ?? []) as Change[] };
+		const raw = (j.entries ?? []) as Change[];
+		if (!this.crypt) return { head: j.head as string, entries: raw };
+		const entries: Change[] = [];
+		for (const e of raw) {
+			const path = this.dec(e.path);
+			const from = e.from === undefined ? undefined : this.dec(e.from);
+			if (path === undefined || (e.from !== undefined && from === undefined)) continue;
+			entries.push({ ...e, path, from });
+		}
+		return { head: j.head as string, entries };
 	}
 
 	/** Returns the subset the server does not have, so we upload only those. */
@@ -380,8 +443,18 @@ export class Client {
 		await this.call("PUT", `/v1/content/${hash}`, undefined, content);
 	}
 
+	/** Plaintext, whatever the vault kind. `hash` names what the server holds,
+	 *  which for an encrypted vault is the ciphertext. */
 	async getContent(hash: string): Promise<ArrayBuffer> {
-		return (await this.call("GET", `/v1/content/${hash}`)).arrayBuffer;
+		const body = (await this.call("GET", `/v1/content/${hash}`)).arrayBuffer;
+		return this.crypt ? this.crypt.open(body) : body;
+	}
+
+	/** Install the value later devices verify their key against. The server
+	 *  accepts it once; a second device gets Code.KeyCheckSet and must be
+	 *  given the existing key instead. */
+	async putKeyCheck(check: string): Promise<void> {
+		await this.call("PUT", "/v1/keycheck", { check });
 	}
 
 	async push(
@@ -389,8 +462,15 @@ export class Client {
 		device: string,
 		changes: Change[],
 	): Promise<{ head: string; results: Result[] }> {
-		const j = (await this.call("POST", "/v1/push", { base, device, changes })).json;
-		return { head: j.head as string, results: (j.results ?? []) as Result[] };
+		const sent = this.crypt
+			? changes.map((c) => ({ ...c, path: this.enc(c.path), from: c.from === undefined ? undefined : this.enc(c.from) }))
+			: changes;
+		const j = (await this.call("POST", "/v1/push", { base, device, changes: sent })).json;
+		const raw = (j.results ?? []) as Result[];
+		if (!this.crypt) return { head: j.head as string, results: raw };
+		// Every result path is one we just encrypted, so it decrypts from cache.
+		const results = raw.map((r) => ({ ...r, path: this.dec(r.path) ?? r.path }));
+		return { head: j.head as string, results };
 	}
 }
 

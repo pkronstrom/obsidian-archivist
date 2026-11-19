@@ -13,7 +13,7 @@ function fakeClient({ head = "", vault = "personal", files = {} } = {}) {
 		calls: [],
 		async index() {
 			this.calls.push("index");
-			return { service: "archivist", version: "test", protocol: 2, vault };
+			return { service: "archivist", version: "test", protocol: 2, vault, encrypted: false, keyCheck: "" };
 		},
 		async head() {
 			this.calls.push("head");
