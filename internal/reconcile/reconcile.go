@@ -12,6 +12,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,6 +58,9 @@ type Reconciler struct {
 	written map[string]writeRecord
 
 	events *broadcaster
+
+	// encrypted is the vault kind. Set once at open.
+	encrypted bool
 
 	// normalizeNFC canonicalises incoming paths. Set once at startup.
 	normalizeNFC bool
@@ -325,6 +329,12 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		res.Status, res.Reason = StatusRefused, "excluded from sync"
 		return res, nil
 	}
+	// Skip above matches plaintext names and never fires on encrypted ones, so
+	// in an encrypted vault the allowlist is the whole path policy.
+	if rc.encrypted && !protocol.ValidEncryptedPath(ch.Path) {
+		res.Status, res.Reason = StatusRefused, "not an encrypted name"
+		return res, nil
+	}
 
 	switch ch.Op {
 	case "del":
@@ -352,6 +362,12 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		if err != nil {
 			return res, fmt.Errorf("reconcile: content %s for %s was never uploaded: %w",
 				ch.Hash, ch.Path, err)
+		}
+		// The upload already refused plaintext. This is the second layer, for
+		// a blob that reached the object store some other way.
+		if rc.encrypted && !protocol.HasEnvelope(content) {
+			res.Status, res.Reason = StatusRefused, "content is not encrypted"
+			return res, nil
 		}
 		if !moved[ch.Path] {
 			res = rc.resultFor(res, content)
@@ -383,6 +399,10 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		// not sync, and deleting the original on the way.
 		if vault.Skip(ch.From) {
 			res.Status, res.Reason = StatusRefused, "excluded from sync: "+ch.From
+			return res, nil
+		}
+		if rc.encrypted && !protocol.ValidEncryptedPath(ch.From) {
+			res.Status, res.Reason = StatusRefused, "not an encrypted name: "+ch.From
 			return res, nil
 		}
 		if moved[ch.From] || moved[ch.Path] {
@@ -438,6 +458,19 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 		res.Status = StatusApplied
 		res = rc.resultFor(res, theirs)
 		return res, rc.write(path, theirs)
+	}
+
+	// Ciphertext has no lines to merge, and the server cannot name a conflict
+	// copy: a name it invents is not one the client can decrypt. So it keeps
+	// its own version, writes nothing, and says what it kept. The client makes
+	// the copy, under a name it can read.
+	if rc.encrypted {
+		if bytes.Equal(ours, theirs) {
+			res.Status = StatusApplied
+			return rc.resultFor(res, ours), nil
+		}
+		res.Status = StatusConflict
+		return rc.resultFor(res, ours), nil
 	}
 
 	// An inventory describes one installation at one point in time. Never
@@ -562,6 +595,12 @@ func longestBacktickRun(b []byte) int {
 }
 
 func (rc *Reconciler) write(path string, content []byte) error {
+	// Every server write goes through here, so this holds whatever a caller
+	// above forgot to check. Reaching it is a bug, hence an error rather than
+	// a refusal.
+	if rc.encrypted && (!protocol.HasEnvelope(content) || !protocol.ValidEncryptedPath(path)) {
+		return fmt.Errorf("reconcile: refusing a plaintext write to %s in an encrypted vault", path)
+	}
 	if err := rc.v.Write(path, content); err != nil {
 		return err
 	}
@@ -632,6 +671,11 @@ func sanitise(s string) string {
 // SetNormalizeNFC turns path canonicalisation on. Off by default: it changes
 // what paths writes land on, so it is opt-in and set once at startup.
 func (rc *Reconciler) SetNormalizeNFC(on bool) { rc.normalizeNFC = on }
+
+// SetEncrypted makes this a reconciler for an encrypted vault: only enveloped
+// content at encrypted names is written, and nothing is merged. Set once, when
+// the vault is opened.
+func (rc *Reconciler) SetEncrypted(on bool) { rc.encrypted = on }
 
 // SetGuard installs the write guard. Nil disables it.
 func (rc *Reconciler) SetGuard(g *guard.Guard) { rc.g = g }

@@ -103,6 +103,17 @@ const (
 	// encrypted vault. Distinct from malformed because the request was
 	// well-formed: the client is one that does not encrypt.
 	CodePlaintextRefused = "plaintext_refused"
+	// CodeNoKey is an encrypted vault whose key check has not been installed.
+	// Content is refused until it is, so no ciphertext can exist under a key
+	// nobody recorded.
+	CodeNoKey = "no_key"
+	// CodeKeyCheckSet is a second attempt to install a key check. It is
+	// write-once: two devices pairing at the same moment must not both
+	// believe they generated the vault's key.
+	CodeKeyCheckSet = "key_check_set"
+	// CodeEncryptedVault is a route that reads or writes plaintext on the
+	// server, called on a vault whose content the server cannot read.
+	CodeEncryptedVault = "encrypted_vault"
 )
 
 // Envelope is the literal prefix of every object in an encrypted vault.
@@ -111,6 +122,49 @@ const (
 // can refuse plaintext structurally, without guessing from entropy -- a
 // heuristic that fails open on short content.
 const Envelope = "archivist-vault/v1\n"
+
+// ValidEncryptedPath reports whether every segment of path is lowercase
+// base32, which is all an encrypted name can be.
+//
+// The server's usual path policy matches on plaintext names and never fires on
+// encrypted ones, so in an encrypted vault this allowlist is the path policy.
+// It is what stops a client that forgot to encrypt a name from writing a
+// readable one into history.
+func ValidEncryptedPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	run := 0
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		switch {
+		case c == '/':
+			if run == 0 {
+				return false
+			}
+			run = 0
+		case (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7'):
+			run++
+		default:
+			return false
+		}
+	}
+	return run > 0
+}
+
+// ValidKeyCheck reports whether s is a key check: 32 bytes as lowercase hex.
+func ValidKeyCheck(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
 
 // HasEnvelope reports whether content begins with Envelope.
 func HasEnvelope(content []byte) bool {

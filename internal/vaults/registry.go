@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/pkronstrom/obsidian-archivist/internal/repo"
 	"github.com/pkronstrom/obsidian-archivist/internal/vault"
 	"github.com/pkronstrom/obsidian-archivist/internal/watcher"
+	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
 // ErrNotFound means no such vault. Distinguished from every other failure so
@@ -237,8 +241,18 @@ func (r *Registry) openLocked(name string) (*Instance, error) {
 		v.Close()
 		return nil, err
 	}
+	encrypted, err := rp.Encrypted()
+	if err != nil {
+		v.Close()
+		return nil, fmt.Errorf("vaults: reading the kind of %s: %w", name, err)
+	}
 	// The same exclusion policy the single-vault server installed, per vault.
 	rp.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	if encrypted {
+		// This is where files enter git, so it is where a file dropped into
+		// the directory by hand is stopped: the watcher commits through it.
+		rp.SetSyncable(func(p string) bool { return encryptedOnDisk(vaultDir, p) })
+	}
 
 	if pm, err := repo.ReadPruneMap(gitDir); err != nil {
 		v.Close()
@@ -261,11 +275,7 @@ func (r *Registry) openLocked(name string) (*Instance, error) {
 		})
 	}
 
-	encrypted, err := rp.Encrypted()
-	if err != nil {
-		v.Close()
-		return nil, fmt.Errorf("vaults: reading the kind of %s: %w", name, err)
-	}
+	rc.SetEncrypted(encrypted)
 
 	inst := &Instance{Name: name, Encrypted: encrypted, Vault: v, Repo: rp, Reconciler: rc, Guard: g, Pins: pins.NewResolver(rp)}
 	r.open[name] = inst
@@ -357,4 +367,26 @@ func (r *Registry) Close() error {
 	}
 	r.open = map[string]*Instance{}
 	return nil
+}
+
+// encryptedOnDisk reports whether the file at rel may be committed to an
+// encrypted vault: an encrypted name, and content that starts with the
+// envelope. A missing file passes, so a deletion can still be staged.
+func encryptedOnDisk(vaultDir, rel string) bool {
+	if !protocol.ValidEncryptedPath(rel) {
+		return false
+	}
+	f, err := os.Open(filepath.Join(vaultDir, filepath.FromSlash(rel)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, len(protocol.Envelope))
+	if _, err := io.ReadFull(f, head); err != nil {
+		return false
+	}
+	return protocol.HasEnvelope(head)
 }

@@ -113,7 +113,11 @@ func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
 		}
-		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.SkipStepUp, rt.handle))
+		handle := rt.handle
+		if rt.PlainOnly {
+			handle = plainOnly(handle)
+		}
+		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.SkipStepUp, handle))
 	}
 
 	// healthz sits OUTSIDE the auth middleware, deliberately and alone. It is
@@ -480,11 +484,69 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults
 			inst.Name+" is an encrypted vault and this content is not encrypted")
 		return
 	}
+	if inst.Encrypted {
+		check, err := inst.Repo.KeyCheck()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+			return
+		}
+		if check == "" {
+			fail(w, http.StatusConflict, protocol.CodeNoKey,
+				inst.Name+" has no key check yet; install one before uploading")
+			return
+		}
+	}
 	if _, err := inst.Repo.WriteBlob(body); err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"hash": actual})
+}
+
+// plainOnly refuses a route on an encrypted vault.
+func plainOnly(next func(http.ResponseWriter, *http.Request, *vaults.Instance)) func(http.ResponseWriter, *http.Request, *vaults.Instance) {
+	return func(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+		if inst.Encrypted {
+			fail(w, http.StatusUnprocessableEntity, protocol.CodeEncryptedVault,
+				inst.Name+" is an encrypted vault; the server cannot read or write its notes")
+			return
+		}
+		next(w, r, inst)
+	}
+}
+
+// putKeyCheck installs the value clients verify their key against.
+//
+// Write-once, and that is the point: it is what makes key initialisation
+// atomic. The first device to arrive installs it; every later one is told a
+// key exists and must enter that key instead of generating another.
+func (s *Server) putKeyCheck(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	if !inst.Encrypted {
+		fail(w, http.StatusUnprocessableEntity, protocol.CodeMalformed,
+			inst.Name+" is not an encrypted vault")
+		return
+	}
+	var req struct {
+		Check string `json:"check"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		failDecode(w, err)
+		return
+	}
+	if !protocol.ValidKeyCheck(req.Check) {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "check must be 64 lowercase hex characters")
+		return
+	}
+	if err := inst.Repo.SetKeyCheck(req.Check); err != nil {
+		if errors.Is(err, repo.ErrKeyCheckSet) {
+			fail(w, http.StatusConflict, protocol.CodeKeyCheckSet,
+				inst.Name+" already has a key; enter that key instead of generating one")
+			return
+		}
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"keyCheck": req.Check})
 }
 
 func (s *Server) getContent(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
@@ -1051,6 +1113,10 @@ type route struct {
 	// on this table for the same reason Scope does: the table IS the mux, so an
 	// exemption cannot exist without being visible next to what it exempts.
 	SkipStepUp bool `json:"-"`
+	// PlainOnly marks a route where the server itself reads or writes note
+	// content. An encrypted vault refuses it: the server has no key, and a
+	// write would put plaintext into history.
+	PlainOnly bool `json:"-"`
 	// NoScope marks a route that needs authentication but no verb. Only unlock:
 	// requiring read there would stop a write-only token unlocking to write, and
 	// a caller who cannot read the vault gains nothing by unlocking it. A field
@@ -1093,19 +1159,20 @@ func (s *Server) routes() []route {
 		// unreferenced blob still consumes disk, and the write guards count
 		// writes per path at push time -- they never see an orphan.
 		{Method: "PUT", Path: "/v1/content/{hash}", Does: "upload content; 400 if it does not hash to {hash}", Scope: auth.ScopeWrite, handle: s.putContent},
+		{Method: "PUT", Path: "/v1/keycheck", Does: "{check} install an encrypted vault's key check; once only", Scope: auth.ScopeWrite, handle: s.putKeyCheck},
 		{Method: "GET", Path: "/v1/content/{hash}", Does: "download content by hash", Scope: auth.ScopeRead, handle: s.getContent},
 		// Delete is an op INSIDE the change set, so this route needs write and
 		// the handler additionally checks delete. See push.
 		{Method: "POST", Path: "/v1/push", Does: "{base,device,changes:[...]} apply a change set", Scope: auth.ScopeWrite, handle: s.push},
-		{Method: "POST", Path: "/v1/note/append", Does: "{path,content,content_revision?} atomically append text to a note", Scope: auth.ScopeWrite, handle: s.appendNote},
-		{Method: "POST", Path: "/v1/note/edit", Does: "{path,content_revision,old_text,new_text} atomically replace one exact match", Scope: auth.ScopeWrite, handle: s.editNote},
+		{Method: "POST", Path: "/v1/note/append", Does: "{path,content,content_revision?} atomically append text to a note", Scope: auth.ScopeWrite, handle: s.appendNote, PlainOnly: true},
+		{Method: "POST", Path: "/v1/note/edit", Does: "{path,content_revision,old_text,new_text} atomically replace one exact match", Scope: auth.ScopeWrite, handle: s.editNote, PlainOnly: true},
 		{Method: "GET", Path: "/v1/events", Does: "SSE:one per commit with changed paths, kind, size", Scope: auth.ScopeRead, handle: s.events},
 		{Method: "GET", Path: "/v1/wait", Does: "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", Scope: auth.ScopeRead, handle: s.wait},
 		{Method: "GET", Path: "/v1/history", Does: "?path=&limit= revisions that touched a path", Scope: auth.ScopeRead, handle: s.history},
 		// Pins are ordinary vault data, so their scopes are the ordinary ones:
 		// creating a pin is a put to one tracked file, nothing more.
-		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins},
-		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin},
+		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins, PlainOnly: true},
+		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin, PlainOnly: true},
 		// Discovery only: every version has always been in the pack, and /v1/at
 		// has always been able to serve one. This answers "what did I lose",
 		// which was previously answerable only by knowing the path already.
@@ -1130,6 +1197,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		Path   string `json:"path"`
 		Does   string `json:"does"`
 	}
+	keyCheck, err := inst.Repo.KeyCheck()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
 	out := []doc{}
 	for _, rt := range s.routes() {
 		out = append(out, doc{rt.Method, rt.Path, rt.Does})
@@ -1148,8 +1220,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		// A client that does not encrypt must not sync this vault at all, and
 		// one that does must not send ciphertext to an ordinary one.
 		"encrypted": inst.Encrypted,
-		"version":   version.Version,
-		"protocol":  protocol.Version,
+		// "" until the first device installs it. A client verifies an entered
+		// key against this before it reads or writes anything.
+		"keyCheck": keyCheck,
+		"version":  version.Version,
+		"protocol": protocol.Version,
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
