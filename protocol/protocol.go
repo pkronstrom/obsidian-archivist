@@ -99,7 +99,23 @@ const (
 	// first. Distinct from forbidden so a client can turn it into a request for
 	// a code rather than reporting a permanent refusal.
 	CodeStepUpRequired = "step_up_required"
+	// CodePlaintextRefused is content without the envelope, sent to an
+	// encrypted vault. Distinct from malformed because the request was
+	// well-formed: the client is one that does not encrypt.
+	CodePlaintextRefused = "plaintext_refused"
 )
+
+// Envelope is the literal prefix of every object in an encrypted vault.
+//
+// The server holds no key and never parses past this. It exists so the server
+// can refuse plaintext structurally, without guessing from entropy -- a
+// heuristic that fails open on short content.
+const Envelope = "archivist-vault/v1\n"
+
+// HasEnvelope reports whether content begins with Envelope.
+func HasEnvelope(content []byte) bool {
+	return len(content) >= len(Envelope) && string(content[:len(Envelope)]) == Envelope
+}
 
 // MaxUploadBytes bounds a single content upload. Beyond it the server answers
 // 413 rather than truncating.

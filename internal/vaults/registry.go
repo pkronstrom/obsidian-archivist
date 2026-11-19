@@ -29,7 +29,10 @@ func IsNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
 // a vault-wide byte budget shared across two vaults would let a runaway client
 // in one throttle writes in the other.
 type Instance struct {
-	Name       string
+	Name string
+	// Encrypted is the vault kind, read once at open. It cannot change while
+	// the vault is open: it is set only at creation, before the first commit.
+	Encrypted  bool
 	Vault      *vault.Vault
 	Repo       *repo.Repo
 	Reconciler *reconcile.Reconciler
@@ -168,7 +171,7 @@ func (r *Registry) Get(name string) (*Instance, error) {
 }
 
 // Create makes a new vault. Callers must have checked the capability first.
-func (r *Registry) Create(name string) error {
+func (r *Registry) Create(name string, encrypted bool) error {
 	if err := ValidName(name); err != nil {
 		return err
 	}
@@ -200,12 +203,24 @@ func (r *Registry) Create(name string) error {
 	}
 	r.cachedAt = time.Time{}
 
+	// The kind is written before the vault is opened, so there is no moment at
+	// which an encrypted vault is served without its guards.
+	if encrypted {
+		rp, err := repo.Open(r.layout.VaultDir(name), r.layout.GitDir(name))
+		if err != nil {
+			return err
+		}
+		if err := rp.SetEncrypted(); err != nil {
+			return err
+		}
+	}
+
 	inst, err := r.openLocked(name)
 	if err != nil {
 		return err
 	}
 	r.startWatcherLocked(inst)
-	r.opts.Log.Info("vault created", "vault", name, "dir", r.layout.VaultDir(name))
+	r.opts.Log.Info("vault created", "vault", name, "dir", r.layout.VaultDir(name), "encrypted", encrypted)
 	return nil
 }
 
@@ -246,7 +261,13 @@ func (r *Registry) openLocked(name string) (*Instance, error) {
 		})
 	}
 
-	inst := &Instance{Name: name, Vault: v, Repo: rp, Reconciler: rc, Guard: g, Pins: pins.NewResolver(rp)}
+	encrypted, err := rp.Encrypted()
+	if err != nil {
+		v.Close()
+		return nil, fmt.Errorf("vaults: reading the kind of %s: %w", name, err)
+	}
+
+	inst := &Instance{Name: name, Encrypted: encrypted, Vault: v, Repo: rp, Reconciler: rc, Guard: g, Pins: pins.NewResolver(rp)}
 	r.open[name] = inst
 
 	// A vault opened after StartWatchers -- discovered at runtime or just

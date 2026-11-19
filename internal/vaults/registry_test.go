@@ -115,7 +115,7 @@ func TestCreateRefusesPastTheLimit(t *testing.T) {
 	}
 	defer reg.Close()
 
-	if err := reg.Create("c"); err == nil {
+	if err := reg.Create("c", false); err == nil {
 		t.Fatal("creation past ARCHIVIST_MAX_VAULTS must be refused")
 	}
 }
@@ -127,7 +127,7 @@ func TestCreateRefusesAnNFCCollision(t *testing.T) {
 	}
 	defer reg.Close()
 
-	if err := reg.Create("ty\u00f6"); err == nil {
+	if err := reg.Create("ty\u00f6", false); err == nil {
 		t.Fatal("a name colliding after NFC normalisation must be refused")
 	}
 }
@@ -140,7 +140,7 @@ func TestCreateMakesBothDirectoriesAndOpensIt(t *testing.T) {
 	}
 	defer reg.Close()
 
-	if err := reg.Create("work"); err != nil {
+	if err := reg.Create("work", false); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(filepath.Join(root, "vaults", "work")); err != nil || !fi.IsDir() {

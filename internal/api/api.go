@@ -472,6 +472,14 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults
 			"content hash mismatch: claimed "+claimed+", actual "+actual)
 		return
 	}
+	// Before WriteBlob, not at push. The client uploads first and pushes
+	// second, so a check only at push would refuse the change and still leave
+	// the plaintext in the object store -- and in every export after it.
+	if inst.Encrypted && !protocol.HasEnvelope(body) {
+		fail(w, http.StatusUnprocessableEntity, protocol.CodePlaintextRefused,
+			inst.Name+" is an encrypted vault and this content is not encrypted")
+		return
+	}
 	if _, err := inst.Repo.WriteBlob(body); err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
@@ -1136,9 +1144,12 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		// bootstraps from whatever snapshot it is handed, merging two unrelated
 		// vaults into both. Git history makes that recoverable, but only if
 		// someone notices.
-		"vault":    inst.Name,
-		"version":  version.Version,
-		"protocol": protocol.Version,
+		"vault": inst.Name,
+		// A client that does not encrypt must not sync this vault at all, and
+		// one that does must not send ciphertext to an ordinary one.
+		"encrypted": inst.Encrypted,
+		"version":   version.Version,
+		"protocol":  protocol.Version,
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
@@ -1313,12 +1324,15 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Name string `json:"name"`
+		// Encrypted can only be chosen here. A vault that has taken a commit
+		// holds plaintext objects and cannot become encrypted afterwards.
+		Encrypted bool `json:"encrypted"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		failDecode(w, err)
 		return
 	}
-	if err := s.reg.Create(req.Name); err != nil {
+	if err := s.reg.Create(req.Name, req.Encrypted); err != nil {
 		if vaults.ValidName(req.Name) != nil {
 			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 			return
@@ -1328,5 +1342,5 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, map[string]any{"vault": req.Name})
+	writeJSON(w, map[string]any{"vault": req.Name, "encrypted": req.Encrypted})
 }
