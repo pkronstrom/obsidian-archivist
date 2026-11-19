@@ -127,4 +127,6 @@ start, and the watcher would interpret an unmount as every file being deleted an
 commit it. If at-rest coverage is wanted, full-disk encryption on the whole box
 is simpler and has none of these hazards.
 
-**Whole-vault E2E.** Settled in ADR-0002. Unchanged.
+**Whole-vault E2E.** Rejected for ordinary vaults in ADR-0002, which stands.
+An opt-in encrypted vault kind now exists beside them; see
+[encrypted vaults](2026-11-19-encrypted-vaults-design-note.md).

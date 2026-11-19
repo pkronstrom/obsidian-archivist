@@ -226,6 +226,69 @@ docker compose exec archivist /archivist-server token add \
 names are one path segment: no leading dot, slash or `..`. URL-safe names are
 easiest to use by hand. `ARCHIVIST_MAX_VAULTS` defaults to five.
 
+## Encrypted vaults
+
+An encrypted vault stores only what the plugin encrypted: note contents and
+file names. The server holds no key. Use one for notes that should be backed up
+on the server but readable only on the devices you choose.
+
+What the server can still see: the shape of the folder tree, how many files
+there are, their sizes, when they change, and which names repeat. What it
+cannot do: search, merge concurrent edits, serve the vault through the relay,
+or keep pins. Two devices editing one note always produce a conflict copy.
+
+### Create one
+
+A vault's kind is fixed when it is created, so use the command and not `mkdir`:
+
+```bash
+docker compose exec archivist /archivist-server vault add -root /data -encrypted work
+docker compose exec archivist /archivist-server token add \
+  -label work-laptop -vaults work -profile obsidian-plugin
+```
+
+The running server finds it without a restart. In Obsidian, set the vault name
+and token. The plugin sees an encrypted vault with no key, offers to create
+one, and shows a **recovery key**. Save it in a password manager before
+continuing: nothing is uploaded until you confirm you have.
+
+### Add another device
+
+Set the same vault and its own token, then enter the recovery key when asked.
+The plugin checks the key against the server before it stores it. On a device
+that already has the key, **Archivist → Options → Recovery key** shows it
+again.
+
+A lost device is handled by revoking its token. The key alone opens nothing
+without the server's files, and that device already held the notes.
+
+### Move an existing vault to an encrypted one
+
+A vault cannot be encrypted in place, because its history already holds the
+notes in plaintext. Create a new encrypted vault and publish the folder to it:
+
+1. Create the encrypted vault and a token for it, as above.
+2. In the existing Obsidian vault, run **Archivist: Switch this folder to
+   another vault**, or use **Switch…** in the options. Give the new vault's
+   name, and its token if it differs.
+3. The plugin syncs once with the old vault, checks that the new one is
+   reachable and empty, and shows both for confirmation.
+4. Create the key, save the recovery key, and let the folder publish.
+5. Check the published count in the notice that follows. Then switch your
+   other devices, and delete the old vault's two directories on the server:
+   `data/vaults/<old>` and `data/.archivist/<old>`.
+
+Until the first sync with the new vault succeeds, the options show **Go back**,
+which restores the old vault exactly. The old vault is never changed by the
+plugin. History does not carry over; export the old vault first if you want to
+keep it. Older backups still contain the plaintext until you prune them.
+
+### Back up and restore
+
+Back up as for any vault. The export carries the vault's kind and key check, so
+a restored vault is still encrypted. Reading it needs the recovery key and the
+plugin. If the key is lost and no device holds it, the vault cannot be read.
+
 ## When sync looks wrong
 
 Work from the least disruptive check downward.

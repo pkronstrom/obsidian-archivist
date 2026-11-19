@@ -1,6 +1,8 @@
 # Encrypted vaults — design note
 
-**Status:** Proposed. Revised after a four-reviewer panel on 2026-11-19. No code.
+**Status:** Built on the `encrypted-vaults` branch, 2026-11-19, after a
+four-reviewer panel. Not yet run in Obsidian on a real Mac or phone. Where the
+build departed from this note, the note was corrected.
 
 **Date:** 2026-11-19
 
@@ -156,8 +158,9 @@ encrypted name. A delete or move of a path that changed on the server is still
 - Pins. The server writes pin names as plaintext JSON to `pins.jsonl` in the
   vault and parses that file itself (`internal/pins`), which would bypass the
   guards.
-- Config sync and the plugin inventory, which rely on server-side exceptions
-  for plaintext paths.
+
+The plugin inventory keeps working: its file is encrypted and synced like any
+other, and never needed the server's exception for its path.
 
 Tokens, step-up, export, backup, history and reclaim are unchanged. They
 operate on ciphertext.
@@ -184,8 +187,9 @@ operate on ciphertext.
   suffix), not the server's naming.
 - History, the deleted-files list and the revision browser decrypt names and
   contents for display.
-- The debounce is longer for an encrypted vault: every save stores a full
-  blob, because git cannot delta-compress ciphertext.
+- When both sides of a conflict hold the same note, no copy is made. Two
+  devices that already share their notes meet this on every file when they
+  first pair, since each sealed its own copy.
 
 ## Setup and migration
 
@@ -232,7 +236,7 @@ touches notes. Its checks:
 |---|---|
 | The folder must have just completed a sync with its current vault. | Edits made on another device and not yet pulled would be missing from the new vault. Overridable only when the old vault is unreachable, with a warning. |
 | The new vault must be reachable with the new token before anything is cleared. | A typo must not leave the folder attached to nothing. |
-| The new vault must be empty: no files and no history. | The first sync can then only upload. A non-empty target goes to the existing pairing dialog, which stops and asks. |
+| The new vault must be empty: no files and no history. | The first sync can then only upload. A non-empty target is refused outright. |
 | The confirmation names both vaults and their kinds. | The user sees `work` (plain) → `work-enc` (encrypted) before agreeing. |
 | For an encrypted target, the key check is installed and the recovery key confirmed before the first upload. | No ciphertext exists that the user cannot recover. |
 | Switching from an encrypted vault to a plain one needs the vault name typed in. | It uploads the notes as plaintext. |
@@ -257,7 +261,6 @@ lost and no device holds it, the vault is unrecoverable.
 | Concurrent edits | Always a conflict copy, never a merge. |
 | Repository growth | A full blob per save. Longer debounce, and reclaim, limit it. |
 | Search, MCP, webhooks, pins | Not available for the vault. |
-| Config sync, plugin inventory | Not available in the first version. |
 | Server-side reading | `git log -p`, NoteDiscovery and direct edits show ciphertext. |
 | Second-device pairing | Downloads everything once when the device already has notes. |
 
@@ -267,7 +270,9 @@ lost and no device holds it, the vault is unrecoverable.
   hash and run a three-way merge on plaintext. Left out of the first version.
 - Is a 255-byte limit on encrypted segments acceptable, or do long names need
   a fallback such as a hashed name with the real one stored inside the file?
-- Should pins and the plugin inventory get a client-encrypted form later?
+- Should pins get a client-encrypted form later?
+- The longer debounce for encrypted vaults is not built. Every save still
+  stores a full blob at the ordinary cadence.
 - Does the recovery key need a passphrase-wrapped form, or is the raw key in a
   password manager enough?
 
