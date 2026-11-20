@@ -1,7 +1,8 @@
 # Encrypted vaults — design note
 
 **Status:** Built on the `encrypted-vaults` branch, 2026-11-19, after a
-four-reviewer panel. Not yet run in Obsidian on a real Mac or phone. Where the
+four-reviewer panel. Run in a real Obsidian for Linux by `npm run test:e2e`,
+including its mobile layout; not yet run on a real Mac or phone. Where the
 build departed from this note, the note was corrected.
 
 **Date:** 2026-11-19

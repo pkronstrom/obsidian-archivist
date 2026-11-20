@@ -1,0 +1,9 @@
+.git
+node_modules
+data
+dist-test
+main.js
+archivist-server
+archivist-relay
+archivist-client
+test/e2e/artifacts

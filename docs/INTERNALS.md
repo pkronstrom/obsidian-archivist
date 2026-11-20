@@ -435,6 +435,22 @@ npm run build
 node test/integration.mjs http://localhost:8090 <token>
 ```
 
+There is also an optional test that runs the plugin inside a real Obsidian. It
+needs Docker and nothing else: the image holds Obsidian for Linux, the server
+and the plugin built from this checkout, and it touches no vault and no
+Obsidian on your machine.
+
+```bash
+npm run test:e2e
+```
+
+It clicks through what the Node tests cannot see: the key dialog on a first
+and a second device, the settings entries, the switch dialog and its undo, and
+the phone layout through Obsidian's mobile emulation. Screenshots of each
+dialog and the logs land in `test/e2e/artifacts/`. It covers encrypted vaults
+only, and the mobile emulation is a layout, not a phone: the real iOS and
+Android apps still need checking by hand.
+
 ## Licence
 
 MIT.

@@ -1,0 +1,20 @@
+# The Obsidian end-to-end test: a real Obsidian with the plugin, against a real
+# archivist-server, all inside one container. Nothing here touches a vault or
+# an Obsidian on the host.
+#
+#   docker compose -f test/e2e/compose.yaml run --build --rm e2e
+#
+# Screenshots of every dialog land in test/e2e/artifacts/.
+
+services:
+  e2e:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+      args:
+        OBSIDIAN_VERSION: ${OBSIDIAN_VERSION:-1.15.1}
+    # Chromium keeps its shared memory in /dev/shm and Docker's default 64 MB
+    # is not enough for two Obsidian windows.
+    shm_size: 1gb
+    volumes:
+      - ./artifacts:/artifacts
