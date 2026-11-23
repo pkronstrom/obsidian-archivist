@@ -9,8 +9,8 @@ import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
 import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
-import { loadToken, loadVaultKey, saveVaultKey } from "./credentials";
-import { VaultCrypt, hex, unhex } from "./crypt";
+import { keyDeclined, loadToken, loadVaultKey, saveVaultKey, setKeyDeclined, type StoredKey } from "./credentials";
+import { VaultCrypt, hex, unhex, type KeyScope } from "./crypt";
 import { KeyModal } from "./key-modal";
 import { KeyRequiredError } from "./sync";
 import { saveToken } from "./credentials";
@@ -412,6 +412,22 @@ export default class ArchivistPlugin extends Plugin {
 			if (report === null) return; // coalesced into an in-flight cycle
 			this.lastSyncError = undefined;
 			this.completeSwitch(report);
+			this.offerKey(report);
+			const readable = report.refused.find((r) => r.reason?.startsWith("still stored readable"));
+			if (readable) {
+				// Renamed to an .encrypted name, but the old readable file
+				// could not be removed. The user believes it is gone.
+				new Notice(`archivist: ${readable.path} is ${readable.reason}`, 0);
+			}
+			if (report.exposed?.length) {
+				// The one direction in which a rename publishes a note.
+				new Notice(
+					`archivist: ${report.exposed.length} file(s) no longer have an .encrypted name and were ` +
+						`uploaded as readable text: ${report.exposed.slice(0, 5).join(", ")}` +
+						(report.exposed.length > 5 ? ", …" : ""),
+					0,
+				);
+			}
 			if (report.conflicts.length > 0) {
 				// Conflicts are the one outcome worth interrupting for: a file
 				// now exists that the user has to resolve by hand. An encrypted
@@ -595,13 +611,31 @@ export default class ArchivistPlugin extends Plugin {
 	private async loadCrypt(): Promise<void> {
 		const vault = this.settings.vault;
 		if (this.crypt?.vault === vault) return;
-		const key = loadVaultKey(this.app, vault);
-		this.crypt = key ? { vault, crypt: await VaultCrypt.fromKey(unhex(key)) } : undefined;
+		const stored = loadVaultKey(this.app, vault);
+		this.crypt = stored
+			? { vault, crypt: await VaultCrypt.fromKey(unhex(stored.key), stored.scope) }
+			: undefined;
 	}
 
 	/** The recovery key for the configured vault, or "" when it has none. */
-	vaultKeyHex(): string {
+	vaultKey(): StoredKey | null {
 		return loadVaultKey(this.app, this.settings.vault);
+	}
+
+	/**
+	 * An ordinary vault synced, but left its .encrypted files alone because
+	 * this device has no key. Ask once; "not now" is remembered, so a device
+	 * kept without the key on purpose is not asked at every start. Settings
+	 * offer it either way.
+	 */
+	private offerKey(report: SyncReport): void {
+		const vault = this.settings.vault;
+		if (!report.needsKey) {
+			if (this.pendingKey?.scope === "files") this.pendingKey = undefined;
+			return;
+		}
+		this.pendingKey = new KeyRequiredError(vault, report.needsKey.hasKey, report.needsKey.keyCheck, "files");
+		if (!keyDeclined(this.app, vault)) this.openKeyModal();
 	}
 
 	/** Open the switch dialog. Also called from the settings tab. */
@@ -692,8 +726,18 @@ export default class ArchivistPlugin extends Plugin {
 		const modal = new KeyModal(
 			this.app,
 			need,
-			(key) => void this.adoptKey(need.vault, key),
+			(key) => void this.adoptKey(need.vault, key, need.scope),
 			() => {
+				if (need.scope === "files") {
+					// Not a pause: everything else keeps syncing.
+					setKeyDeclined(this.app, need.vault, true);
+					new Notice(
+						"archivist: files marked .encrypted are not synced on this device until it has " +
+							"the key. Add it in Archivist's settings when you are ready.",
+						8000,
+					);
+					return;
+				}
 				this.keyDeferred = true;
 				this.setStatus("paused — needs its key");
 				new Notice(
@@ -710,8 +754,9 @@ export default class ArchivistPlugin extends Plugin {
 		modal.open();
 	}
 
-	private async adoptKey(vault: string, key: Uint8Array): Promise<void> {
-		saveVaultKey(this.app, vault, hex(key));
+	private async adoptKey(vault: string, key: Uint8Array, scope: KeyScope): Promise<void> {
+		saveVaultKey(this.app, vault, hex(key), scope);
+		setKeyDeclined(this.app, vault, false);
 		this.crypt = undefined;
 		this.pendingKey = undefined;
 		this.keyDeferred = false;

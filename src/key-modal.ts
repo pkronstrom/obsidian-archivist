@@ -28,6 +28,11 @@ export class KeyModal extends Modal {
 
 	private decided = false;
 
+	/** The key is for the .encrypted files of an ordinary vault. */
+	private get files(): boolean {
+		return this.need.scope === "files";
+	}
+
 	onOpen(): void {
 		this.contentEl.addClass("archivist-key");
 		if (this.need.hasKey) this.renderEnter();
@@ -39,10 +44,14 @@ export class KeyModal extends Modal {
 		contentEl.empty();
 		contentEl.createEl("h2", { text: `Create the key for "${this.need.vault}"` });
 		contentEl.createEl("p", {
-			text:
-				`This is an encrypted vault and nothing has been synced to it yet. ` +
-				`This device will create its key. Notes and file names are encrypted ` +
-				`here before they are sent, and the server never holds the key.`,
+			text: this.files
+				? `This vault has files marked .encrypted and no key yet. This device will ` +
+					`create it. Those files are encrypted here before they are sent, and the ` +
+					`server never holds the key. They stay readable on this device, and the ` +
+					`rest of the vault syncs as before.`
+				: `This is an encrypted vault and nothing has been synced to it yet. ` +
+					`This device will create its key. Notes and file names are encrypted ` +
+					`here before they are sent, and the server never holds the key.`,
 		});
 		new Setting(contentEl)
 			.addButton((b) =>
@@ -70,7 +79,7 @@ export class KeyModal extends Modal {
 			text:
 				`Put it in your password manager now. You need it to add another ` +
 				`device and to read a backup. If every device that holds it is lost ` +
-				`and you do not have this, the vault cannot be read by anyone.`,
+				`and you do not have this, ${this.files ? "the encrypted files" : "the vault"} cannot be read by anyone.`,
 		});
 		const box = contentEl.createEl("textarea", { cls: "archivist-key-box" });
 		box.value = recovery;
@@ -113,9 +122,12 @@ export class KeyModal extends Modal {
 		contentEl.empty();
 		contentEl.createEl("h2", { text: `Enter the key for "${this.need.vault}"` });
 		contentEl.createEl("p", {
-			text:
-				`This is an encrypted vault that already has a key. Enter the ` +
-				`recovery key that was shown when the vault was first set up.`,
+			text: this.files
+				? `This vault has files marked .encrypted, and they already have a key. ` +
+					`Enter the recovery key that was shown when it was created. Until then ` +
+					`those files are not synced on this device; everything else is.`
+				: `This is an encrypted vault that already has a key. Enter the ` +
+					`recovery key that was shown when the vault was first set up.`,
 		});
 		const box = contentEl.createEl("textarea", { cls: "archivist-key-box" });
 		box.rows = 3;

@@ -47,6 +47,12 @@ export type SyncState = {
 	 */
 	encrypted?: boolean;
 	/**
+	 * Ordinary vaults only: this device has synced the vault's .encrypted
+	 * files with a key. Unset on a device that has just been given the key,
+	 * which is what tells the next cycle to fetch the files it was skipping.
+	 */
+	keyed?: boolean;
+	/**
 	 * When the last cycle completed successfully, epoch ms. Undefined if this
 	 * device has never completed one -- distinct from `base === ""`, which
 	 * means never SYNCED but says nothing about whether a cycle ran and failed.
@@ -75,6 +81,7 @@ export function loadState(app: App): SyncState {
 		files: s.files ?? {},
 		vault: typeof s.vault === "string" ? s.vault : undefined,
 		encrypted: s.encrypted === true ? true : undefined,
+		keyed: s.keyed === true ? true : undefined,
 		lastSyncedAt: typeof s.lastSyncedAt === "number" ? s.lastSyncedAt : undefined,
 	};
 }

@@ -171,15 +171,24 @@ export class Client {
 		 */
 		private vault: string,
 		/**
-		 * Set for an encrypted vault. Then this class is the boundary: paths
-		 * and downloaded content are plaintext above it and ciphertext below,
-		 * so the rest of the plugin never sees an encrypted name.
+		 * Set when this device holds the vault's key. Then this class is the
+		 * boundary: paths and downloaded content are plaintext above it and
+		 * ciphertext below, so the rest of the plugin never sees an encrypted
+		 * name.
+		 *
+		 * It does NOT mean the whole vault is ciphertext. In an ordinary vault
+		 * the key covers only the paths marked .encrypted, so every method
+		 * here asks crypt.covers(path) and never just whether a crypt exists.
 		 *
 		 * Uploads are the exception. putContent takes bytes that are already
 		 * sealed, because the caller needs their hash before it can upload.
 		 */
 		readonly crypt?: VaultCrypt,
 	) {}
+
+	private covers(path: string): boolean {
+		return this.crypt?.covers(path) ?? false;
+	}
 
 	private enc(path: string): string {
 		return this.crypt ? this.crypt.encryptPath(path) : path;
@@ -288,7 +297,7 @@ export class Client {
 	async readAt(rev: string, path: string): Promise<ArrayBuffer> {
 		const escaped = this.enc(path).split("/").map(encodeURIComponent).join("/");
 		const res = await this.call("GET", `/v1/at/${encodeURIComponent(rev)}/${escaped}`);
-		return this.crypt ? this.crypt.open(res.arrayBuffer) : res.arrayBuffer;
+		return this.covers(path) ? this.crypt!.open(res.arrayBuffer) : res.arrayBuffer;
 	}
 
 	/** deleted lists paths history holds that head does not, newest first. */
@@ -305,9 +314,9 @@ export class Client {
 	/** pins lists named restore points. `path` filters to one file; "*" asks
 	 *  for vault-wide pins only; omitted returns every pin. */
 	async pins(path?: string): Promise<Pin[]> {
-		// The server keeps pin names as plaintext in the vault, so an encrypted
-		// vault has no pins.
-		if (this.crypt) return [];
+		// The server keeps pins as readable text in the vault, path included,
+		// so an encrypted path has none.
+		if (this.crypt?.scope === "vault" || (path !== undefined && path !== "*" && this.covers(path))) return [];
 		const q = path ? `/v1/pins?path=${encodeURIComponent(path)}` : "/v1/pins";
 		const j = (await this.call("GET", q)).json;
 		return (j?.pins ?? []) as Pin[];
@@ -322,7 +331,8 @@ export class Client {
 	 * flush and retry once.
 	 */
 	async pin(name: string, expectedHead: string, path?: string): Promise<{ id: string; head: string }> {
-		if (this.crypt) throw new Error("pins are not available in an encrypted vault");
+		if (this.crypt?.scope === "vault") throw new Error("pins are not available in an encrypted vault");
+		if (path !== undefined && this.covers(path)) throw new Error("an encrypted note cannot be pinned");
 		const j = (await this.call("POST", "/v1/pin", { name, path, expectedHead })).json;
 		return { id: j?.id as string, head: j?.head as string };
 	}
@@ -443,11 +453,17 @@ export class Client {
 		await this.call("PUT", `/v1/content/${hash}`, undefined, content);
 	}
 
-	/** Plaintext, whatever the vault kind. `hash` names what the server holds,
-	 *  which for an encrypted vault is the ciphertext. */
-	async getContent(hash: string): Promise<ArrayBuffer> {
+	/**
+	 * Plaintext, whatever is stored. `hash` names what the server holds, which
+	 * for an encrypted path is the ciphertext.
+	 *
+	 * `path` is the file the content is for, and it is what decides whether
+	 * to decrypt. The content cannot decide for itself: an ordinary note is
+	 * free to begin with the envelope's bytes, and must not be "opened".
+	 */
+	async getContent(hash: string, path: string): Promise<ArrayBuffer> {
 		const body = (await this.call("GET", `/v1/content/${hash}`)).arrayBuffer;
-		return this.crypt ? this.crypt.open(body) : body;
+		return this.covers(path) ? this.crypt!.open(body) : body;
 	}
 
 	/** Install the value later devices verify their key against. The server

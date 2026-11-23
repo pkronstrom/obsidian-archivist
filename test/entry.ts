@@ -51,7 +51,8 @@ export {
 	unhex,
 } from "../src/crypt";
 export { KeyRequiredError } from "../src/sync";
-export { loadVaultKey, saveVaultKey } from "../src/credentials";
+export { loadVaultKey, saveVaultKey, keyDeclined, setKeyDeclined } from "../src/credentials";
+export { encryptedPath, encryptedDir, ENCRYPTED_MARKER } from "../src/crypt";
 export {
 	SwitchRefused,
 	planSwitch,

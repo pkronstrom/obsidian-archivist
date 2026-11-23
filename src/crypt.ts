@@ -25,6 +25,77 @@ const KEY_BYTES = 32;
  *  name, which is what the server writes to disk. */
 const MAX_SEGMENT = 255;
 
+/**
+ * Marks a file or folder of an ORDINARY vault as encrypted: the server stores
+ * it and cannot read it. Mirrors protocol.EncryptedMarker on the server.
+ *
+ * Fixed here, deliberately not a setting. A rule kept in the vault could be
+ * edited by anything that can write a note.
+ */
+export const ENCRYPTED_MARKER = ".encrypted";
+
+/**
+ * Which paths a key is for. "vault" is an encrypted vault: everything.
+ * "files" is the marked paths of an ordinary vault.
+ *
+ * Stored on the device with the key and never taken from the server on a
+ * later day. A server that could flip it could talk a device into uploading
+ * a whole encrypted vault as plaintext.
+ */
+export type KeyScope = "vault" | "files";
+
+/**
+ * Case is ignored, and that is a safety property rather than a convenience. A
+ * marker that fails to match does not stop a file syncing, it sends the file
+ * readable: "Clients.Encrypted", from a phone keyboard that capitalised it,
+ * would otherwise be published in plaintext.
+ */
+const endsMarked = (s: string) =>
+	s.length > ENCRYPTED_MARKER.length && s.slice(-ENCRYPTED_MARKER.length).toLowerCase() === ENCRYPTED_MARKER;
+
+/**
+ * Offset just past the first marked segment, or -1.
+ *
+ * The grammar is localOnly's, for localOnly's reason. Any segment ending in
+ * the marker takes its subtree with it; the last segment is also marked when
+ * the marker sits before its extension. A folder has to END in the marker,
+ * because "project.encrypted.assets" would match the file spelling by
+ * coincidence.
+ */
+function markedAt(path: string): number {
+	let start = 0;
+	for (;;) {
+		const slash = path.indexOf("/", start);
+		const end = slash < 0 ? path.length : slash;
+		const seg = path.slice(start, end);
+		if (endsMarked(seg)) return end;
+		if (slash < 0) {
+			const dot = seg.lastIndexOf(".");
+			return dot > 0 && dot < seg.length - 1 && endsMarked(seg.slice(0, dot)) ? end : -1;
+		}
+		start = slash + 1;
+	}
+}
+
+/**
+ * Whether a path of an ordinary vault is marked encrypted. Must stay identical
+ * to protocol.EncryptedPath in Go; protocol/testdata/marked-paths.json is the
+ * table both are tested against.
+ *
+ * It gives the same answer for the path on this device and the path on the
+ * server: the two are identical up to and including the first marked segment,
+ * and that segment decides.
+ */
+export function encryptedPath(path: string): boolean {
+	return markedAt(path) >= 0;
+}
+
+/** encryptedPath for a DIRECTORY, without the file grammar: a folder that
+ *  happens to be called "Old.encrypted.notes" is an ordinary folder. */
+export function encryptedDir(path: string): boolean {
+	return path.split("/").some(endsMarked);
+}
+
 /** A path segment too long to store once encrypted. The file is not synced. */
 export class NameTooLongError extends Error {
 	constructor(readonly path: string) {
@@ -45,9 +116,17 @@ export class VaultCrypt {
 		/** What the server stores so a second device can verify its key. An
 		 *  HMAC under its own subkey: it reveals nothing about the others. */
 		readonly keyCheck: string,
+		readonly scope: KeyScope,
 	) {}
 
-	static async fromKey(key: Uint8Array): Promise<VaultCrypt> {
+	/** Whether this key encrypts the file at `path`, given as this device
+	 *  names it. Everything in an encrypted vault; the marked paths of an
+	 *  ordinary one. */
+	covers(path: string): boolean {
+		return this.scope === "vault" || encryptedPath(path);
+	}
+
+	static async fromKey(key: Uint8Array, scope: KeyScope = "vault"): Promise<VaultCrypt> {
 		if (key.byteLength !== KEY_BYTES) throw new Error("a vault key is 32 bytes");
 		const base = await crypto.subtle.importKey("raw", new Uint8Array(key), "HKDF", false, ["deriveBits"]);
 		const derive = async (info: string, bytes: number) =>
@@ -82,7 +161,7 @@ export class VaultCrypt {
 			["sign"],
 		);
 		const mac = await crypto.subtle.sign("HMAC", check, new TextEncoder().encode("archivist-keycheck-v1"));
-		return new VaultCrypt(content, names, hex(new Uint8Array(mac)));
+		return new VaultCrypt(content, names, hex(new Uint8Array(mac)), scope);
 	}
 
 	/** Envelope, then nonce, then ciphertext and tag. */
@@ -117,11 +196,18 @@ export class VaultCrypt {
 	 * Segment by segment, so the folder tree survives and the server can still
 	 * operate on a path. Normalised to NFC first: the two Unicode spellings of
 	 * one name must not become two unrelated ciphertexts.
+	 *
+	 * In "files" scope a path that is not marked comes back unchanged, and a
+	 * marked one keeps everything through its first marked segment: the server
+	 * has to be able to read the marker to enforce it.
 	 */
 	encryptPath(path: string): string {
 		const hit = this.encCache.get(path);
 		if (hit !== undefined) return hit;
-		const out = path
+		const keep = this.readablePrefix(path);
+		if (keep >= path.length) return path;
+		const out = path.slice(0, keep) + path
+			.slice(keep)
 			.split("/")
 			.map((seg) => {
 				const sealed = base32(aessiv(this.names).encrypt(new TextEncoder().encode(seg.normalize("NFC"))));
@@ -130,8 +216,19 @@ export class VaultCrypt {
 			})
 			.join("/");
 		this.encCache.set(path, out);
-		this.decCache.set(out, path.normalize("NFC"));
+		this.decCache.set(out, path.slice(0, keep) + path.slice(keep).normalize("NFC"));
 		return out;
+	}
+
+	/**
+	 * How much of a path is left as it is: nothing in "vault" scope, all of an
+	 * unmarked path, and a marked one through the slash after its first marked
+	 * segment. Works on a server path as well as a local one.
+	 */
+	private readablePrefix(path: string): number {
+		if (this.scope === "vault") return 0;
+		const end = markedAt(path);
+		return end < 0 ? path.length : Math.min(end + 1, path.length);
 	}
 
 	/** Throws when a segment was not produced under this key. SIV is
@@ -140,7 +237,10 @@ export class VaultCrypt {
 	decryptPath(path: string): string {
 		const hit = this.decCache.get(path);
 		if (hit !== undefined) return hit;
-		const out = path
+		const keep = this.readablePrefix(path);
+		if (keep >= path.length) return path;
+		const out = path.slice(0, keep) + path
+			.slice(keep)
 			.split("/")
 			.map((seg) => new TextDecoder("utf-8", { fatal: true }).decode(aessiv(this.names).decrypt(unbase32(seg))))
 			.join("/");

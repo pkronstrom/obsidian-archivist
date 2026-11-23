@@ -158,6 +158,18 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"the .local to start syncing one. A folder like project.local.assets/ " +
 					"is unaffected.",
 			);
+		// Not shown for an encrypted vault, where every file already is.
+		if (!loadState(this.app).encrypted) {
+			new Setting(containerEl)
+				.setName("Files encrypted on the server")
+				.setDesc(
+					"Files with .encrypted before the extension, and folders ending in " +
+						".encrypted, reach the server only as ciphertext: Salary.encrypted.md, " +
+						"Clients.encrypted/. They stay readable on this device. Removing the " +
+						".encrypted uploads the file readable again, and a note's versions from " +
+						"before it was marked stay readable in history.",
+				);
+		}
 
 		this.renderStatus(containerEl);
 
@@ -319,11 +331,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 	private renderVaultKey(containerEl: HTMLElement): void {
 		const need = this.plugin.pendingKey;
 		if (need) {
+			const files = need.scope === "files";
 			new Setting(containerEl)
-				.setName("This device is not syncing")
+				.setName(files ? "Encrypted files are not syncing on this device" : "This device is not syncing")
 				.setDesc(
-					`"${need.vault}" is an encrypted vault and this device does not have its key. ` +
-						`Nothing has been sent or received.`,
+					files
+						? `"${need.vault}" has files marked .encrypted and this device does not have the key. ` +
+							`They are left alone here and on the server. Everything else syncs.`
+						: `"${need.vault}" is an encrypted vault and this device does not have its key. ` +
+							`Nothing has been sent or received.`,
 				)
 				.addButton((b) =>
 					b
@@ -333,15 +349,19 @@ export class ArchivistSettingTab extends PluginSettingTab {
 				);
 			return;
 		}
-		const key = this.plugin.vaultKeyHex();
-		if (!key) return;
+		const stored = this.plugin.vaultKey();
+		if (!stored) return;
+		const key = stored.key;
 		// Shown again on request, not hidden: the key is in this device's
 		// local storage either way, so withholding it here protects nothing
 		// and only makes adding a second device harder.
 		const setting = new Setting(containerEl)
 			.setName("Recovery key")
 			.setDesc(
-				"This vault is encrypted. The recovery key adds another device and reads a backup. " +
+				(stored.scope === "files"
+					? "Files and folders marked .encrypted are encrypted on the server. "
+					: "This vault is encrypted. ") +
+					"The recovery key adds another device and reads a backup. " +
 					"Keep a copy in your password manager.",
 			);
 		setting
