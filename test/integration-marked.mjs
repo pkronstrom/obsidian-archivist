@@ -194,6 +194,7 @@ r = await mac.sync.run();
 held = await serverFiles();
 check("renaming a note INTO the marker removes the readable file and stores ciphertext", !held.has("Diary.md") && sealed(held.get("Diary.encrypted.md") ?? Buffer.alloc(0)) && r.refused.length === 0, JSON.stringify(r));
 check("and is not reported as exposed", !r.exposed);
+check("but is reported as marked, so the user can be told its history is still readable", r.marked?.length === 1 && r.marked[0] === "Diary.encrypted.md", JSON.stringify(r));
 r = await phone.sync.run();
 check("the other device follows the rename", (await phone.read("Diary.encrypted.md")) === "SECRET-DIARY not yet marked\n" && !(await phone.exists("Diary.md")));
 
@@ -201,7 +202,7 @@ await mac.rename("Pin.encrypted.md", "Pin.md");
 r = await mac.sync.run();
 held = await serverFiles();
 check("renaming a note OUT of the marker uploads it readable", held.get("Pin.md")?.toString() === "SECRET-PIN 4711\n" && !held.has("Pin.encrypted.md"));
-check("and says so", r.exposed?.length === 1 && r.exposed[0] === "Pin.md", JSON.stringify(r));
+check("and says so", r.exposed?.length === 1 && r.exposed[0] === "Pin.md" && !r.marked, JSON.stringify(r));
 await phone.sync.run();
 
 // A rename into the marker is a delete and a put. If another device edited the

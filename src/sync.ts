@@ -47,6 +47,10 @@ export type SyncReport = {
 	 *  as readable text. Said out loud, because it is the one direction in
 	 *  which a rename publishes a note. */
 	exposed?: string[];
+	/** The opposite: notes renamed INTO an .encrypted name. They are
+	 *  ciphertext from here on, but every version from before the rename is
+	 *  still readable in the server's history, and the user should know. */
+	marked?: string[];
 };
 
 export type Logger = (msg: string, ...rest: unknown[]) => void;
@@ -487,8 +491,10 @@ export class Sync {
 				// user renamed it to end.
 				r.reason = `still stored readable: it could not be removed after being renamed to ${c.becomes} (${r.reason ?? "refused"})`;
 			}
-			if (c.op === "put" && c.was && !c.plain && r?.status === "applied") {
-				(report.exposed ??= []).push(c.path);
+			if (c.op === "put" && c.was && r?.status === "applied") {
+				// `plain` is set on a put that was sealed.
+				if (c.plain) (report.marked ??= []).push(c.path);
+				else (report.exposed ??= []).push(c.path);
 			}
 		}
 	}

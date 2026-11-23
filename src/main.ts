@@ -419,6 +419,7 @@ export default class ArchivistPlugin extends Plugin {
 				// could not be removed. The user believes it is gone.
 				new Notice(`archivist: ${readable.path} is ${readable.reason}`, 0);
 			}
+			if (report.marked?.length) this.explainMarked(report.marked);
 			if (report.exposed?.length) {
 				// The one direction in which a rename publishes a note.
 				new Notice(
@@ -620,6 +621,32 @@ export default class ArchivistPlugin extends Plugin {
 	/** The recovery key for the configured vault, or "" when it has none. */
 	vaultKey(): StoredKey | null {
 		return loadVaultKey(this.app, this.settings.vault);
+	}
+
+	/**
+	 * A note that was already on the server has been renamed to an .encrypted
+	 * name. From here on the server gets ciphertext, but the rename cannot
+	 * reach back: every earlier version is still readable in history and in
+	 * backups. Someone marking a note to protect it is owed that sentence.
+	 *
+	 * In full, and until dismissed, the first time on this device. After that
+	 * a short reminder, so marking the tenth note is not a lecture.
+	 */
+	private explainMarked(paths: string[]): void {
+		const what = paths.length === 1 ? paths[0] : `${paths.length} notes`;
+		const KEY = "archivist.markedExplained";
+		if (this.app.loadLocalStorage(KEY)) {
+			new Notice(`archivist: ${what} now encrypted on the server; earlier versions stay readable in its history`, 8000);
+			return;
+		}
+		this.app.saveLocalStorage(KEY, true);
+		new Notice(
+			`archivist: ${what} ${paths.length === 1 ? "is" : "are"} encrypted on the server from now on. ` +
+				`Versions from before the rename are still readable in the server's history and in its ` +
+				`backups, under the old name, until they are pruned there. To keep a note off the server ` +
+				`entirely, create it with the .encrypted name.`,
+			0,
+		);
 	}
 
 	/**

@@ -219,7 +219,10 @@ token, which could have written the same text to an unmarked path anyway.
 - **Renames.** Renames are recognised by matching plaintext hashes. A pair that
   crosses the boundary is not folded into a move; it stays delete plus put, and
   the put is sealed or plain as its new path requires. A rename OUT of the
-  marker uploads the note readable, and the plugin says so in a notice.
+  marker uploads the note readable, and the plugin says so in a notice. A
+  rename INTO it is also announced: the note is ciphertext from then on, but
+  its earlier versions stay readable in history. That is said in full, until
+  dismissed, the first time on a device, and as a short reminder after.
 - **Conflict copies.** A copy of a marked note must itself be marked, or it
   would be uploaded readable on the next cycle. The conflict suffix goes
   before the marker: `Salary.conflict-<device>-<time>-local.encrypted.md`.

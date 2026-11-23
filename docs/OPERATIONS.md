@@ -309,7 +309,8 @@ What to know:
   pins. The rest of the vault keeps all of it.
 - **Marking an existing note does not clean its past.** Renaming `Salary.md`
   to `Salary.encrypted.md` leaves the earlier versions readable in history and
-  in backups. `reclaim` can prune the old name once its age gate passes.
+  in backups. The plugin says so when it happens. `reclaim` can prune the old
+  name once its age gate passes.
 - **Removing the marker publishes the note.** Renaming it back uploads it
   readable, and the plugin says so.
 - **A copy can lose the marker.** Obsidian's "Make a copy" produces

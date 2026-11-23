@@ -541,6 +541,9 @@ async function markedFiles(token) {
 	await m1.eval(() => globalThis.app.fileManager.renameFile(globalThis.app.vault.getAbstractFileByPath("Plan.md"), "Plan.encrypted.md"));
 	await m1.sync();
 	check("renaming a note into the marker replaces the readable file with ciphertext", !(await notes()).includes("Plan.md") && (await sealedOn("Plan.encrypted.md")), (await notes()).join(", "));
+	const warned = await until("the history notice", async () => (await m1.notices()).find((n) => n.includes("still readable in the server's history"))).catch(() => "");
+	await m1.shot("files-marked");
+	check("and says its earlier versions are still readable in history", warned.includes("Plan.encrypted.md"), warned);
 	await m1.eval(() => globalThis.app.fileManager.renameFile(globalThis.app.vault.getAbstractFileByPath("Plan.encrypted.md"), "Plan.md"));
 	await m1.sync();
 	const said = await until("the exposure notice", async () => (await m1.notices()).find((n) => n.includes("uploaded as readable text"))).catch(() => "");
