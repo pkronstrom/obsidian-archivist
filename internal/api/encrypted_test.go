@@ -145,12 +145,10 @@ func TestKeyCheckCanBeInstalledOnlyOnce(t *testing.T) {
 	wantCode(t, w, http.StatusConflict, protocol.CodeKeyCheckSet)
 }
 
-func TestKeyCheckRefusesMalformedValuesAndOrdinaryVaults(t *testing.T) {
+func TestKeyCheckRefusesMalformedValues(t *testing.T) {
 	h, _ := newEncryptedVault(t)
 	w := do(t, h, "PUT", "/work/v1/keycheck", map[string]string{"check": "short"}, true)
 	wantCode(t, w, http.StatusBadRequest, protocol.CodeMalformed)
-	w = do(t, h, "PUT", "/personal/v1/keycheck", map[string]string{"check": testKeyCheck}, true)
-	wantCode(t, w, http.StatusUnprocessableEntity, protocol.CodeMalformed)
 }
 
 // The server's own path rules match plaintext names, so the allowlist is the

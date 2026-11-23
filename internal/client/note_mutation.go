@@ -8,6 +8,9 @@ import (
 
 func (c *Client) AppendNote(ctx context.Context, req protocol.AppendNoteRequest) (protocol.NoteMutationResponse, error) {
 	req.Device = c.device
+	if err := refusePath(req.Path); err != nil {
+		return protocol.NoteMutationResponse{}, err
+	}
 	if err := c.ensureCompatible(ctx); err != nil {
 		return protocol.NoteMutationResponse{}, err
 	}
@@ -16,6 +19,9 @@ func (c *Client) AppendNote(ctx context.Context, req protocol.AppendNoteRequest)
 
 func (c *Client) EditNote(ctx context.Context, req protocol.EditNoteRequest) (protocol.NoteMutationResponse, error) {
 	req.Device = c.device
+	if err := refusePath(req.Path); err != nil {
+		return protocol.NoteMutationResponse{}, err
+	}
 	if err := c.ensureCompatible(ctx); err != nil {
 		return protocol.NoteMutationResponse{}, err
 	}

@@ -331,7 +331,7 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 	}
 	// Skip above matches plaintext names and never fires on encrypted ones, so
 	// in an encrypted vault the allowlist is the whole path policy.
-	if rc.encrypted && !protocol.ValidEncryptedPath(ch.Path) {
+	if !rc.validSealedPath(ch.Path) {
 		res.Status, res.Reason = StatusRefused, "not an encrypted name"
 		return res, nil
 	}
@@ -365,9 +365,23 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 		}
 		// The upload already refused plaintext. This is the second layer, for
 		// a blob that reached the object store some other way.
-		if rc.encrypted && !protocol.HasEnvelope(content) {
+		if rc.sealed(ch.Path) && !protocol.HasEnvelope(content) {
 			res.Status, res.Reason = StatusRefused, "content is not encrypted"
 			return res, nil
+		}
+		// An encrypted vault refuses the upload itself until it has a key
+		// check. An ordinary one cannot, because an upload names no path, so
+		// the same rule is applied here: no ciphertext under a key nobody
+		// recorded.
+		if !rc.encrypted && rc.sealed(ch.Path) {
+			check, err := rc.r.KeyCheck()
+			if err != nil {
+				return res, err
+			}
+			if check == "" {
+				res.Status, res.Reason = StatusRefused, "the vault has no key yet"
+				return res, nil
+			}
 		}
 		if !moved[ch.Path] {
 			res = rc.resultFor(res, content)
@@ -401,8 +415,15 @@ func (rc *Reconciler) applyOne(base, device, head string, moved map[string]bool,
 			res.Status, res.Reason = StatusRefused, "excluded from sync: "+ch.From
 			return res, nil
 		}
-		if rc.encrypted && !protocol.ValidEncryptedPath(ch.From) {
+		if !rc.validSealedPath(ch.From) {
 			res.Status, res.Reason = StatusRefused, "not an encrypted name: "+ch.From
+			return res, nil
+		}
+		// A move carries bytes as they are. Across the boundary that is
+		// plaintext arriving at a marked path, or ciphertext at a readable
+		// one. The client sends a delete and a put instead.
+		if rc.sealed(ch.From) != rc.sealed(ch.Path) {
+			res.Status, res.Reason = StatusRefused, "a move cannot cross into or out of an encrypted path"
 			return res, nil
 		}
 		if moved[ch.From] || moved[ch.Path] {
@@ -464,7 +485,7 @@ func (rc *Reconciler) resolve(base, device, path string, theirs []byte) (Result,
 	// copy: a name it invents is not one the client can decrypt. So it keeps
 	// its own version, writes nothing, and says what it kept. The client makes
 	// the copy, under a name it can read.
-	if rc.encrypted {
+	if rc.sealed(path) {
 		if bytes.Equal(ours, theirs) {
 			res.Status = StatusApplied
 			return rc.resultFor(res, ours), nil
@@ -598,8 +619,8 @@ func (rc *Reconciler) write(path string, content []byte) error {
 	// Every server write goes through here, so this holds whatever a caller
 	// above forgot to check. Reaching it is a bug, hence an error rather than
 	// a refusal.
-	if rc.encrypted && (!protocol.HasEnvelope(content) || !protocol.ValidEncryptedPath(path)) {
-		return fmt.Errorf("reconcile: refusing a plaintext write to %s in an encrypted vault", path)
+	if rc.sealed(path) && (!protocol.HasEnvelope(content) || !rc.validSealedPath(path)) {
+		return fmt.Errorf("reconcile: refusing a plaintext write to encrypted path %s", path)
 	}
 	if err := rc.v.Write(path, content); err != nil {
 		return err
@@ -676,6 +697,23 @@ func (rc *Reconciler) SetNormalizeNFC(on bool) { rc.normalizeNFC = on }
 // content at encrypted names is written, and nothing is merged. Set once, when
 // the vault is opened.
 func (rc *Reconciler) SetEncrypted(on bool) { rc.encrypted = on }
+
+// sealed reports whether path holds content the server cannot read: every
+// path of an encrypted vault, and the paths marked .encrypted in an ordinary
+// one. For those it stores only enveloped bytes and merges nothing.
+func (rc *Reconciler) sealed(path string) bool {
+	return rc.encrypted || protocol.EncryptedPath(path)
+}
+
+// validSealedPath reports whether path is acceptable as a name. An ordinary
+// path always is; a sealed one must be encrypted where the client was able to
+// encrypt it.
+func (rc *Reconciler) validSealedPath(path string) bool {
+	if rc.encrypted {
+		return protocol.ValidEncryptedPath(path)
+	}
+	return !protocol.EncryptedPath(path) || protocol.ValidMarkedPath(path)
+}
 
 // SetGuard installs the write guard. Nil disables it.
 func (rc *Reconciler) SetGuard(g *guard.Guard) { rc.g = g }

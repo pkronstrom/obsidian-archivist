@@ -131,6 +131,11 @@ func validateMutationPath(path string) error {
 	if vault.Skip(path) {
 		return mutationError(protocol.CodeForbidden, path+" is excluded from sync")
 	}
+	// Append and edit read and write note text, and the server cannot read
+	// what is stored here.
+	if protocol.EncryptedPath(path) {
+		return mutationError(protocol.CodeEncryptedPath, path+" is encrypted; only a device holding the vault's key can change it")
+	}
 	return nil
 }
 

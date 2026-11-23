@@ -114,6 +114,9 @@ const (
 	// CodeEncryptedVault is a route that reads or writes plaintext on the
 	// server, called on a vault whose content the server cannot read.
 	CodeEncryptedVault = "encrypted_vault"
+	// CodeEncryptedPath is the same refusal for one path: a file marked
+	// .encrypted in a vault that is otherwise ordinary.
+	CodeEncryptedPath = "encrypted_path"
 )
 
 // Envelope is the literal prefix of every object in an encrypted vault.
@@ -150,6 +153,103 @@ func ValidEncryptedPath(path string) bool {
 		}
 	}
 	return run > 0
+}
+
+// EncryptedMarker marks a file or folder of an ordinary vault as encrypted:
+// the server stores it and cannot read it.
+//
+// Fixed here and in src/crypt.ts, deliberately not a setting. A rule kept in
+// the vault could be edited by anything that can write a note.
+const EncryptedMarker = ".encrypted"
+
+// EncryptedPath reports whether a path of an ORDINARY vault is marked
+// encrypted. In an encrypted vault every path is, and this is not consulted.
+//
+// The grammar is LocalOnly's, for LocalOnly's reason. Any segment ending in
+// the marker takes its whole subtree with it; the last segment is also marked
+// when the marker sits before its extension. A folder has to END in the
+// marker, because "project.encrypted.assets" would match the file spelling
+// by coincidence.
+//
+// It gives the same answer for the path a device sees and the path the server
+// stores: the two are identical up to and including the first marked segment,
+// and that segment decides.
+func EncryptedPath(path string) bool {
+	_, ok := markedAt(path)
+	return ok
+}
+
+// ValidMarkedPath reports whether a marked path is one the server may store:
+// everything beneath a marked folder must be an encrypted name. A marked file
+// has nothing beneath it. False for a path that is not marked at all.
+func ValidMarkedPath(path string) bool {
+	end, ok := markedAt(path)
+	if !ok {
+		return false
+	}
+	if end == len(path) {
+		return true
+	}
+	return ValidEncryptedPath(path[end+1:])
+}
+
+// markedAt returns the offset just past the first marked segment.
+func markedAt(path string) (end int, ok bool) {
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i < len(path) && path[i] != '/' {
+			continue
+		}
+		seg := path[start:i]
+		if endsMarked(seg) {
+			return i, true
+		}
+		if i == len(path) && markedFile(seg) {
+			return i, true
+		}
+		start = i + 1
+	}
+	return 0, false
+}
+
+// markedFile is the file spelling: name.encrypted.ext, with a name and
+// exactly one extension after the marker.
+func markedFile(seg string) bool {
+	dot := -1
+	for i := len(seg) - 1; i >= 0; i-- {
+		if seg[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot <= 0 || dot == len(seg)-1 {
+		return false
+	}
+	return endsMarked(seg[:dot])
+}
+
+// endsMarked reports whether s ends in the marker and has a name before it.
+//
+// Case is ignored, and that is a safety property rather than a convenience.
+// A marker that fails to match does not stop a file syncing, it sends the
+// file readable: "Clients.Encrypted", from a phone keyboard that capitalised
+// it, would otherwise be published in plaintext by a rule the user believed
+// they had invoked.
+func endsMarked(s string) bool {
+	if len(s) <= len(EncryptedMarker) {
+		return false
+	}
+	tail := s[len(s)-len(EncryptedMarker):]
+	for i := 0; i < len(tail); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != EncryptedMarker[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidKeyCheck reports whether s is a key check: 32 bytes as lowercase hex.

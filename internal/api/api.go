@@ -446,6 +446,8 @@ func noteMutationStatusFor(code string) int {
 		return http.StatusRequestEntityTooLarge
 	case protocol.CodeForbidden:
 		return http.StatusForbidden
+	case protocol.CodeEncryptedPath:
+		return http.StatusUnprocessableEntity
 	default:
 		return statusFor(code)
 	}
@@ -521,11 +523,8 @@ func plainOnly(next func(http.ResponseWriter, *http.Request, *vaults.Instance)) 
 // atomic. The first device to arrive installs it; every later one is told a
 // key exists and must enter that key instead of generating another.
 func (s *Server) putKeyCheck(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
-	if !inst.Encrypted {
-		fail(w, http.StatusUnprocessableEntity, protocol.CodeMalformed,
-			inst.Name+" is not an encrypted vault")
-		return
-	}
+	// Any vault, not only an encrypted one: an ordinary vault gains a key the
+	// first time a device creates one for its .encrypted files.
 	var req struct {
 		Check string `json:"check"`
 	}
@@ -1040,6 +1039,13 @@ func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.
 		return
 	}
 
+	// A pin is kept as readable text in the vault, path included. Under a
+	// marked folder that path is an encrypted name no client could list back.
+	if protocol.EncryptedPath(req.Path) {
+		fail(w, http.StatusUnprocessableEntity, protocol.CodeEncryptedPath,
+			req.Path+" is encrypted and cannot be pinned")
+		return
+	}
 	entry, head, err := inst.Reconciler.Pin(req.ExpectedHead, req.Name, req.Path)
 	switch {
 	case errors.Is(err, reconcile.ErrPinName):
@@ -1159,7 +1165,7 @@ func (s *Server) routes() []route {
 		// unreferenced blob still consumes disk, and the write guards count
 		// writes per path at push time -- they never see an orphan.
 		{Method: "PUT", Path: "/v1/content/{hash}", Does: "upload content; 400 if it does not hash to {hash}", Scope: auth.ScopeWrite, handle: s.putContent},
-		{Method: "PUT", Path: "/v1/keycheck", Does: "{check} install an encrypted vault's key check; once only", Scope: auth.ScopeWrite, handle: s.putKeyCheck},
+		{Method: "PUT", Path: "/v1/keycheck", Does: "{check} install the vault's key check; once only", Scope: auth.ScopeWrite, handle: s.putKeyCheck},
 		{Method: "GET", Path: "/v1/content/{hash}", Does: "download content by hash", Scope: auth.ScopeRead, handle: s.getContent},
 		// Delete is an op INSIDE the change set, so this route needs write and
 		// the handler additionally checks delete. See push.

@@ -247,7 +247,14 @@ func (r *Registry) openLocked(name string) (*Instance, error) {
 		return nil, fmt.Errorf("vaults: reading the kind of %s: %w", name, err)
 	}
 	// The same exclusion policy the single-vault server installed, per vault.
-	rp.SetSyncable(func(p string) bool { return !vault.Skip(p) })
+	// A marked path is held to the encrypted vault's rule, so a readable file
+	// dropped at one by hand on the server is never committed.
+	rp.SetSyncable(func(p string) bool {
+		if vault.Skip(p) {
+			return false
+		}
+		return !protocol.EncryptedPath(p) || markedOnDisk(vaultDir, p)
+	})
 	if encrypted {
 		// This is where files enter git, so it is where a file dropped into
 		// the directory by hand is stopped: the watcher commits through it.
@@ -376,6 +383,18 @@ func encryptedOnDisk(vaultDir, rel string) bool {
 	if !protocol.ValidEncryptedPath(rel) {
 		return false
 	}
+	return envelopeOnDisk(vaultDir, rel)
+}
+
+// markedOnDisk is encryptedOnDisk for a path marked .encrypted in an ordinary
+// vault.
+func markedOnDisk(vaultDir, rel string) bool {
+	return protocol.ValidMarkedPath(rel) && envelopeOnDisk(vaultDir, rel)
+}
+
+// envelopeOnDisk reports whether the file at rel starts with the envelope, or
+// is missing.
+func envelopeOnDisk(vaultDir, rel string) bool {
 	f, err := os.Open(filepath.Join(vaultDir, filepath.FromSlash(rel)))
 	if errors.Is(err, fs.ErrNotExist) {
 		return true

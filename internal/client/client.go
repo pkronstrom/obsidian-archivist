@@ -240,6 +240,26 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	return c.send(ctx, method, path, body, contentType)
 }
 
+// refusePath stops a call that names a path marked .encrypted in an ordinary
+// vault.
+//
+// Same reasoning as refuseEncrypted, for one file: what the server holds
+// there is ciphertext, so a read returns bytes no tool can use and a write
+// would send plaintext the server then has to refuse -- after the content
+// was already uploaded. Refusing here keeps both from starting.
+func refusePath(paths ...string) error {
+	for _, p := range paths {
+		if protocol.EncryptedPath(p) {
+			return &Error{
+				Code:    protocol.CodeEncryptedPath,
+				Message: p + " is encrypted; only a device holding the vault's key can read or write it",
+				Status:  http.StatusUnprocessableEntity,
+			}
+		}
+	}
+	return nil
+}
+
 // refuseEncrypted stops every call to an encrypted vault.
 //
 // This client is the relay's: MCP tools, the file API and webhooks all go
@@ -500,6 +520,11 @@ func readLimited(body io.Reader, max int64, what string) ([]byte, error) {
 // put that merged once can merge again. Reporting an uncertain outcome honestly
 // is better than a retry that quietly does something different.
 func (c *Client) Push(ctx context.Context, base string, changes []protocol.Change) (protocol.PushResponse, error) {
+	for _, ch := range changes {
+		if err := refusePath(ch.Path, ch.From); err != nil {
+			return protocol.PushResponse{}, err
+		}
+	}
 	// Gate the only call that changes the vault. Reads against a mismatched
 	// protocol are merely wrong; writes are durable.
 	if err := c.ensureCompatible(ctx); err != nil {
@@ -511,6 +536,9 @@ func (c *Client) Push(ctx context.Context, base string, changes []protocol.Chang
 }
 
 func (c *Client) History(ctx context.Context, path string, limit int) ([]protocol.Revision, error) {
+	if err := refusePath(path); err != nil {
+		return nil, err
+	}
 	q := "/v1/history?path=" + url.QueryEscape(path)
 	if limit > 0 {
 		q += "&limit=" + strconv.Itoa(limit)
@@ -533,6 +561,9 @@ func (c *Client) ReadAt(ctx context.Context, rev, path string, max int64) ([]byt
 
 // openAt is ReadAt without the read: the caller gets the body and closes it.
 func (c *Client) openAt(ctx context.Context, rev, path string) (io.ReadCloser, error) {
+	if err := refusePath(path); err != nil {
+		return nil, err
+	}
 	if rev == "" {
 		rev = "head"
 	}
@@ -612,6 +643,11 @@ func (c *Client) WriteAt(ctx context.Context, path string, content []byte, base 
 func (c *Client) WriteAtWithRevision(ctx context.Context, path string, content []byte, base string) (protocol.Result, string, error) {
 	var zero protocol.Result
 
+	// Before the upload below, not left to Push: by then the plaintext would
+	// already be in the server's object store.
+	if err := refusePath(path); err != nil {
+		return zero, "", err
+	}
 	if base == "" {
 		var err error
 		if base, err = c.Head(ctx); err != nil {
@@ -727,12 +763,11 @@ func (c *Client) List(ctx context.Context, prefix string) (map[string]protocol.E
 	if err != nil {
 		return nil, err
 	}
-	if prefix == "" {
-		return snap.Files, nil
-	}
+	// Marked paths are left out: every caller of List goes on to read, search
+	// or offer what it returns, and none of that works on ciphertext.
 	out := make(map[string]protocol.Entry)
 	for p, e := range snap.Files {
-		if strings.HasPrefix(p, prefix) {
+		if strings.HasPrefix(p, prefix) && !protocol.EncryptedPath(p) {
 			out[p] = e
 		}
 	}
