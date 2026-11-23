@@ -1,6 +1,10 @@
 # Encrypted Paths — Design Note
 
-**Status:** Explored, not planned. No code. Written so the reasoning does not
+**Status:** Explored, not planned. No code. The server-side guard it proposes was
+later built for a different threat model; see
+[encrypted files](2026-11-23-encrypted-files-design-note.md).
+
+Original status: explored, not planned. Written so the reasoning does not
 have to be re-derived, and so the discarded options stay discarded.
 
 **Date:** 2026-08-21

@@ -433,6 +433,12 @@ npm run build
 # End-to-end against a running server. Exercises the real client and sync
 # engine; only Obsidian's requestUrl and DataAdapter are substituted.
 node test/integration.mjs http://localhost:8090 <token>
+
+# The same for encryption. Each needs the server's data root, which it reads
+# to check what the server ended up holding, and the vaults named at the top
+# of the file.
+node test/integration-encrypted.mjs http://localhost:8090 <token> <root>
+node test/integration-marked.mjs http://localhost:8090 <token> <root>
 ```
 
 There is also an optional test that runs the plugin inside a real Obsidian. It
@@ -448,7 +454,7 @@ It clicks through what the Node tests cannot see: the key dialog on a first
 and a second device, the settings entries, the switch dialog and its undo, and
 the phone layout through Obsidian's mobile emulation. Screenshots of each
 dialog and the logs land in `test/e2e/artifacts/`. It covers encrypted vaults
-only, and the mobile emulation is a layout, not a phone: the real iOS and
+and encrypted files only, and the mobile emulation is a layout, not a phone: the real iOS and
 Android apps still need checking by hand.
 
 ## Licence

@@ -148,7 +148,8 @@ export async function launch(name, vaultDir, token) {
 			const file = path.join(ARTIFACTS, `${String(++shots).padStart(2, "0")}-${name}-${label}.png`);
 			// Whichever window the last thing looked at was in.
 			const settings = label.startsWith("settings") ? device.settingsPage : undefined;
-			await (settings ?? device.modalPage ?? page).screenshot({ path: file });
+			const target = [settings, device.modalPage, page].find((p) => p && !p.isClosed());
+			await target.screenshot({ path: file });
 		},
 		read: (p) => fs.readFile(path.join(vaultDir, p), "utf8"),
 		async close() {

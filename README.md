@@ -24,6 +24,7 @@ that machine can search, read, edit, serve and back up the same files.
 | **Step-up for agents** | Mint an agent's token with `-step-up work` and it gets `step_up_required` on that vault until you approve with a six-digit code from your authenticator, opening a window that expires on a clock and is never extended by use. Other tokens on the same vault are unaffected. |
 | **See plugins across devices** | Find missing plugins and version differences, then open their community store pages. Settings stay local. |
 | **Encrypted vaults** | Mark a vault encrypted and the plugin encrypts contents and file names before they leave the device. The server stores and backs up what it cannot read. |
+| **Encrypted files** | Name a note `Salary.encrypted.md` or a folder `Clients.encrypted/` in an ordinary vault and the server only ever holds it as ciphertext. The rest of the vault stays searchable and mergeable. |
 | **`.local` never syncs** | `notes.local.md`, or anything under `scratch.local/`, stays on the device that made it. |
 
 ## Quick start
@@ -107,6 +108,7 @@ Funnel makes the service public.
 - [Run webhooks and event consumers](docs/INTEGRATIONS.md#react-to-changes)
 - [Keep several vaults](docs/OPERATIONS.md#more-than-one-vault)
 - [Encrypt a vault](docs/OPERATIONS.md#encrypted-vaults)
+- [Encrypt some files of a vault](docs/OPERATIONS.md#encrypt-some-files-of-an-ordinary-vault)
 - [Back everything up](docs/OPERATIONS.md#backups)
 
 ## Important limitations

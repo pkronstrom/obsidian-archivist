@@ -3,8 +3,8 @@
 // The other end-to-end tests run the sync engine under Node with a stand-in
 // for Obsidian. This one exists for what they cannot see: the dialogs, the
 // settings pane, the commands, and Obsidian's own local storage and file
-// events. It covers encrypted vaults, which are the part of the plugin where
-// a wrong click costs the most.
+// events. It covers encrypted vaults and encrypted files in an ordinary vault,
+// which are the parts of the plugin where a wrong click costs the most.
 //
 // Run it through compose, which supplies Obsidian, the server and a display:
 //
@@ -54,6 +54,7 @@ async function startServer() {
 	server("vault", "add", "-root", ROOT, "-encrypted", "moved");
 	server("vault", "add", "-root", ROOT, "old");
 	server("vault", "add", "-root", ROOT, "personal");
+	server("vault", "add", "-root", ROOT, "mixed");
 	const out = spawnSyncBoth("archivist-server", ["token", "add", "-tokens", TOKENS, "-label", "e2e", "-vaults", "*", "-profile", "obsidian-plugin"]);
 	const token = out.match(/arch_[A-Za-z0-9_-]+/)?.[0];
 	if (!token) throw new Error(`no token minted: ${out}`);
@@ -160,8 +161,9 @@ const write = (d, p, text) =>
 		await vault.create(p, text);
 	}, [p, text]);
 
-/** Clicks through "Create key" to the syncing vault. Returns the recovery key. */
-async function createKey(d, vault) {
+/** Clicks through "Create key" to the syncing vault. Returns the recovery key.
+ *  `done` says when the sync that follows has landed. */
+async function createKey(d, vault, done) {
 	await d.findModal();
 	await button(d, "Create key").click();
 	check("the recovery key is shown before anything is uploaded", (await heading(d)) === "Save this recovery key");
@@ -173,10 +175,14 @@ async function createKey(d, vault) {
 	await d.modal().locator(".checkbox-container").click();
 	check("and enabled once it is", await start.isEnabled());
 	await start.click();
-	await until(`${d.name} to sync with ${vault}`, async () => {
-		const s = await state(d);
-		return s?.vault === vault && s.base !== "";
-	});
+	await until(
+		`${d.name} to sync with ${vault}`,
+		done ??
+			(async () => {
+				const s = await state(d);
+				return s?.vault === vault && s.base !== "";
+			}),
+	);
 	return recovery;
 }
 
@@ -462,6 +468,90 @@ async function switching(token) {
 	await c.close();
 }
 
+/** An ordinary vault with a few files marked .encrypted. */
+async function markedFiles(token) {
+	console.log("\nencrypted files in an ordinary vault");
+	const sealedOn = async (p) => {
+		const bytes = await fs.readFile(path.join(ROOT, "vaults", "mixed", p)).catch(() => null);
+		return bytes !== null && bytes.subarray(0, ENVELOPE.length).equals(Buffer.from(ENVELOPE));
+	};
+	const notes = async () => (await serverFiles("mixed")).filter((f) => !f.startsWith(".archivist/")).sort();
+
+	const dir = path.join(WORK, "m1");
+	await makeVault(dir, settings("mixed", "mac"), {
+		"Plan.md": "the plan, readable\n",
+		"Salary.encrypted.md": "SECRET-JULIET salary\n",
+		"Clients.encrypted/Acme/Contract.md": "SECRET-KILO contract\n",
+	});
+	const m1 = await launch("m1", dir, token);
+
+	check("the key dialog opens for the marked files", (await heading(m1)) === 'Create the key for "mixed"');
+	check("and says the rest of the vault is unaffected", (await m1.modal().innerText()).includes("rest of the vault syncs as before"));
+	await m1.shot("files-create-key");
+	check("the ordinary note synced without waiting for the key", (await notes()).join() === "Plan.md", (await notes()).join());
+	await button(m1, "Not now").click();
+	await until("the notice", async () => (await m1.notices()).some((n) => n.includes("not synced on this device")));
+	await m1.sync();
+	check('"Not now" is remembered: the next sync does not ask again', !(await m1.modal().isVisible()) && /↓\d+ ↑\d+/.test(await m1.status()), await m1.status());
+	check("and the marked files stay off the server", (await notes()).join() === "Plan.md");
+
+	let pane = await m1.openSettings();
+	await m1.shot("settings-files-no-key");
+	check("settings explain the marker", await pane.locator(".setting-item", { hasText: "Files encrypted on the server" }).isVisible());
+	const offer = pane.locator(".setting-item", { hasText: "Encrypted files are not syncing on this device" });
+	check("and offer the key", await offer.isVisible());
+	await offer.getByRole("button", { name: "Create the key" }).click();
+	const recovery = await createKey(m1, "mixed", () => sealedOn("Salary.encrypted.md"));
+	await m1.closeSettings();
+
+	const held = await notes();
+	check("the marked file keeps its name and is ciphertext on the server", held.includes("Salary.encrypted.md") && (await sealedOn("Salary.encrypted.md")));
+	const under = held.filter((f) => f.startsWith("Clients.encrypted/"));
+	check("the file in the marked folder has an encrypted name and is ciphertext", under.length === 1 && /^Clients\.encrypted\/[a-z2-7]+\/[a-z2-7]+$/.test(under[0]) && (await sealedOn(under[0])), held.join(", "));
+	check("the ordinary note is still readable there", (await fs.readFile(path.join(ROOT, "vaults", "mixed", "Plan.md"), "utf8")) === "the plan, readable\n");
+	for (const text of ["SECRET-", "Acme", "Contract"]) {
+		check(`"${text}" appears nowhere in the vault's history`, !inHistory("mixed", text));
+	}
+
+	const dir2 = path.join(WORK, "m2");
+	await makeVault(dir2, settings("mixed", "laptop"));
+	const m2 = await launch("m2", dir2, token);
+	check("a second device is asked to enter the key", (await heading(m2)) === 'Enter the key for "mixed"');
+	check("having already pulled the ordinary note", (await m2.read("Plan.md")) === "the plan, readable\n" && !(await exists(path.join(dir2, "Salary.encrypted.md"))));
+	await m2.modal().locator("textarea").fill(recovery);
+	await button(m2, "Unlock").click();
+	await until("the encrypted files on the second device", () => exists(path.join(dir2, "Clients.encrypted/Acme/Contract.md")));
+	check("with the key the marked files arrive readable, under their real names", (await m2.read("Salary.encrypted.md")) === "SECRET-JULIET salary\n" && (await m2.read("Clients.encrypted/Acme/Contract.md")) === "SECRET-KILO contract\n");
+	pane = await m2.openSettings();
+	const row = pane.locator(".setting-item", { hasText: "Recovery key" });
+	await m2.shot("settings-files-key");
+	check("settings show the recovery key entry for the marked files", (await row.locator(".setting-item-description").innerText()).includes("marked .encrypted"));
+	await m2.closeSettings();
+
+	await write(m1, "Salary.encrypted.md", "SECRET-LIMA from the mac\n");
+	await write(m2, "Salary.encrypted.md", "SECRET-MIKE from the laptop\n");
+	await m1.sync();
+	await m2.sync();
+	const copies = (await fs.readdir(dir2)).filter((f) => f.includes("conflict"));
+	check("a conflict copy of a marked note keeps the marker", copies.length === 1 && /^Salary\.conflict-.*\.encrypted\.md$/.test(copies[0]), (await fs.readdir(dir2)).join(", "));
+	await m2.sync();
+	check("so it reaches the server as ciphertext", copies[0] !== undefined && (await sealedOn(copies[0])));
+
+	await m1.sync();
+	await m1.eval(() => globalThis.app.fileManager.renameFile(globalThis.app.vault.getAbstractFileByPath("Plan.md"), "Plan.encrypted.md"));
+	await m1.sync();
+	check("renaming a note into the marker replaces the readable file with ciphertext", !(await notes()).includes("Plan.md") && (await sealedOn("Plan.encrypted.md")), (await notes()).join(", "));
+	await m1.eval(() => globalThis.app.fileManager.renameFile(globalThis.app.vault.getAbstractFileByPath("Plan.encrypted.md"), "Plan.md"));
+	await m1.sync();
+	const said = await until("the exposure notice", async () => (await m1.notices()).find((n) => n.includes("uploaded as readable text"))).catch(() => "");
+	await m1.shot("files-exposed");
+	check("renaming it back out uploads it readable, and says so", said.includes("Plan.md") && (await fs.readFile(path.join(ROOT, "vaults", "mixed", "Plan.md"), "utf8")) === "the plan, readable\n", said);
+
+	check("after all of that no secret is in the vault's history", !inHistory("mixed", "SECRET-") && !inHistory("mixed", "Acme"));
+	await m1.close();
+	await m2.close();
+}
+
 const exists = (p) => fs.access(p).then(() => true, () => false);
 
 // ---------- run ----------
@@ -479,6 +569,7 @@ try {
 	await automatic(a, b);
 	await phone(srv.token, recovery);
 	await switching(srv.token);
+	await markedFiles(srv.token);
 } catch (err) {
 	failures++;
 	console.log(`  FAIL stopped: ${err.stack ?? err}`);

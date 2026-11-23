@@ -283,6 +283,40 @@ which restores the old vault exactly. The old vault is never changed by the
 plugin. History does not carry over; export the old vault first if you want to
 keep it. Older backups still contain the plaintext until you prune them.
 
+### Encrypt some files of an ordinary vault
+
+A vault does not have to be encrypted whole. In an ordinary vault, a name
+marks what the server may only hold as ciphertext, the way `.local` marks what
+never leaves a device:
+
+- `Salary.encrypted.md`: one note, marked before its extension;
+- `Clients.encrypted/`: a folder, and everything inside it at any depth.
+
+Nothing is set up on the server. The first time the plugin meets a marked
+file it offers to create the vault's key and shows the recovery key; other
+devices enter it. The marked file stays readable on each device that has the
+key. On the server it is ciphertext, and inside a marked folder the file and
+folder names are encrypted too. The marked name itself stays readable.
+
+What to know:
+
+- **A device without the key still syncs everything else.** Marked files are
+  skipped there until the key is entered in **Archivist → Options**. "Not now"
+  is remembered, so a device can be left without the key on purpose. A marked
+  file created on such a device is not backed up until it has the key.
+- **Marked files lose what encrypted vaults lose:** no merge of concurrent
+  edits (you get a conflict copy), no access through the relay or MCP, no
+  pins. The rest of the vault keeps all of it.
+- **Marking an existing note does not clean its past.** Renaming `Salary.md`
+  to `Salary.encrypted.md` leaves the earlier versions readable in history and
+  in backups. `reclaim` can prune the old name once its age gate passes.
+- **Removing the marker publishes the note.** Renaming it back uploads it
+  readable, and the plugin says so.
+- **A copy can lose the marker.** Obsidian's "Make a copy" produces
+  `Salary.encrypted 1.md`, which is an ordinary name. Put notes you copy often
+  in a marked folder, where the name of the file does not matter.
+- **The marker ignores case**, so `Clients.Encrypted/` is marked too.
+
 ### Back up and restore
 
 Back up as for any vault. The export carries the vault's kind and key check, so
