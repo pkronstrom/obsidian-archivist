@@ -324,6 +324,17 @@ Back up as for any vault. The export carries the vault's kind and key check, so
 a restored vault is still encrypted. Reading it needs the recovery key and the
 plugin. If the key is lost and no device holds it, the vault cannot be read.
 
+## Updating
+
+The plugin and the server can be updated in either order. A plugin newer than
+its server keeps syncing ordinary vaults; what the server cannot do yet is
+switched off, and the plugin says so. Files marked `.encrypted` stay on the
+device until the server is at least 0.21, and an encrypted vault needs both
+at 0.21.
+
+To use something new, update the server first, then the plugin on each device.
+The server's log names each plugin version that connects, as `client seen`.
+
 ## When sync looks wrong
 
 Work from the least disruptive check downward.
@@ -338,7 +349,8 @@ Work from the least disruptive check downward.
    A healthy vault reports no `missing`, `extra` or `stranded` paths.
 
 2. In the plugin, inspect the Status card and run **Test connection**. This
-   verifies the URL, vault and token without changing content.
+   verifies the URL, vault and token without changing content. The card shows
+   the plugin's version and the server's side by side.
 
 3. Use **Settings → Troubleshooting → Re-bootstrap** only when the device's
    cursor is genuinely stale, such as after restoring the server. It preserves

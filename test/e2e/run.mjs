@@ -557,6 +557,80 @@ async function markedFiles(token) {
 
 const exists = (p) => fs.access(p).then(() => true, () => false);
 
+// ---------- a server older than the plugin ----------
+
+const OLD_SERVER = "http://127.0.0.1:8091";
+const OLD_ROOT = path.join(WORK, "old-root");
+
+/** The released 0.20 server, which knows nothing of encryption. It has no
+ *  `vault add`: a directory under vaults/ is a vault. */
+async function startOldServer() {
+	const tokens = path.join(OLD_ROOT, "tokens.json");
+	await fs.mkdir(path.join(OLD_ROOT, "vaults", "personal"), { recursive: true });
+	const out = spawnSyncBoth("archivist-server-old", ["token", "add", "-tokens", tokens, "-label", "e2e", "-vaults", "*", "-profile", "obsidian-plugin"]);
+	const token = out.match(/arch_[A-Za-z0-9_-]+/)?.[0];
+	if (!token) throw new Error(`no token minted by the old server: ${out}`);
+	const log = await fs.open(path.join(ARTIFACTS, "old-server.log"), "w");
+	const proc = spawn("archivist-server-old", ["-root", OLD_ROOT, "-tokens", tokens, "-listen", "127.0.0.1:8091"], {
+		stdio: ["ignore", log.fd, log.fd],
+	});
+	await until("the old server", () => fetch(`${OLD_SERVER}/healthz`).then((r) => r.ok, () => false));
+	const { version } = await fetch(`${OLD_SERVER}/healthz`).then((r) => r.json());
+	return { token, version, stop: () => proc.kill() };
+}
+
+async function oldServer() {
+	console.log("\na server older than the plugin");
+	const old = await startOldServer();
+	try {
+		const held = async () => {
+			const dir = path.join(OLD_ROOT, "vaults", "personal");
+			const all = await fs.readdir(dir, { recursive: true, withFileTypes: true });
+			return all
+				.filter((e) => e.isFile())
+				.map((e) => path.relative(dir, path.join(e.parentPath, e.name)))
+				.filter((p) => !p.startsWith(".git") && !p.startsWith(".archivist"))
+				.sort();
+		};
+		const dir = path.join(WORK, "o1");
+		await makeVault(dir, { ...settings("personal", "mac"), serverUrl: OLD_SERVER }, {
+			"Plan.md": "the plan\n",
+			"Salary.encrypted.md": "SECRET-LIMA salary\n",
+			"Clients.encrypted/Acme.md": "SECRET-MIKE contract\n",
+		});
+		const o1 = await launch("o1", dir, old.token);
+
+		await until("the notice", async () => (await o1.notices()).some((n) => n.includes("too old to store them")));
+		const notice = (await o1.notices()).find((n) => n.includes("too old to store them"));
+		check("the notice names the server's version", notice.includes(old.version), notice);
+		await o1.shot("old-server-notice");
+		check("the vault synced", /↓\d+ ↑\d+/.test(await o1.status()), await o1.status());
+		check("no key is offered, since that server could not record one", !(await o1.modal().isVisible()));
+		check("the ordinary note reached the server and nothing marked did", (await held()).join() === "Plan.md", (await held()).join());
+
+		const pane = await o1.openSettings();
+		const row = pane.locator(".setting-item", { hasText: "Encrypted files are not syncing" });
+		check("settings say why, with the version", (await row.isVisible()) && (await row.innerText()).includes(old.version));
+		const versions = pane.locator(".archivist-status-row", { hasText: "Versions" });
+		await until("the versions", async () => (await versions.innerText()).includes("server"));
+		check("the status card shows both versions", (await versions.innerText()).includes(`server ${old.version}`), await versions.innerText());
+		check("and offer no key there either", (await pane.getByRole("button", { name: /the key$/ }).count()) === 0);
+		await o1.shot("settings-old-server");
+		await o1.closeSettings();
+
+		await fs.writeFile(path.join(dir, "Plan.md"), "the plan, edited\n");
+		await o1.sync();
+		check(
+			"an ordinary note keeps syncing",
+			(await fs.readFile(path.join(OLD_ROOT, "vaults", "personal", "Plan.md"), "utf8")) === "the plan, edited\n",
+		);
+		check("and the marked files are still only on the device", (await held()).join() === "Plan.md" && (await o1.read("Salary.encrypted.md")) === "SECRET-LIMA salary\n");
+		await o1.close();
+	} finally {
+		old.stop();
+	}
+}
+
 // ---------- run ----------
 
 await fs.mkdir(ARTIFACTS, { recursive: true });
@@ -573,6 +647,13 @@ try {
 	await phone(srv.token, recovery);
 	await switching(srv.token);
 	await markedFiles(srv.token);
+	await oldServer();
+
+	// Every request names the plugin and its version; the server logs each
+	// client once.
+	const { version } = JSON.parse(await fs.readFile("/plugin/manifest.json", "utf8"));
+	const log = await fs.readFile(path.join(ARTIFACTS, "server.log"), "utf8");
+	check("the server's log names the plugin and its version", log.includes(`client=plugin/${version}`), log.split("\n").filter((l) => l.includes("client")).join(" | "));
 } catch (err) {
 	failures++;
 	console.log(`  FAIL stopped: ${err.stack ?? err}`);

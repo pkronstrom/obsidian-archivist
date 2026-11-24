@@ -36,6 +36,13 @@ RUN suffix="$([ "$TARGETARCH" = arm64 ] && echo -arm64 || true)" \
     && curl -fsSL "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/obsidian-${OBSIDIAN_VERSION}${suffix}.tar.gz" \
        | tar -xz --strip-components=1 -C /opt/obsidian
 
+# The last server from before encryption, as released: for the scenario where
+# the plugin was updated and the server was not.
+ARG OLD_SERVER_VERSION=0.20.0
+RUN curl -fsSL -o /usr/local/bin/archivist-server-old \
+        "https://github.com/pkronstrom/obsidian-archivist/releases/download/v${OLD_SERVER_VERSION}/archivist-server-linux-${TARGETARCH}" \
+    && chmod +x /usr/local/bin/archivist-server-old
+
 WORKDIR /e2e
 COPY test/e2e/package.json ./
 RUN npm install --no-audit --no-fund

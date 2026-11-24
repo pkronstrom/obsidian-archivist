@@ -27,16 +27,38 @@ export type Result = {
 };
 
 export const PROTOCOL_VERSION = 2;
+
+/** What a server can do beyond the base protocol, as its index lists it. */
+export const Feature = {
+	EncryptedVaults: "encrypted-vaults",
+	EncryptedFiles: "encrypted-files",
+} as const;
+
 export type ServerIndex = {
 	service: string;
 	version: string;
 	protocol: number;
 	vault: string;
+	/**
+	 * Ask for a feature here, never by comparing `version`. Empty for a server
+	 * from before the list existed, which has none of them.
+	 */
+	features: string[];
 	/** The server stores only what a client encrypted, and holds no key. */
 	encrypted: boolean;
 	/** What a key is verified against. "" until the first device installs it. */
 	keyCheck: string;
 };
+
+/**
+ * Sent with every request as X-Archivist-Client, so the server's log says
+ * which plugin called and the server can turn away one it no longer supports.
+ * Set once at load from the manifest; "dev" outside Obsidian.
+ */
+let clientVersion = "dev";
+export function setClientVersion(version: string): void {
+	clientVersion = version;
+}
 
 export function requireCurrentIndex(value: unknown): ServerIndex {
 	if (!value || typeof value !== "object") {
@@ -53,13 +75,20 @@ export function requireCurrentIndex(value: unknown): ServerIndex {
 		index.service !== "archivist" ||
 		typeof index.version !== "string" ||
 		!index.version ||
-		typeof index.vault !== "string" ||
-		typeof index.encrypted !== "boolean" ||
-		typeof index.keyCheck !== "string"
+		typeof index.vault !== "string"
 	) {
 		throw new Error("server response is missing current index metadata");
 	}
-	return index as ServerIndex;
+	// A server from before encryption sends none of these three. That is an
+	// older server, not a broken one: it holds no encrypted vault and no key
+	// check, and an ordinary vault syncs with it as it always did. The
+	// features it lacks are switched off where they are used.
+	return {
+		...index,
+		features: isStringArray(index.features) ? index.features : [],
+		encrypted: index.encrypted === true,
+		keyCheck: typeof index.keyCheck === "string" ? index.keyCheck : "",
+	} as ServerIndex;
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -351,6 +380,7 @@ export class Client {
 			method,
 			headers: {
 				Authorization: `Bearer ${this.token}`,
+				"X-Archivist-Client": `plugin/${clientVersion}`,
 				...(body !== undefined ? { "Content-Type": "application/json" } : {}),
 			},
 			body: binary ?? (body !== undefined ? JSON.stringify(body) : undefined),

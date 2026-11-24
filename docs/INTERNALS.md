@@ -77,7 +77,7 @@ version.
 | `POST` | `/personal/v1/unlock` | spend a one-time code on a vault this token gates |
 | `GET` | `/v1/vaults` | which vaults this token opens, and what it may do |
 | `POST` | `/v1/vaults` | create a vault; requires write scope and `canCreateVaults` |
-| `GET` | `/personal/v1` | the endpoint list, plus `protocol` and `version` |
+| `GET` | `/personal/v1` | the endpoint list, plus `protocol`, `features` and `version` |
 
 Content is addressed by **git object hash**, so a client can compute an address
 with plain `git hash-object` and nothing bespoke:
@@ -92,6 +92,35 @@ curl -H "$AUTH" -d "{\"base\":\"$BASE\",\"device\":\"mac\",\"changes\":[
 `/changes` answers **409** rather than 500 when it does not recognise a cursor —
 the client is from another repository or predates a history rewrite, and its
 recovery is to re-bootstrap from `/snapshot`, not to retry.
+
+### When the plugin and the server are different versions
+
+The index carries three things a client reads before it syncs:
+
+| Field | Moves | A client that finds it different |
+|---|---|---|
+| `protocol` | only when the wire format breaks | refuses to sync |
+| `features` | when the server learns something optional | switches that feature off |
+| `version` | every release | shows it, and never compares it |
+
+`features` is how a plugin that updated ahead of its server keeps working. A
+server from before the list existed sends none, which reads as having none of
+them. Against such a server an ordinary vault syncs as it always did, files
+marked `.encrypted` stay on the device with a notice naming the server's
+version, and a device that already holds a key refuses to sync at all: that
+server can neither record a key check nor refuse a readable upload to a marked
+path. New optional behaviour goes in this list, in `protocol.Features` and
+`Feature` in `src/client.ts`, rather than behind a version comparison.
+
+In the other direction, every client names itself in `X-Archivist-Client`:
+`plugin/0.21.0`, `relay/v0.21.0`. The server logs each one once per token as
+`client seen`. It can also turn a plugin away with **426** and
+`client_too_old`, before that plugin reads or writes anything, when it is
+below `protocol.MinPluginVersion`. That is empty, so no plugin is refused: set
+it in the release where an older plugin would do harm rather than only miss a
+feature. A caller that sends no header is always let through, since curl
+sends none and neither does a plugin from before 0.21. Turning those away
+takes a `protocol` bump.
 
 ## Tokens and scopes
 
@@ -439,6 +468,10 @@ node test/integration.mjs http://localhost:8090 <token>
 # of the file.
 node test/integration-encrypted.mjs http://localhost:8090 <token> <root>
 node test/integration-marked.mjs http://localhost:8090 <token> <root>
+
+# The current plugin against an OLDER server, which has to be a real 0.20
+# build: the binaries attached to that release, or one built from the tag.
+node test/integration-old-server.mjs http://localhost:8091 <token> <root>
 ```
 
 There is also an optional test that runs the plugin inside a real Obsidian. It

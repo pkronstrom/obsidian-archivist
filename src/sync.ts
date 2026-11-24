@@ -3,6 +3,7 @@ import { inventoryPathAllowed, inventoryDirectory } from "./plugin-inventory";
 import {
 	Client,
 	Code,
+	Feature,
 	ServerError,
 	UnknownBaseError,
 	requireCurrentIndex,
@@ -43,6 +44,12 @@ export type SyncReport = {
 	 * rest of the vault synced. A question to raise, not a failure.
 	 */
 	needsKey?: { hasKey: boolean; keyCheck: string };
+	/**
+	 * The same files left alone for a different reason: the server is from
+	 * before encrypted files and cannot store them. Its version, for the
+	 * notice. No key is offered, because that server could not record one.
+	 */
+	serverTooOld?: string;
 	/** Files that were renamed out of an .encrypted name and so were uploaded
 	 *  as readable text. Said out loud, because it is the one direction in
 	 *  which a rename publishes a note. */
@@ -464,8 +471,12 @@ export class Sync {
 			}
 		}
 
-		if (this.keyless && !idx.encrypted && (idx.keyCheck !== "" || this.held)) {
-			report.needsKey = { hasKey: idx.keyCheck !== "", keyCheck: idx.keyCheck };
+		if (this.keyless && !idx.encrypted) {
+			if (!idx.features.includes(Feature.EncryptedFiles)) {
+				if (this.held) report.serverTooOld = idx.version;
+			} else if (idx.keyCheck !== "" || this.held) {
+				report.needsKey = { hasKey: idx.keyCheck !== "", keyCheck: idx.keyCheck };
+			}
 		}
 		state.lastSyncedAt = Date.now();
 		saveState(this.app, state);
@@ -818,7 +829,18 @@ export class Sync {
 			// An ordinary vault syncs without a key: its .encrypted files are
 			// left alone until this device is given one. With a key, it is
 			// verified exactly as an encrypted vault's is.
-			if (crypt) await this.verifyKey(client, crypt, idx);
+			if (!crypt) return;
+			if (!idx.features.includes(Feature.EncryptedFiles)) {
+				// A server from before encrypted files can neither record
+				// the key check nor refuse a readable upload to a marked
+				// path. This device has a key, so it has synced with a newer
+				// server: this one was rolled back, or is a different one.
+				throw new Error(
+					`Refusing to sync: this device holds a key for the encrypted files of "${idx.vault}", ` +
+						`but the server (${idx.version}) is too old to store them. Update the server.`,
+				);
+			}
+			await this.verifyKey(client, crypt, idx);
 			return;
 		}
 		if (!crypt) throw new KeyRequiredError(idx.vault, idx.keyCheck !== "", idx.keyCheck);

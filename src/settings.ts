@@ -233,9 +233,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			row("Size").setText(formatVaultStats(this.vaultStats.files, this.vaultStats.bytes));
 		}
 
-		row("Plugin").setText(this.plugin.manifest.version);
+		// Both ends, because a mismatch between them is the first thing to
+		// rule out when something misbehaves. The server's is filled in by
+		// the check below.
+		const versionsEl = row("Versions");
+		versionsEl.setText(`plugin ${this.plugin.manifest.version}`);
 
-		void this.refreshStatus(dot, detailEl, accessEl);
+		void this.refreshStatus(dot, detailEl, accessEl, versionsEl);
 
 		this.renderPairingHazard(containerEl);
 		this.renderSwitch(containerEl);
@@ -249,12 +253,14 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		dot: HTMLElement,
 		detailEl: HTMLElement,
 		accessEl: HTMLElement,
+		versionsEl: HTMLElement,
 	): Promise<void> {
 		const { serverUrl, vault } = this.plugin.settings;
 		const token = loadToken(this.app);
 
 		try {
 			const idx = await new Client(serverUrl, token, vault).index();
+			versionsEl.setText(`plugin ${this.plugin.manifest.version}, server ${idx.version}`);
 			if (idx.vault && vault && idx.vault !== vault) {
 				dot.className = "archivist-status-dot is-error";
 				detailEl.setText(`server reports vault "${idx.vault}", not "${vault}"`);
@@ -329,6 +335,15 @@ export class ArchivistSettingTab extends PluginSettingTab {
 
 	/** The key question, deferred, and the recovery key once there is one. */
 	private renderVaultKey(containerEl: HTMLElement): void {
+		if (this.plugin.serverTooOld) {
+			new Setting(containerEl)
+				.setName("Encrypted files are not syncing")
+				.setDesc(
+					`This vault has files marked .encrypted, and the server (${this.plugin.serverTooOld}) is too ` +
+						`old to store them encrypted. They stay on this device. Everything else syncs. ` +
+						`Update the server to sync them.`,
+				);
+		}
 		const need = this.plugin.pendingKey;
 		if (need) {
 			const files = need.scope === "files";

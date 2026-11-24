@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile, setIcon } from "obsidian";
 import { openSyncedNote } from "./open-synced";
 import { publishInventory, inventoryPathAllowed } from "./plugin-inventory";
-import { Client } from "./client";
+import { Client, setClientVersion } from "./client";
 import { Sync, skip, localOnly, type SyncReport } from "./sync";
 import { RevisionModal } from "./revision-modal";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
@@ -42,6 +42,9 @@ export default class ArchivistPlugin extends Plugin {
 	pendingPairing?: PairingHazardError;
 	/** An encrypted vault this device has no key for; see openKeyModal. */
 	pendingKey?: KeyRequiredError;
+	/** Set while .encrypted files stay on this device because the server is
+	 *  too old to store them: that server's version, for settings to show. */
+	serverTooOld?: string;
 	private keyDeferred = false;
 	private keyModal: KeyModal | null = null;
 	/**
@@ -104,6 +107,7 @@ export default class ArchivistPlugin extends Plugin {
 	private scheduleSync = (): void => this.syncScheduler.schedule();
 
 	async onload(): Promise<void> {
+		setClientVersion(this.manifest.version);
 		await this.loadSettings();
 		// Before anything can build a client: the revision browser and the
 		// deleted-files list read notes without going through a sync first.
@@ -657,12 +661,36 @@ export default class ArchivistPlugin extends Plugin {
 	 */
 	private offerKey(report: SyncReport): void {
 		const vault = this.settings.vault;
+		this.explainOldServer(report.serverTooOld);
 		if (!report.needsKey) {
 			if (this.pendingKey?.scope === "files") this.pendingKey = undefined;
 			return;
 		}
 		this.pendingKey = new KeyRequiredError(vault, report.needsKey.hasKey, report.needsKey.keyCheck, "files");
 		if (!keyDeclined(this.app, vault)) this.openKeyModal();
+	}
+
+	/**
+	 * The server is from before encrypted files, and this device has some.
+	 * They stay here: nothing else is safe, since that server would store
+	 * them readable. Everything else synced.
+	 *
+	 * Said once per server version on this device, and until dismissed,
+	 * because a note the user believes is synced is not. Settings keep
+	 * saying it for as long as it is true.
+	 */
+	private explainOldServer(version: string | undefined): void {
+		this.serverTooOld = version;
+		if (!version) return;
+		const KEY = "archivist.oldServerExplained";
+		if (this.app.loadLocalStorage(KEY) === version) return;
+		this.app.saveLocalStorage(KEY, version);
+		new Notice(
+			`archivist: files and folders marked .encrypted are staying on this device. The server ` +
+				`(${version}) is too old to store them encrypted. Everything else synced; update the ` +
+				`server to sync these too.`,
+			0,
+		);
 	}
 
 	/** Open the switch dialog. Also called from the settings tab. */
