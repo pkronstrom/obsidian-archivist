@@ -22,6 +22,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
@@ -40,6 +41,10 @@ type Server struct {
 	grants   *stepup.Grants
 	verifier *stepup.Verifier
 	log      *slog.Logger
+	// minPlugin is the oldest plugin let in, "" for any.
+	minPlugin string
+	// clients remembers which (token, client) pairs have been logged.
+	clients clientLog
 }
 
 // Option configures the server. Variadic because step-up is additive: every
@@ -59,6 +64,37 @@ func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
 // WithLog supplies the logger. Without it the server logs nothing.
 func WithLog(l *slog.Logger) Option {
 	return func(s *Server) { s.log = l }
+}
+
+// WithMinPlugin overrides the oldest plugin version the server accepts.
+func WithMinPlugin(v string) Option {
+	return func(s *Server) { s.minPlugin = v }
+}
+
+// clientLog records each (token label, client) pair the first time it calls,
+// so the log says which plugin versions are in use without a line per request.
+//
+// Bounded, because the header is whatever the caller sends: past the limit new
+// pairs simply go unlogged.
+type clientLog struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+const maxLoggedClients = 256
+
+func (c *clientLog) first(label, client string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := label + "\x00" + client
+	if c.seen[key] || len(c.seen) >= maxLoggedClients {
+		return false
+	}
+	if c.seen == nil {
+		c.seen = map[string]bool{}
+	}
+	c.seen[key] = true
+	return true
 }
 
 // stepUpState is the gate decision made at admission.
@@ -92,7 +128,10 @@ const (
 // from the SAME route table that generates the index. A route still cannot
 // exist without being documented, or be documented without existing.
 func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
-	s := &Server{reg: reg, tokens: tokens, log: slog.New(slog.DiscardHandler)}
+	s := &Server{
+		reg: reg, tokens: tokens, log: slog.New(slog.DiscardHandler),
+		minPlugin: protocol.MinPluginVersion,
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -140,6 +179,21 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist"`)
 			fail(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
+			return
+		}
+		// After the token, so only a caller that may sync learns what the
+		// server runs. Capped because it goes into the log.
+		client := r.Header.Get(protocol.HeaderClient)
+		if len(client) > 64 {
+			client = client[:64]
+		}
+		if client != "" && s.clients.first(p.Label, client) {
+			s.log.Info("client seen", "token", p.Label, "client", client)
+		}
+		if protocol.ClientOlderThan(client, protocol.ClientPlugin, s.minPlugin) {
+			fail(w, http.StatusUpgradeRequired, protocol.CodeClientTooOld, fmt.Sprintf(
+				"this server needs Archivist plugin %s or newer and this device runs %s; update the plugin",
+				s.minPlugin, strings.TrimPrefix(client, protocol.ClientPlugin+"/")))
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxPrincipal, p)))
@@ -1231,11 +1285,17 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		"keyCheck": keyCheck,
 		"version":  version.Version,
 		"protocol": protocol.Version,
+		// What this server can do beyond the base protocol. A client checks
+		// for the feature it needs; an index without the list is a server
+		// from before any of them.
+		"features": protocol.Features(),
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
 			"/v1/changes is the durable feed; /v1/events only says when to read it.",
 			"Check `protocol`, not `version`: releases bump the latter constantly.",
+			"Check `features` for anything newer than the base protocol.",
+			"Send X-Archivist-Client: <program>/<version> so the log can say who called.",
 		},
 		"endpoints": out,
 	})

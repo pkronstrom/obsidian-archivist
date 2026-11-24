@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkronstrom/obsidian-archivist/internal/version"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -316,6 +317,8 @@ func (c *Client) send(ctx context.Context, method, path string, body io.Reader, 
 	if c.via != "" {
 		req.Header.Set(protocol.HeaderVia, c.via)
 	}
+	// The relay is the only program built on this client.
+	req.Header.Set(protocol.HeaderClient, "relay/"+version.Version)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}

@@ -432,3 +432,17 @@ func TestTypedNoteMutationClientsSendConfiguredDevice(t *testing.T) {
 		}
 	})
 }
+
+func TestEveryRequestNamesTheClient(t *testing.T) {
+	var got []string
+	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(protocol.HeaderClient))
+		writeJSON(w, protocol.HeadResponse{Head: "abc"})
+	})
+	if _, err := c.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "relay/") {
+		t.Fatalf("%s = %q, want relay/<version>", protocol.HeaderClient, got)
+	}
+}

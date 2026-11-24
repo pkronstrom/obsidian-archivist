@@ -13,6 +13,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -56,6 +58,77 @@ const (
 // Device -- which is why the token label sits beside it in the trailers and is
 // the part that cannot be forged.
 const HeaderVia = "X-Archivist-Via"
+
+// HeaderClient names the calling program and its version: "plugin/0.21.0",
+// "relay/v0.21.0". The server logs it, and can turn away a plugin older than
+// it supports before that plugin reads or writes anything.
+//
+// Like HeaderVia it is a hint, not a credential. A caller that sends none is
+// let through: curl sends none, and neither does a plugin from before 0.21.
+// Turning THOSE away is what the protocol number is for.
+const HeaderClient = "X-Archivist-Client"
+
+// ClientPlugin is the program name the Obsidian plugin sends in HeaderClient.
+const ClientPlugin = "plugin"
+
+// MinPluginVersion is the oldest plugin this server accepts, "" for any.
+//
+// Raise it in the release where an older plugin would do harm rather than
+// merely miss a feature -- write something this server would misread, say.
+// For anything less, add to Features and let old plugins carry on.
+const MinPluginVersion = ""
+
+// Features are what this server can do beyond the base protocol, listed in
+// the index. A client asks for the feature it needs and switches that feature
+// off when it is missing, rather than comparing version strings. A server
+// from before the list existed sends none, which reads as "has none of them".
+const (
+	FeatureEncryptedVaults = "encrypted-vaults"
+	FeatureEncryptedFiles  = "encrypted-files"
+)
+
+// Features returns the list for the index.
+func Features() []string {
+	return []string{FeatureEncryptedVaults, FeatureEncryptedFiles}
+}
+
+// ClientOlderThan reports whether the HeaderClient value names program at a
+// version below min. Anything it cannot read is not older: a missing header,
+// another program, a dev build.
+func ClientOlderThan(header, program, min string) bool {
+	name, ver, ok := strings.Cut(header, "/")
+	if !ok || name != program {
+		return false
+	}
+	have, ok1 := parseVersion(ver)
+	want, ok2 := parseVersion(min)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := range have {
+		if have[i] != want[i] {
+			return have[i] < want[i]
+		}
+	}
+	return false
+}
+
+// parseVersion reads "0.21.0" or "v0.21.0".
+func parseVersion(s string) ([3]int, bool) {
+	var v [3]int
+	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
 
 // Per-path outcomes of a push.
 //
@@ -117,6 +190,9 @@ const (
 	// CodeEncryptedPath is the same refusal for one path: a file marked
 	// .encrypted in a vault that is otherwise ordinary.
 	CodeEncryptedPath = "encrypted_path"
+	// CodeClientTooOld is a plugin below MinPluginVersion. Nothing was read
+	// or written; the message says which version is needed.
+	CodeClientTooOld = "client_too_old"
 )
 
 // Envelope is the literal prefix of every object in an encrypted vault.

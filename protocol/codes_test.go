@@ -11,6 +11,7 @@ func TestErrorCodesAreDistinctAndNonEmpty(t *testing.T) {
 		CodeHashMismatch, CodeTooLarge, CodeMalformed, CodeNotFound,
 		CodeDuplicatePath, CodeInternal, CodeQuarantined, CodeThrottled,
 		CodeDiskLow, CodePlaintextRefused, CodeNoKey, CodeKeyCheckSet, CodeEncryptedVault, CodeEncryptedPath,
+		CodeClientTooOld,
 	} {
 		if c == "" {
 			t.Fatal("an error code is empty")
