@@ -8,8 +8,9 @@ Some notes are sensitive: they should sync between my own devices, be backed up
 and keep their history, but never reach an AI agent over MCP, a webhook, or any
 other integration through the relay.
 
-Marked by name, e.g. `my-note.secret.md` or a `secret/` folder (convention to
-decide). Possibly encrypted as well, but that is a separate, optional layer.
+Marked by name: `my-note.hidden.md`, or a folder such as `Clients.hidden/`.
+Encryption is a separate marker, `.encrypted`, with its own rule: the server
+stores those paths but cannot read them.
 
 Things to settle when designing:
 
@@ -41,7 +42,7 @@ Things to settle when designing:
   against integrations with a valid token. It does nothing against an
   infostealer on a device, which is what
   [encrypted paths](2026-08-21-encrypted-paths-design-note.md) addresses.
-  The two compose: `.secret.md` hidden from integrations, optionally also
-  client-side encrypted.
+  An `.encrypted` path needs no `.hidden` marker: integrations cannot read
+  what the server cannot.
 - **Relation to `.local`.** `.local` never leaves the device; hidden syncs to
   every granted device. Different rules, same naming-convention style.

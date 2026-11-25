@@ -36,6 +36,10 @@ export type Pending = {
 	hash?: string;
 	from?: string;
 	content?: ArrayBuffer;
+	/** Set on the two halves of a rename that was NOT folded into a move:
+	 *  where the file went, on the delete, and where it came from, on the put. */
+	becomes?: string;
+	was?: string;
 };
 
 /**
@@ -55,7 +59,12 @@ export type Pending = {
  * The content is dropped from a paired put, because the server already has it —
  * that is what makes a move preserving rather than destructive.
  */
-export function pairRenames(changes: Pending[]): Pending[] {
+export function pairRenames(
+	changes: Pending[],
+	/** False for a pair that must stay a delete and a put: a rename across
+	 *  the .encrypted marker, which the server refuses as a move. */
+	movable: (from: string, to: string) => boolean = () => true,
+): Pending[] {
 	const deletes = changes.filter((c) => c.op === "del");
 	const puts = changes.filter((c) => c.op === "put" && c.hash);
 	if (deletes.length === 0 || puts.length === 0) return changes;
@@ -78,6 +87,13 @@ export function pairRenames(changes: Pending[]): Pending[] {
 	const moves = new Map<Pending, Pending>();
 	for (const { dels, puts: ps } of byHash.values()) {
 		if (dels.length !== 1 || ps.length !== 1) continue;
+		if (!movable(dels[0].path, ps[0].path)) {
+			// Still one rename, and each half says so, so the caller can
+			// explain what happened if only one of them lands.
+			dels[0].becomes = ps[0].path;
+			ps[0].was = dels[0].path;
+			continue;
+		}
 		pairedDel.add(dels[0]);
 		moves.set(ps[0], dels[0]);
 	}

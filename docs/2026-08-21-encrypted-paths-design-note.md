@@ -1,6 +1,10 @@
 # Encrypted Paths — Design Note
 
-**Status:** Explored, not planned. No code. Written so the reasoning does not
+**Status:** Explored, not planned. No code. The server-side guard it proposes was
+later built for a different threat model; see
+[encrypted files](2026-11-23-encrypted-files-design-note.md).
+
+Original status: explored, not planned. Written so the reasoning does not
 have to be re-derived, and so the discarded options stay discarded.
 
 **Date:** 2026-08-21
@@ -127,4 +131,6 @@ start, and the watcher would interpret an unmount as every file being deleted an
 commit it. If at-rest coverage is wanted, full-disk encryption on the whole box
 is simpler and has none of these hazards.
 
-**Whole-vault E2E.** Settled in ADR-0002. Unchanged.
+**Whole-vault E2E.** Rejected for ordinary vaults in ADR-0002, which stands.
+An opt-in encrypted vault kind now exists beside them; see
+[encrypted vaults](2026-11-19-encrypted-vaults-design-note.md).

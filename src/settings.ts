@@ -5,6 +5,7 @@ import { DeletedModal } from "./deleted-modal";
 import { scopeWarning, stepUpWarning, syncableVaults } from "./scopes";
 import { isFirstRun, loadState } from "./state";
 import { loadToken, saveToken } from "./credentials";
+import { encodeRecoveryKey, unhex } from "./crypt";
 import { collectInventory, readInventories } from "./plugin-inventory";
 import { renderInventoryView } from "./plugin-inventory-view";
 import { VaultPickerModal } from "./vault-picker";
@@ -157,6 +158,18 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					"the .local to start syncing one. A folder like project.local.assets/ " +
 					"is unaffected.",
 			);
+		// Not shown for an encrypted vault, where every file already is.
+		if (!loadState(this.app).encrypted) {
+			new Setting(containerEl)
+				.setName("Files encrypted on the server")
+				.setDesc(
+					"Files with .encrypted before the extension, and folders ending in " +
+						".encrypted, reach the server only as ciphertext: Salary.encrypted.md, " +
+						"Clients.encrypted/. They stay readable on this device. Removing the " +
+						".encrypted uploads the file readable again, and a note's versions from " +
+						"before it was marked stay readable in history.",
+				);
+		}
 
 		this.renderStatus(containerEl);
 
@@ -220,11 +233,17 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			row("Size").setText(formatVaultStats(this.vaultStats.files, this.vaultStats.bytes));
 		}
 
-		row("Plugin").setText(this.plugin.manifest.version);
+		// Both ends, because a mismatch between them is the first thing to
+		// rule out when something misbehaves. The server's is filled in by
+		// the check below.
+		const versionsEl = row("Versions");
+		versionsEl.setText(`plugin ${this.plugin.manifest.version}`);
 
-		void this.refreshStatus(dot, detailEl, accessEl);
+		void this.refreshStatus(dot, detailEl, accessEl, versionsEl);
 
 		this.renderPairingHazard(containerEl);
+		this.renderSwitch(containerEl);
+		this.renderVaultKey(containerEl);
 	}
 
 	/** The live checks: index() for reachability, listVaults() for scopes.
@@ -234,12 +253,14 @@ export class ArchivistSettingTab extends PluginSettingTab {
 		dot: HTMLElement,
 		detailEl: HTMLElement,
 		accessEl: HTMLElement,
+		versionsEl: HTMLElement,
 	): Promise<void> {
 		const { serverUrl, vault } = this.plugin.settings;
 		const token = loadToken(this.app);
 
 		try {
 			const idx = await new Client(serverUrl, token, vault).index();
+			versionsEl.setText(`plugin ${this.plugin.manifest.version}, server ${idx.version}`);
 			if (idx.vault && vault && idx.vault !== vault) {
 				dot.className = "archivist-status-dot is-error";
 				detailEl.setText(`server reports vault "${idx.vault}", not "${vault}"`);
@@ -279,6 +300,96 @@ export class ArchivistSettingTab extends PluginSettingTab {
 					.onClick(() => {
 						this.plugin.openPairingModal();
 					}),
+			);
+	}
+
+	/** A switch that has started and not completed can still be undone. */
+	private renderSwitch(containerEl: HTMLElement): void {
+		const pending = this.plugin.pendingSwitch();
+		if (!pending) {
+			// Only for a folder that has synced: one that never has can simply
+			// have its vault setting changed.
+			if (isFirstRun(loadState(this.app))) return;
+			new Setting(containerEl)
+				.setName("Switch to another vault")
+				.setDesc(
+					"Point this folder at a new, empty vault and publish every note there. " +
+						"This is how an existing vault is moved to an encrypted one.",
+				)
+				.addButton((b) => b.setButtonText("Switch…").onClick(() => this.plugin.openSwitchModal()));
+			return;
+		}
+		new Setting(containerEl)
+			.setName("Switch not finished")
+			.setDesc(
+				`This folder was switched from "${pending.from}" to "${pending.to}" and has not ` +
+					`completed a sync there yet. "${pending.from}" is unchanged.`,
+			)
+			.addButton((b) =>
+				b.setButtonText(`Go back to "${pending.from}"`).onClick(async () => {
+					await this.plugin.undoSwitchNow();
+					this.display();
+				}),
+			);
+	}
+
+	/** The key question, deferred, and the recovery key once there is one. */
+	private renderVaultKey(containerEl: HTMLElement): void {
+		if (this.plugin.serverTooOld) {
+			new Setting(containerEl)
+				.setName("Encrypted files are not syncing")
+				.setDesc(
+					`This vault has files marked .encrypted, and the server (${this.plugin.serverTooOld}) is too ` +
+						`old to store them encrypted. They stay on this device. Everything else syncs. ` +
+						`Update the server to sync them.`,
+				);
+		}
+		const need = this.plugin.pendingKey;
+		if (need) {
+			const files = need.scope === "files";
+			new Setting(containerEl)
+				.setName(files ? "Encrypted files are not syncing on this device" : "This device is not syncing")
+				.setDesc(
+					files
+						? `"${need.vault}" has files marked .encrypted and this device does not have the key. ` +
+							`They are left alone here and on the server. Everything else syncs.`
+						: `"${need.vault}" is an encrypted vault and this device does not have its key. ` +
+							`Nothing has been sent or received.`,
+				)
+				.addButton((b) =>
+					b
+						.setCta()
+						.setButtonText(need.hasKey ? "Enter the key" : "Create the key")
+						.onClick(() => this.plugin.openKeyModal()),
+				);
+			return;
+		}
+		const stored = this.plugin.vaultKey();
+		if (!stored) return;
+		const key = stored.key;
+		// Shown again on request, not hidden: the key is in this device's
+		// local storage either way, so withholding it here protects nothing
+		// and only makes adding a second device harder.
+		const setting = new Setting(containerEl)
+			.setName("Recovery key")
+			.setDesc(
+				(stored.scope === "files"
+					? "Files and folders marked .encrypted are encrypted on the server. "
+					: "This vault is encrypted. ") +
+					"The recovery key adds another device and reads a backup. " +
+					"Keep a copy in your password manager.",
+			);
+		setting
+			.addButton((b) =>
+				b.setButtonText("Show").onClick(async () => {
+					setting.setDesc(await encodeRecoveryKey(unhex(key)));
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Copy").onClick(async () => {
+					await navigator.clipboard.writeText(await encodeRecoveryKey(unhex(key)));
+					new Notice("archivist: recovery key copied");
+				}),
 			);
 	}
 
@@ -374,7 +485,7 @@ export class ArchivistSettingTab extends PluginSettingTab {
 						return;
 					}
 					try {
-						const client = new Client(serverUrl, token, this.plugin.settings.vault);
+						const client = this.plugin.makeClient();
 						const idx = await client.index();
 						const { files } = await client.snapshot();
 						const entries = Object.values(files);
@@ -575,13 +686,13 @@ export class ArchivistSettingTab extends PluginSettingTab {
 			)
 			.addButton((b) =>
 				b.setButtonText("Browse deleted").onClick(() => {
-					const { serverUrl, vault } = this.plugin.settings;
+					const { serverUrl } = this.plugin.settings;
 					const token = loadToken(this.app);
 					if (!serverUrl || !token) {
 						new Notice("archivist: set the server URL and token first");
 						return;
 					}
-					new DeletedModal(this.app, () => new Client(serverUrl, token, vault)).open();
+					new DeletedModal(this.app, () => this.plugin.makeClient()).open();
 				}),
 			);
 

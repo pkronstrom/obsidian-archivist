@@ -32,3 +32,6 @@ tokens.json
 *.pem
 *.key
 gitleaks-report.json
+
+# Screenshots and logs from the Obsidian end-to-end test.
+/test/e2e/artifacts/

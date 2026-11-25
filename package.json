@@ -6,6 +6,7 @@
     "test": "npm run test:unit",
     "test:unit": "npm run build:test && node --test 'test/unit/*.test.mjs'",
     "test:integration": "npm run build:test && node test/integration.mjs",
+    "test:e2e": "docker compose -f test/e2e/compose.yaml run --build --rm e2e",
     "build:test": "esbuild test/entry.ts --bundle --format=esm --platform=node --outfile=dist-test/entry.mjs --alias:obsidian=./test/obsidian-shim.mjs",
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production"
@@ -37,5 +38,8 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0"
   }
 }

@@ -13,6 +13,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -57,6 +59,77 @@ const (
 // the part that cannot be forged.
 const HeaderVia = "X-Archivist-Via"
 
+// HeaderClient names the calling program and its version: "plugin/0.21.0",
+// "relay/v0.21.0". The server logs it, and can turn away a plugin older than
+// it supports before that plugin reads or writes anything.
+//
+// Like HeaderVia it is a hint, not a credential. A caller that sends none is
+// let through: curl sends none, and neither does a plugin from before 0.21.
+// Turning THOSE away is what the protocol number is for.
+const HeaderClient = "X-Archivist-Client"
+
+// ClientPlugin is the program name the Obsidian plugin sends in HeaderClient.
+const ClientPlugin = "plugin"
+
+// MinPluginVersion is the oldest plugin this server accepts, "" for any.
+//
+// Raise it in the release where an older plugin would do harm rather than
+// merely miss a feature -- write something this server would misread, say.
+// For anything less, add to Features and let old plugins carry on.
+const MinPluginVersion = ""
+
+// Features are what this server can do beyond the base protocol, listed in
+// the index. A client asks for the feature it needs and switches that feature
+// off when it is missing, rather than comparing version strings. A server
+// from before the list existed sends none, which reads as "has none of them".
+const (
+	FeatureEncryptedVaults = "encrypted-vaults"
+	FeatureEncryptedFiles  = "encrypted-files"
+)
+
+// Features returns the list for the index.
+func Features() []string {
+	return []string{FeatureEncryptedVaults, FeatureEncryptedFiles}
+}
+
+// ClientOlderThan reports whether the HeaderClient value names program at a
+// version below min. Anything it cannot read is not older: a missing header,
+// another program, a dev build.
+func ClientOlderThan(header, program, min string) bool {
+	name, ver, ok := strings.Cut(header, "/")
+	if !ok || name != program {
+		return false
+	}
+	have, ok1 := parseVersion(ver)
+	want, ok2 := parseVersion(min)
+	if !ok1 || !ok2 {
+		return false
+	}
+	for i := range have {
+		if have[i] != want[i] {
+			return have[i] < want[i]
+		}
+	}
+	return false
+}
+
+// parseVersion reads "0.21.0" or "v0.21.0".
+func parseVersion(s string) ([3]int, bool) {
+	var v [3]int
+	parts := strings.Split(strings.TrimPrefix(s, "v"), ".")
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
 // Per-path outcomes of a push.
 //
 // Only StatusApplied means the server now holds exactly the bytes that were
@@ -99,7 +172,180 @@ const (
 	// first. Distinct from forbidden so a client can turn it into a request for
 	// a code rather than reporting a permanent refusal.
 	CodeStepUpRequired = "step_up_required"
+	// CodePlaintextRefused is content without the envelope, sent to an
+	// encrypted vault. Distinct from malformed because the request was
+	// well-formed: the client is one that does not encrypt.
+	CodePlaintextRefused = "plaintext_refused"
+	// CodeNoKey is an encrypted vault whose key check has not been installed.
+	// Content is refused until it is, so no ciphertext can exist under a key
+	// nobody recorded.
+	CodeNoKey = "no_key"
+	// CodeKeyCheckSet is a second attempt to install a key check. It is
+	// write-once: two devices pairing at the same moment must not both
+	// believe they generated the vault's key.
+	CodeKeyCheckSet = "key_check_set"
+	// CodeEncryptedVault is a route that reads or writes plaintext on the
+	// server, called on a vault whose content the server cannot read.
+	CodeEncryptedVault = "encrypted_vault"
+	// CodeEncryptedPath is the same refusal for one path: a file marked
+	// .encrypted in a vault that is otherwise ordinary.
+	CodeEncryptedPath = "encrypted_path"
+	// CodeClientTooOld is a plugin below MinPluginVersion. Nothing was read
+	// or written; the message says which version is needed.
+	CodeClientTooOld = "client_too_old"
 )
+
+// Envelope is the literal prefix of every object in an encrypted vault.
+//
+// The server holds no key and never parses past this. It exists so the server
+// can refuse plaintext structurally, without guessing from entropy -- a
+// heuristic that fails open on short content.
+const Envelope = "archivist-vault/v1\n"
+
+// ValidEncryptedPath reports whether every segment of path is lowercase
+// base32, which is all an encrypted name can be.
+//
+// The server's usual path policy matches on plaintext names and never fires on
+// encrypted ones, so in an encrypted vault this allowlist is the path policy.
+// It is what stops a client that forgot to encrypt a name from writing a
+// readable one into history.
+func ValidEncryptedPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	run := 0
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		switch {
+		case c == '/':
+			if run == 0 {
+				return false
+			}
+			run = 0
+		case (c >= 'a' && c <= 'z') || (c >= '2' && c <= '7'):
+			run++
+		default:
+			return false
+		}
+	}
+	return run > 0
+}
+
+// EncryptedMarker marks a file or folder of an ordinary vault as encrypted:
+// the server stores it and cannot read it.
+//
+// Fixed here and in src/crypt.ts, deliberately not a setting. A rule kept in
+// the vault could be edited by anything that can write a note.
+const EncryptedMarker = ".encrypted"
+
+// EncryptedPath reports whether a path of an ORDINARY vault is marked
+// encrypted. In an encrypted vault every path is, and this is not consulted.
+//
+// The grammar is LocalOnly's, for LocalOnly's reason. Any segment ending in
+// the marker takes its whole subtree with it; the last segment is also marked
+// when the marker sits before its extension. A folder has to END in the
+// marker, because "project.encrypted.assets" would match the file spelling
+// by coincidence.
+//
+// It gives the same answer for the path a device sees and the path the server
+// stores: the two are identical up to and including the first marked segment,
+// and that segment decides.
+func EncryptedPath(path string) bool {
+	_, ok := markedAt(path)
+	return ok
+}
+
+// ValidMarkedPath reports whether a marked path is one the server may store:
+// everything beneath a marked folder must be an encrypted name. A marked file
+// has nothing beneath it. False for a path that is not marked at all.
+func ValidMarkedPath(path string) bool {
+	end, ok := markedAt(path)
+	if !ok {
+		return false
+	}
+	if end == len(path) {
+		return true
+	}
+	return ValidEncryptedPath(path[end+1:])
+}
+
+// markedAt returns the offset just past the first marked segment.
+func markedAt(path string) (end int, ok bool) {
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i < len(path) && path[i] != '/' {
+			continue
+		}
+		seg := path[start:i]
+		if endsMarked(seg) {
+			return i, true
+		}
+		if i == len(path) && markedFile(seg) {
+			return i, true
+		}
+		start = i + 1
+	}
+	return 0, false
+}
+
+// markedFile is the file spelling: name.encrypted.ext, with a name and
+// exactly one extension after the marker.
+func markedFile(seg string) bool {
+	dot := -1
+	for i := len(seg) - 1; i >= 0; i-- {
+		if seg[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot <= 0 || dot == len(seg)-1 {
+		return false
+	}
+	return endsMarked(seg[:dot])
+}
+
+// endsMarked reports whether s ends in the marker and has a name before it.
+//
+// Case is ignored, and that is a safety property rather than a convenience.
+// A marker that fails to match does not stop a file syncing, it sends the
+// file readable: "Clients.Encrypted", from a phone keyboard that capitalised
+// it, would otherwise be published in plaintext by a rule the user believed
+// they had invoked.
+func endsMarked(s string) bool {
+	if len(s) <= len(EncryptedMarker) {
+		return false
+	}
+	tail := s[len(s)-len(EncryptedMarker):]
+	for i := 0; i < len(tail); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != EncryptedMarker[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidKeyCheck reports whether s is a key check: 32 bytes as lowercase hex.
+func ValidKeyCheck(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// HasEnvelope reports whether content begins with Envelope.
+func HasEnvelope(content []byte) bool {
+	return len(content) >= len(Envelope) && string(content[:len(Envelope)]) == Envelope
+}
 
 // MaxUploadBytes bounds a single content upload. Beyond it the server answers
 // 413 rather than truncating.

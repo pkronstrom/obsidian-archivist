@@ -9,7 +9,7 @@ import { FakeApp } from "../obsidian-shim.mjs";
 function fakeClient({ head = "serverhead" } = {}) {
 	return {
 		async index() {
-			return { service: "archivist", version: "test", protocol: 2, vault: "personal" };
+			return { service: "archivist", version: "test", protocol: 2, vault: "personal", encrypted: false, keyCheck: "" };
 		},
 		async head() {
 			return head;

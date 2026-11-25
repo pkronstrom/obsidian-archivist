@@ -1,6 +1,26 @@
 import type { App } from "obsidian";
 
-export type FileState = { hash: string; mtime: number; size: number };
+export type FileState = {
+	/** What the server holds at this path. Sent as the merge base of a move.
+	 *  "" when a path was restored from a revision and the server's hash for it
+	 *  was never seen, which only happens in an encrypted vault. */
+	hash: string;
+	mtime: number;
+	size: number;
+	/**
+	 * Encrypted vaults only: the hash of the plaintext on this device.
+	 *
+	 * Every write is sealed under a fresh nonce, so the server's hash says
+	 * nothing about whether the local file changed. Two hashes are needed: this
+	 * one answers "did I edit it", `hash` answers "what does the server have".
+	 */
+	plain?: string;
+};
+
+/** The hash describing the file as it sits on this device. */
+export function localHash(f: FileState): string {
+	return f.plain ?? f.hash;
+}
 
 export type SyncState = {
 	/** The commit we last synced. "" means never synced. */
@@ -20,6 +40,18 @@ export type SyncState = {
 	 * rather than treated as a mismatch.
 	 */
 	vault?: string;
+	/**
+	 * Set once this device has synced the vault as an encrypted one, and never
+	 * cleared. A server that later claims the vault is ordinary is refused: it
+	 * would otherwise be handed every note in plaintext.
+	 */
+	encrypted?: boolean;
+	/**
+	 * Ordinary vaults only: this device has synced the vault's .encrypted
+	 * files with a key. Unset on a device that has just been given the key,
+	 * which is what tells the next cycle to fetch the files it was skipping.
+	 */
+	keyed?: boolean;
 	/**
 	 * When the last cycle completed successfully, epoch ms. Undefined if this
 	 * device has never completed one -- distinct from `base === ""`, which
@@ -48,6 +80,8 @@ export function loadState(app: App): SyncState {
 		base: typeof s.base === "string" ? s.base : "",
 		files: s.files ?? {},
 		vault: typeof s.vault === "string" ? s.vault : undefined,
+		encrypted: s.encrypted === true ? true : undefined,
+		keyed: s.keyed === true ? true : undefined,
 		lastSyncedAt: typeof s.lastSyncedAt === "number" ? s.lastSyncedAt : undefined,
 	};
 }

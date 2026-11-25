@@ -226,6 +226,115 @@ docker compose exec archivist /archivist-server token add \
 names are one path segment: no leading dot, slash or `..`. URL-safe names are
 easiest to use by hand. `ARCHIVIST_MAX_VAULTS` defaults to five.
 
+## Encrypted vaults
+
+An encrypted vault stores only what the plugin encrypted: note contents and
+file names. The server holds no key. Use one for notes that should be backed up
+on the server but readable only on the devices you choose.
+
+What the server can still see: the shape of the folder tree, how many files
+there are, their sizes, when they change, and which names repeat. What it
+cannot do: search, merge concurrent edits, serve the vault through the relay,
+or keep pins. Two devices editing one note always produce a conflict copy.
+
+### Create one
+
+A vault's kind is fixed when it is created, so use the command and not `mkdir`:
+
+```bash
+docker compose exec archivist /archivist-server vault add -root /data -encrypted work
+docker compose exec archivist /archivist-server token add \
+  -label work-laptop -vaults work -profile obsidian-plugin
+```
+
+The running server finds it without a restart. In Obsidian, set the vault name
+and token. The plugin sees an encrypted vault with no key, offers to create
+one, and shows a **recovery key**. Save it in a password manager before
+continuing: nothing is uploaded until you confirm you have.
+
+### Add another device
+
+Set the same vault and its own token, then enter the recovery key when asked.
+The plugin checks the key against the server before it stores it. On a device
+that already has the key, **Archivist → Options → Recovery key** shows it
+again.
+
+A lost device is handled by revoking its token. The key alone opens nothing
+without the server's files, and that device already held the notes.
+
+### Move an existing vault to an encrypted one
+
+A vault cannot be encrypted in place, because its history already holds the
+notes in plaintext. Create a new encrypted vault and publish the folder to it:
+
+1. Create the encrypted vault and a token for it, as above.
+2. In the existing Obsidian vault, run **Archivist: Switch this folder to
+   another vault**, or use **Switch…** in the options. Give the new vault's
+   name, and its token if it differs.
+3. The plugin syncs once with the old vault, checks that the new one is
+   reachable and empty, and shows both for confirmation.
+4. Create the key, save the recovery key, and let the folder publish.
+5. Check the published count in the notice that follows. Then switch your
+   other devices, and delete the old vault's two directories on the server:
+   `data/vaults/<old>` and `data/.archivist/<old>`.
+
+Until the first sync with the new vault succeeds, the options show **Go back**,
+which restores the old vault exactly. The old vault is never changed by the
+plugin. History does not carry over; export the old vault first if you want to
+keep it. Older backups still contain the plaintext until you prune them.
+
+### Encrypt some files of an ordinary vault
+
+A vault does not have to be encrypted whole. In an ordinary vault, a name
+marks what the server may only hold as ciphertext, the way `.local` marks what
+never leaves a device:
+
+- `Salary.encrypted.md`: one note, marked before its extension;
+- `Clients.encrypted/`: a folder, and everything inside it at any depth.
+
+Nothing is set up on the server. The first time the plugin meets a marked
+file it offers to create the vault's key and shows the recovery key; other
+devices enter it. The marked file stays readable on each device that has the
+key. On the server it is ciphertext, and inside a marked folder the file and
+folder names are encrypted too. The marked name itself stays readable.
+
+What to know:
+
+- **A device without the key still syncs everything else.** Marked files are
+  skipped there until the key is entered in **Archivist → Options**. "Not now"
+  is remembered, so a device can be left without the key on purpose. A marked
+  file created on such a device is not backed up until it has the key.
+- **Marked files lose what encrypted vaults lose:** no merge of concurrent
+  edits (you get a conflict copy), no access through the relay or MCP, no
+  pins. The rest of the vault keeps all of it.
+- **Marking an existing note does not clean its past.** Renaming `Salary.md`
+  to `Salary.encrypted.md` leaves the earlier versions readable in history and
+  in backups. The plugin says so when it happens. `reclaim` can prune the old
+  name once its age gate passes.
+- **Removing the marker publishes the note.** Renaming it back uploads it
+  readable, and the plugin says so.
+- **A copy can lose the marker.** Obsidian's "Make a copy" produces
+  `Salary.encrypted 1.md`, which is an ordinary name. Put notes you copy often
+  in a marked folder, where the name of the file does not matter.
+- **The marker ignores case**, so `Clients.Encrypted/` is marked too.
+
+### Back up and restore
+
+Back up as for any vault. The export carries the vault's kind and key check, so
+a restored vault is still encrypted. Reading it needs the recovery key and the
+plugin. If the key is lost and no device holds it, the vault cannot be read.
+
+## Updating
+
+The plugin and the server can be updated in either order. A plugin newer than
+its server keeps syncing ordinary vaults; what the server cannot do yet is
+switched off, and the plugin says so. Files marked `.encrypted` stay on the
+device until the server is at least 0.21, and an encrypted vault needs both
+at 0.21.
+
+To use something new, update the server first, then the plugin on each device.
+The server's log names each plugin version that connects, as `client seen`.
+
 ## When sync looks wrong
 
 Work from the least disruptive check downward.
@@ -240,7 +349,8 @@ Work from the least disruptive check downward.
    A healthy vault reports no `missing`, `extra` or `stranded` paths.
 
 2. In the plugin, inspect the Status card and run **Test connection**. This
-   verifies the URL, vault and token without changing content.
+   verifies the URL, vault and token without changing content. The card shows
+   the plugin's version and the server's side by side.
 
 3. Use **Settings → Troubleshooting → Re-bootstrap** only when the device's
    cursor is genuinely stale, such as after restoring the server. It preserves

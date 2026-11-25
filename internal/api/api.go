@@ -22,6 +22,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkronstrom/obsidian-archivist/internal/auth"
@@ -40,6 +41,10 @@ type Server struct {
 	grants   *stepup.Grants
 	verifier *stepup.Verifier
 	log      *slog.Logger
+	// minPlugin is the oldest plugin let in, "" for any.
+	minPlugin string
+	// clients remembers which (token, client) pairs have been logged.
+	clients clientLog
 }
 
 // Option configures the server. Variadic because step-up is additive: every
@@ -59,6 +64,37 @@ func WithStepUp(g *stepup.Grants, v *stepup.Verifier) Option {
 // WithLog supplies the logger. Without it the server logs nothing.
 func WithLog(l *slog.Logger) Option {
 	return func(s *Server) { s.log = l }
+}
+
+// WithMinPlugin overrides the oldest plugin version the server accepts.
+func WithMinPlugin(v string) Option {
+	return func(s *Server) { s.minPlugin = v }
+}
+
+// clientLog records each (token label, client) pair the first time it calls,
+// so the log says which plugin versions are in use without a line per request.
+//
+// Bounded, because the header is whatever the caller sends: past the limit new
+// pairs simply go unlogged.
+type clientLog struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+const maxLoggedClients = 256
+
+func (c *clientLog) first(label, client string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := label + "\x00" + client
+	if c.seen[key] || len(c.seen) >= maxLoggedClients {
+		return false
+	}
+	if c.seen == nil {
+		c.seen = map[string]bool{}
+	}
+	c.seen[key] = true
+	return true
 }
 
 // stepUpState is the gate decision made at admission.
@@ -92,7 +128,10 @@ const (
 // from the SAME route table that generates the index. A route still cannot
 // exist without being documented, or be documented without existing.
 func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
-	s := &Server{reg: reg, tokens: tokens, log: slog.New(slog.DiscardHandler)}
+	s := &Server{
+		reg: reg, tokens: tokens, log: slog.New(slog.DiscardHandler),
+		minPlugin: protocol.MinPluginVersion,
+	}
 	for _, o := range opts {
 		o(s)
 	}
@@ -113,7 +152,11 @@ func New(reg *vaults.Registry, tokens *auth.Set, opts ...Option) http.Handler {
 		if rt.handle == nil || rt.Path == "/healthz" {
 			continue
 		}
-		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.SkipStepUp, rt.handle))
+		handle := rt.handle
+		if rt.PlainOnly {
+			handle = plainOnly(handle)
+		}
+		mux.HandleFunc(rt.Method+" /{vault}"+rt.Path, s.withVault(rt.Scope, rt.SkipStepUp, handle))
 	}
 
 	// healthz sits OUTSIDE the auth middleware, deliberately and alone. It is
@@ -136,6 +179,21 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="archivist"`)
 			fail(w, http.StatusUnauthorized, protocol.CodeUnauthorized, "unauthorized")
+			return
+		}
+		// After the token, so only a caller that may sync learns what the
+		// server runs. Capped because it goes into the log.
+		client := r.Header.Get(protocol.HeaderClient)
+		if len(client) > 64 {
+			client = client[:64]
+		}
+		if client != "" && s.clients.first(p.Label, client) {
+			s.log.Info("client seen", "token", p.Label, "client", client)
+		}
+		if protocol.ClientOlderThan(client, protocol.ClientPlugin, s.minPlugin) {
+			fail(w, http.StatusUpgradeRequired, protocol.CodeClientTooOld, fmt.Sprintf(
+				"this server needs Archivist plugin %s or newer and this device runs %s; update the plugin",
+				s.minPlugin, strings.TrimPrefix(client, protocol.ClientPlugin+"/")))
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxPrincipal, p)))
@@ -442,6 +500,8 @@ func noteMutationStatusFor(code string) int {
 		return http.StatusRequestEntityTooLarge
 	case protocol.CodeForbidden:
 		return http.StatusForbidden
+	case protocol.CodeEncryptedPath:
+		return http.StatusUnprocessableEntity
 	default:
 		return statusFor(code)
 	}
@@ -472,11 +532,74 @@ func (s *Server) putContent(w http.ResponseWriter, r *http.Request, inst *vaults
 			"content hash mismatch: claimed "+claimed+", actual "+actual)
 		return
 	}
+	// Before WriteBlob, not at push. The client uploads first and pushes
+	// second, so a check only at push would refuse the change and still leave
+	// the plaintext in the object store -- and in every export after it.
+	if inst.Encrypted && !protocol.HasEnvelope(body) {
+		fail(w, http.StatusUnprocessableEntity, protocol.CodePlaintextRefused,
+			inst.Name+" is an encrypted vault and this content is not encrypted")
+		return
+	}
+	if inst.Encrypted {
+		check, err := inst.Repo.KeyCheck()
+		if err != nil {
+			fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+			return
+		}
+		if check == "" {
+			fail(w, http.StatusConflict, protocol.CodeNoKey,
+				inst.Name+" has no key check yet; install one before uploading")
+			return
+		}
+	}
 	if _, err := inst.Repo.WriteBlob(body); err != nil {
 		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"hash": actual})
+}
+
+// plainOnly refuses a route on an encrypted vault.
+func plainOnly(next func(http.ResponseWriter, *http.Request, *vaults.Instance)) func(http.ResponseWriter, *http.Request, *vaults.Instance) {
+	return func(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+		if inst.Encrypted {
+			fail(w, http.StatusUnprocessableEntity, protocol.CodeEncryptedVault,
+				inst.Name+" is an encrypted vault; the server cannot read or write its notes")
+			return
+		}
+		next(w, r, inst)
+	}
+}
+
+// putKeyCheck installs the value clients verify their key against.
+//
+// Write-once, and that is the point: it is what makes key initialisation
+// atomic. The first device to arrive installs it; every later one is told a
+// key exists and must enter that key instead of generating another.
+func (s *Server) putKeyCheck(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
+	// Any vault, not only an encrypted one: an ordinary vault gains a key the
+	// first time a device creates one for its .encrypted files.
+	var req struct {
+		Check string `json:"check"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		failDecode(w, err)
+		return
+	}
+	if !protocol.ValidKeyCheck(req.Check) {
+		fail(w, http.StatusBadRequest, protocol.CodeMalformed, "check must be 64 lowercase hex characters")
+		return
+	}
+	if err := inst.Repo.SetKeyCheck(req.Check); err != nil {
+		if errors.Is(err, repo.ErrKeyCheckSet) {
+			fail(w, http.StatusConflict, protocol.CodeKeyCheckSet,
+				inst.Name+" already has a key; enter that key instead of generating one")
+			return
+		}
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"keyCheck": req.Check})
 }
 
 func (s *Server) getContent(w http.ResponseWriter, r *http.Request, inst *vaults.Instance) {
@@ -970,6 +1093,13 @@ func (s *Server) createPin(w http.ResponseWriter, r *http.Request, inst *vaults.
 		return
 	}
 
+	// A pin is kept as readable text in the vault, path included. Under a
+	// marked folder that path is an encrypted name no client could list back.
+	if protocol.EncryptedPath(req.Path) {
+		fail(w, http.StatusUnprocessableEntity, protocol.CodeEncryptedPath,
+			req.Path+" is encrypted and cannot be pinned")
+		return
+	}
 	entry, head, err := inst.Reconciler.Pin(req.ExpectedHead, req.Name, req.Path)
 	switch {
 	case errors.Is(err, reconcile.ErrPinName):
@@ -1043,6 +1173,10 @@ type route struct {
 	// on this table for the same reason Scope does: the table IS the mux, so an
 	// exemption cannot exist without being visible next to what it exempts.
 	SkipStepUp bool `json:"-"`
+	// PlainOnly marks a route where the server itself reads or writes note
+	// content. An encrypted vault refuses it: the server has no key, and a
+	// write would put plaintext into history.
+	PlainOnly bool `json:"-"`
 	// NoScope marks a route that needs authentication but no verb. Only unlock:
 	// requiring read there would stop a write-only token unlocking to write, and
 	// a caller who cannot read the vault gains nothing by unlocking it. A field
@@ -1085,19 +1219,20 @@ func (s *Server) routes() []route {
 		// unreferenced blob still consumes disk, and the write guards count
 		// writes per path at push time -- they never see an orphan.
 		{Method: "PUT", Path: "/v1/content/{hash}", Does: "upload content; 400 if it does not hash to {hash}", Scope: auth.ScopeWrite, handle: s.putContent},
+		{Method: "PUT", Path: "/v1/keycheck", Does: "{check} install the vault's key check; once only", Scope: auth.ScopeWrite, handle: s.putKeyCheck},
 		{Method: "GET", Path: "/v1/content/{hash}", Does: "download content by hash", Scope: auth.ScopeRead, handle: s.getContent},
 		// Delete is an op INSIDE the change set, so this route needs write and
 		// the handler additionally checks delete. See push.
 		{Method: "POST", Path: "/v1/push", Does: "{base,device,changes:[...]} apply a change set", Scope: auth.ScopeWrite, handle: s.push},
-		{Method: "POST", Path: "/v1/note/append", Does: "{path,content,content_revision?} atomically append text to a note", Scope: auth.ScopeWrite, handle: s.appendNote},
-		{Method: "POST", Path: "/v1/note/edit", Does: "{path,content_revision,old_text,new_text} atomically replace one exact match", Scope: auth.ScopeWrite, handle: s.editNote},
+		{Method: "POST", Path: "/v1/note/append", Does: "{path,content,content_revision?} atomically append text to a note", Scope: auth.ScopeWrite, handle: s.appendNote, PlainOnly: true},
+		{Method: "POST", Path: "/v1/note/edit", Does: "{path,content_revision,old_text,new_text} atomically replace one exact match", Scope: auth.ScopeWrite, handle: s.editNote, PlainOnly: true},
 		{Method: "GET", Path: "/v1/events", Does: "SSE:one per commit with changed paths, kind, size", Scope: auth.ScopeRead, handle: s.events},
 		{Method: "GET", Path: "/v1/wait", Does: "long-poll: blocks until head moves past ?since=, or ?timeout= elapses", Scope: auth.ScopeRead, handle: s.wait},
 		{Method: "GET", Path: "/v1/history", Does: "?path=&limit= revisions that touched a path", Scope: auth.ScopeRead, handle: s.history},
 		// Pins are ordinary vault data, so their scopes are the ordinary ones:
 		// creating a pin is a put to one tracked file, nothing more.
-		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins},
-		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin},
+		{Method: "GET", Path: "/v1/pins", Does: "?path= named restore points; path=* for vault-wide only", Scope: auth.ScopeRead, handle: s.listPins, PlainOnly: true},
+		{Method: "POST", Path: "/v1/pin", Does: "{name,path?,expectedHead} name a restore point", Scope: auth.ScopeWrite, handle: s.createPin, PlainOnly: true},
 		// Discovery only: every version has always been in the pack, and /v1/at
 		// has always been able to serve one. This answers "what did I lose",
 		// which was previously answerable only by knowing the path already.
@@ -1122,6 +1257,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		Path   string `json:"path"`
 		Does   string `json:"does"`
 	}
+	keyCheck, err := inst.Repo.KeyCheck()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, protocol.CodeInternal, err.Error())
+		return
+	}
 	out := []doc{}
 	for _, rt := range s.routes() {
 		out = append(out, doc{rt.Method, rt.Path, rt.Does})
@@ -1136,14 +1276,26 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request, inst *vaults.Inst
 		// bootstraps from whatever snapshot it is handed, merging two unrelated
 		// vaults into both. Git history makes that recoverable, but only if
 		// someone notices.
-		"vault":    inst.Name,
+		"vault": inst.Name,
+		// A client that does not encrypt must not sync this vault at all, and
+		// one that does must not send ciphertext to an ordinary one.
+		"encrypted": inst.Encrypted,
+		// "" until the first device installs it. A client verifies an entered
+		// key against this before it reads or writes anything.
+		"keyCheck": keyCheck,
 		"version":  version.Version,
 		"protocol": protocol.Version,
+		// What this server can do beyond the base protocol. A client checks
+		// for the feature it needs; an index without the list is a server
+		// from before any of them.
+		"features": protocol.Features(),
 		"notes": []string{
 			"All /v1 routes need Authorization: Bearer <token>.",
 			"Content is addressed by git object hash: printf '%s' \"$c\" | git hash-object --stdin",
 			"/v1/changes is the durable feed; /v1/events only says when to read it.",
 			"Check `protocol`, not `version`: releases bump the latter constantly.",
+			"Check `features` for anything newer than the base protocol.",
+			"Send X-Archivist-Client: <program>/<version> so the log can say who called.",
 		},
 		"endpoints": out,
 	})
@@ -1313,12 +1465,15 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Name string `json:"name"`
+		// Encrypted can only be chosen here. A vault that has taken a commit
+		// holds plaintext objects and cannot become encrypted afterwards.
+		Encrypted bool `json:"encrypted"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		failDecode(w, err)
 		return
 	}
-	if err := s.reg.Create(req.Name); err != nil {
+	if err := s.reg.Create(req.Name, req.Encrypted); err != nil {
 		if vaults.ValidName(req.Name) != nil {
 			fail(w, http.StatusBadRequest, protocol.CodeMalformed, err.Error())
 			return
@@ -1328,5 +1483,5 @@ func (s *Server) createVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, map[string]any{"vault": req.Name})
+	writeJSON(w, map[string]any{"vault": req.Name, "encrypted": req.Encrypted})
 }

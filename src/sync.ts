@@ -3,18 +3,22 @@ import { inventoryPathAllowed, inventoryDirectory } from "./plugin-inventory";
 import {
 	Client,
 	Code,
+	Feature,
 	ServerError,
 	UnknownBaseError,
 	requireCurrentIndex,
 	type Change,
 	type Result,
+	type ServerIndex,
 } from "./client";
 import { pairRenames, type Pending } from "./scopes";
 import { gitHash } from "./hash";
+import { NameTooLongError, WrongKeyError, encryptedDir, encryptedPath, type KeyScope, type VaultCrypt } from "./crypt";
 import {
 	checkVault,
 	isFirstRun,
 	loadState,
+	localHash,
 	saveState,
 	type FileState,
 	type SyncState,
@@ -34,9 +38,59 @@ export type SyncReport = {
 	conflicts: Result[];
 	refused: Result[];
 	rebootstrapped: boolean;
+	/**
+	 * Ordinary vaults only: this device has no key, and there are files marked
+	 * .encrypted it therefore left alone -- on the server, here, or both. The
+	 * rest of the vault synced. A question to raise, not a failure.
+	 */
+	needsKey?: { hasKey: boolean; keyCheck: string };
+	/**
+	 * The same files left alone for a different reason: the server is from
+	 * before encrypted files and cannot store them. Its version, for the
+	 * notice. No key is offered, because that server could not record one.
+	 */
+	serverTooOld?: string;
+	/** Files that were renamed out of an .encrypted name and so were uploaded
+	 *  as readable text. Said out loud, because it is the one direction in
+	 *  which a rename publishes a note. */
+	exposed?: string[];
+	/** The opposite: notes renamed INTO an .encrypted name. They are
+	 *  ciphertext from here on, but every version from before the rename is
+	 *  still readable in the server's history, and the user should know. */
+	marked?: string[];
 };
 
 export type Logger = (msg: string, ...rest: unknown[]) => void;
+
+/**
+ * An encrypted vault, and this device has no key for it. Like the pairing
+ * hazard this is a question rather than a failure: nothing was read or
+ * written, and the device does not sync until it is answered.
+ */
+export class KeyRequiredError extends Error {
+	constructor(
+		readonly vault: string,
+		/** The vault already has a key, so it must be entered. Otherwise this is
+		 *  the first device and it generates one. */
+		readonly hasKey: boolean,
+		/** The server's key check, for verifying an entered key before it is
+		 *  stored. "" when the vault has no key yet. */
+		readonly keyCheck: string = "",
+		/** What the key is for. "files" is never thrown: an ordinary vault
+		 *  syncs without its key and reports needsKey instead. The plugin
+		 *  builds one of these to ask the same question in the same dialog. */
+		readonly scope: KeyScope = "vault",
+	) {
+		super(
+			scope === "files"
+				? `"${vault}" has files marked .encrypted. ${hasKey ? "Enter" : "Create"} the vault's key to sync them.`
+				: hasKey
+					? `"${vault}" is an encrypted vault. Enter its recovery key to sync it.`
+					: `"${vault}" is a new encrypted vault. Create its key to start syncing.`,
+		);
+		this.name = "KeyRequiredError";
+	}
+}
 
 /**
  * What happened to one incoming remote change.
@@ -75,9 +129,23 @@ export function conflictName(path: string, device: string): string {
 	const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "");
 	const safe = (device || "device").replace(/[^A-Za-z0-9-]/g, "-");
 	const slash = path.lastIndexOf("/");
-	const dot = path.lastIndexOf(".");
+	let dot = path.lastIndexOf(".");
 	const suffix = `.conflict-${safe}-${stamp}-local`;
-	return dot > slash ? path.slice(0, dot) + suffix + path.slice(dot) : path + suffix;
+	if (dot <= slash) return path + suffix;
+	// A copy of an encrypted note must itself be an encrypted note. Inserted
+	// before the extension, the suffix would sit between the marker and the
+	// extension and unmark it: Salary.encrypted.conflict-….md is an ordinary
+	// name, and the copy would be uploaded as readable text. So it goes before
+	// the marker instead. Under a marked folder nothing needs doing; the
+	// folder covers whatever the file is called.
+	const marker = path.slice(0, dot).toLowerCase().lastIndexOf(".encrypted");
+	if (marker > slash && marker + ".encrypted".length === dot) dot = marker;
+	return path.slice(0, dot) + suffix + path.slice(dot);
+}
+
+/** Whether this client encrypts the file at `path`. False without a key. */
+function covered(client: { crypt?: VaultCrypt }, path: string): boolean {
+	return client.crypt?.covers(path) ?? false;
 }
 
 /**
@@ -159,6 +227,17 @@ export class Sync {
 	 * cycle `state.base` is non-empty so the check cannot fire again anyway.
 	 */
 	private pairingResolved = false;
+
+	/**
+	 * Set for a cycle on an ordinary vault with no key on this device. Marked
+	 * paths are then left alone in both directions, exactly like excluded
+	 * ones: not downloaded, not uploaded, and never deleted on the server for
+	 * being absent here.
+	 */
+	private keyless = false;
+	/** A marked file was seen on this device during a keyless cycle. */
+	private held = false;
+
 	constructor(
 		private app: App,
 		private client: () => Client,
@@ -205,6 +284,11 @@ export class Sync {
 		// untouched.
 		const idx = requireCurrentIndex(await client.index());
 		checkVault(state, idx.vault);
+		// Also before anything is read or written: an encrypted vault with the
+		// wrong key, or no key, must not see one byte from this device.
+		await this.checkKind(client, state, idx);
+		this.keyless = !client.crypt;
+		this.held = false;
 
 		// Then the first-connect hazard, which the identity check cannot see:
 		// it compares an ADOPTED vault name, and there is not one yet.
@@ -230,9 +314,10 @@ export class Sync {
 			}
 		}
 
-		if (!state.vault && idx.vault) {
+		if ((!state.vault && idx.vault) || (idx.encrypted && !state.encrypted)) {
 			// First run, or state from a version that did not record it. Adopt.
 			state.vault = idx.vault;
+			if (idx.encrypted) state.encrypted = true;
 			saveState(this.app, state);
 		}
 
@@ -243,7 +328,7 @@ export class Sync {
 			const { head, entries } = await client.changes(state.base);
 			let deferred = 0;
 			for (const e of entries) {
-				if (skip(e.path)) continue;
+				if (this.skips(e.path)) continue;
 				const outcome = await this.applyRemote(e, state);
 				if (outcome === "applied") report.pulled++;
 				if (outcome === "deferred") deferred++;
@@ -265,13 +350,23 @@ export class Sync {
 			// Our cursor predates a history rewrite, or belongs to another
 			// server. There is no valid diff to ask for; adopt server state.
 			this.log("base not recognised; re-bootstrapping from /snapshot");
-			state = await this.rebootstrap();
+			state = await this.rebootstrap(state);
 			report.rebootstrapped = true;
+		}
+
+		// A device that has just been given the key for the vault's encrypted
+		// files has been skipping them, and its cursor is already past the
+		// commits that made them: nothing would ever pull them. Once, pick
+		// them up from the snapshot. The cursor is not touched, so ordinary
+		// changes are still pulled in order.
+		if (client.crypt?.scope === "files" && !state.keyed) {
+			await this.adoptCovered(client, state);
+			state.keyed = true;
 		}
 
 		// --- push ------------------------------------------------------------
 		await this.prepareLocal();
-		const local = await this.localChanges(state);
+		const local = await this.seal(client, state, await this.localChanges(state), report);
 		if (local.length > 0) {
 			await this.upload(local);
 			const { head, results } = await client.push(state.base, this.device(), local.map(toChange));
@@ -280,7 +375,8 @@ export class Sync {
 				if (r.status === "conflict") report.conflicts.push(r);
 				if (r.status === "refused") report.refused.push(r);
 			}
-			report.pushed = local.length - report.refused.length;
+			this.reportBoundary(local, results, report);
+			report.pushed = local.length - results.filter((r) => r.status === "refused").length;
 
 			// Adopt into the snapshot ONLY what the server actually took.
 			//
@@ -310,7 +406,32 @@ export class Sync {
 						const prev = state.files[c.from!];
 						delete state.files[c.from!];
 						if (prev) state.files[c.path] = prev;
-					} else state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
+					} else {
+						state.files[c.path] = { hash: c.hash!, mtime: c.mtime!, size: c.size! };
+						if (c.plain) state.files[c.path].plain = c.plain;
+					}
+					continue;
+				}
+				// An encrypted vault's server cannot make a conflict copy: it has
+				// no key to produce a name this device could read. It kept its
+				// own version and wrote nothing, so the copy is made here, BEFORE
+				// the refetch below replaces the file with the server's version.
+				// Left out of the snapshot, so the next cycle uploads it.
+				if (r?.status === "conflict" && r.hash && covered(client, c.path) && c.op === "put") {
+					const remote = await client.getContent(r.hash, c.path);
+					if ((await gitHash(remote)) === c.plain) {
+						// The same note, sealed twice. Two devices that already
+						// hold identical files meet this on every one of them
+						// when they first pair, and a copy of each would double
+						// the vault for nothing.
+						state.files[c.path] = { hash: r.hash, plain: c.plain, mtime: c.mtime!, size: c.size! };
+						report.conflicts = report.conflicts.filter((x) => x.path !== c.path);
+						continue;
+					}
+					const aside = conflictName(c.path, this.device());
+					await this.adapter.writeBinary(aside, await this.adapter.readBinary(c.path));
+					this.log(`${c.path} changed on both sides; kept ours as ${aside}`);
+					state.files[c.path] = await this.place(c.path, r.hash, remote, r.size ?? 0);
 					continue;
 				}
 				// Anything else means the server holds bytes we do not have. It
@@ -325,7 +446,7 @@ export class Sync {
 				}
 			}
 			for (const f of needsRefetch) {
-				if (skip(f.path)) continue;
+				if (this.skips(f.path)) continue;
 				state.files[f.path] = await this.materialise(f.path, f.hash, f.size);
 			}
 
@@ -345,14 +466,48 @@ export class Sync {
 				if (c.op === "del") await this.matchServer(c.path, head, state, null);
 				if (c.op === "move") {
 					await this.matchServer(c.from!, head, state, null);
-					await this.matchServer(c.path, head, state, c.hash!);
+					await this.matchServer(c.path, head, state, c.plain ?? c.hash!);
 				}
 			}
 		}
 
+		if (this.keyless && !idx.encrypted) {
+			if (!idx.features.includes(Feature.EncryptedFiles)) {
+				if (this.held) report.serverTooOld = idx.version;
+			} else if (idx.keyCheck !== "" || this.held) {
+				report.needsKey = { hasKey: idx.keyCheck !== "", keyCheck: idx.keyCheck };
+			}
+		}
 		state.lastSyncedAt = Date.now();
 		saveState(this.app, state);
 		return report;
+	}
+
+	/** skip, plus the marked paths a keyless device leaves alone. */
+	private skips(path: string): boolean {
+		return skip(path) || (this.keyless && encryptedPath(path));
+	}
+
+	/**
+	 * Says what a rename across the .encrypted marker did. Such a rename is
+	 * sent as a delete and a put, never a move, so its two halves can fare
+	 * differently and neither result explains itself.
+	 */
+	private reportBoundary(local: PendingChange[], results: Result[], report: SyncReport): void {
+		const byPath = new Map(results.map((r) => [r.path, r]));
+		for (const c of local) {
+			const r = byPath.get(c.path);
+			if (c.op === "del" && c.becomes && r?.status === "refused") {
+				// The readable copy is still on the server, which is what the
+				// user renamed it to end.
+				r.reason = `still stored readable: it could not be removed after being renamed to ${c.becomes} (${r.reason ?? "refused"})`;
+			}
+			if (c.op === "put" && c.was && r?.status === "applied") {
+				// `plain` is set on a put that was sealed.
+				if (c.plain) (report.marked ??= []).push(c.path);
+				else (report.exposed ??= []).push(c.path);
+			}
+		}
 	}
 
 	/**
@@ -370,7 +525,7 @@ export class Sync {
 				return "skipped";
 			}
 			const cur = await this.readState(e.path);
-			if (!known || !cur || cur.hash !== known.hash) {
+			if (!known || !cur || cur.hash !== localHash(known)) {
 				this.log(`keeping locally modified ${e.path} despite a remote delete`);
 				return "deferred";
 			}
@@ -398,7 +553,7 @@ export class Sync {
 				state.files[e.path] = cur;
 				return "skipped";
 			}
-			if (cur && (!known || cur.hash !== known.hash)) {
+			if (cur && (!known || cur.hash !== localHash(known))) {
 				this.log(`keeping locally modified ${e.path}; push will resolve it`);
 				return "deferred";
 			}
@@ -415,15 +570,23 @@ export class Sync {
 	 * the mkdir/write/stat/record dance to get subtly wrong.
 	 */
 	private async materialise(path: string, hash: string, fallbackSize: number): Promise<FileState> {
-		const content = await this.client().getContent(hash);
+		return this.place(path, hash, await this.client().getContent(hash, path), fallbackSize);
+	}
+
+	/** place writes content already in hand and returns its snapshot entry.
+	 *  `hash` is the server's; in an encrypted vault the plaintext's is
+	 *  recorded beside it. */
+	private async place(path: string, hash: string, content: ArrayBuffer, fallbackSize: number): Promise<FileState> {
 		await this.mkdirs(path);
 		await this.adapter.writeBinary(path, content);
 		const st = await this.adapter.stat(path);
-		return {
+		const entry: FileState = {
 			hash,
 			mtime: st?.mtime ?? Date.now(),
 			size: st?.size ?? fallbackSize ?? content.byteLength,
 		};
+		if (covered(this.client(), path)) entry.plain = await gitHash(content);
+		return entry;
 	}
 
 	/**
@@ -452,11 +615,19 @@ export class Sync {
 		await this.mkdirs(path);
 		await this.adapter.writeBinary(path, content);
 		const st = await this.adapter.stat(path);
+		const hash = await gitHash(content);
 		state.files[path] = {
-			hash: await gitHash(content),
+			hash,
 			mtime: st?.mtime ?? Date.now(),
 			size: st?.size ?? content.byteLength,
 		};
+		if (covered(this.client(), path)) {
+			// readAt returned plaintext, so the server's own hash for this path
+			// was never seen. "" is safe: only a move sends it, as an If-Match
+			// the server skips when empty.
+			state.files[path].hash = "";
+			state.files[path].plain = hash;
+		}
 		this.log(`the server refused a change to ${path}; restored its version`);
 	}
 
@@ -467,44 +638,85 @@ export class Sync {
 	 * absent from the server might be one we created offline -- the next push
 	 * will send it. Worst case is a duplicate; the alternative risks loss.
 	 */
-	private async rebootstrap(): Promise<SyncState> {
-		const { head, files } = await this.client().snapshot();
+	private async rebootstrap(prev?: SyncState): Promise<SyncState> {
+		const client = this.client();
+		// Also reached outside a cycle, from forceRebootstrap.
+		this.keyless = !client.crypt;
+		const { head, files } = await client.snapshot();
 		const state: SyncState = { base: head, files: {} };
+		if (prev?.vault) state.vault = prev.vault;
+		if (prev?.encrypted) state.encrypted = true;
+		if (prev?.keyed || client.crypt?.scope === "files") state.keyed = true;
 		for (const [path, entry] of Object.entries(files)) {
-			if (skip(path)) continue;
-			const cur = await this.readState(path);
-			if (cur && cur.hash === entry.hash) {
-				state.files[path] = cur;
-				continue;
-			}
-			if (cur) {
-				// Differs locally, and we have NO common ancestor -- that is what
-				// re-bootstrapping means. Leaving it out of state.files was a
-				// silent data-loss bug: the next diff saw an untracked file,
-				// pushed it as a new put against the freshly adopted head, and
-				// because the path had not moved since that base the server
-				// applied our bytes over its own without merging.
-				//
-				// Keep both instead. Ours moves aside under a conflict name, the
-				// server's version lands at the real path, and nothing is lost.
-				const aside = conflictName(path, this.device());
-				await this.adapter.writeBinary(aside, await this.adapter.readBinary(path));
-				// The aside copy is deliberately NOT recorded in state.files.
-				// Recorded with its own hash, the next diff saw it as unchanged
-				// and it never uploaded -- rescued content stayed on this device
-				// only, invisible to every other device and lost with this one.
-				// Left untracked, the next push sees a new file and uploads it.
-				// That is safe for the ASIDE path in a way it was not for the
-				// real path (the bug the comment above describes): the aside
-				// name is new and device-suffixed, so its put creates a path on
-				// the server rather than overwriting anything.
-				this.log(`no common ancestor for ${path}; kept ours as ${aside}`);
-				state.files[path] = await this.materialise(path, entry.hash, entry.size);
-				continue;
-			}
-			state.files[path] = await this.materialise(path, entry.hash, entry.size);
+			if (this.skips(path)) continue;
+			state.files[path] = await this.adoptPath(client, path, entry, prev);
 		}
 		return state;
+	}
+
+	/**
+	 * adoptCovered takes up the encrypted files this device was skipping while
+	 * it had no key. Only paths the snapshot has and the state does not: a
+	 * path already tracked is the ordinary cycle's business.
+	 */
+	private async adoptCovered(client: Client, state: SyncState): Promise<void> {
+		const { files } = await client.snapshot();
+		for (const [path, entry] of Object.entries(files)) {
+			if (state.files[path] || this.skips(path) || !covered(client, path)) continue;
+			state.files[path] = await this.adoptPath(client, path, entry);
+		}
+	}
+
+	/**
+	 * adoptPath makes one path hold what the server has, with no common
+	 * ancestor to reason from, and returns its snapshot entry. A local file
+	 * that differs is kept beside it under a conflict name.
+	 */
+	private async adoptPath(client: Client, path: string, entry: { hash: string; size: number }, prev?: SyncState): Promise<FileState> {
+		const cur = await this.readState(path);
+		if (!cur) return this.materialise(path, entry.hash, entry.size);
+		if (!covered(client, path)) {
+			if (cur.hash === entry.hash) return cur;
+			// Differs locally, and we have NO common ancestor -- that is what
+			// re-bootstrapping means. Leaving it out of state.files was a
+			// silent data-loss bug: the next diff saw an untracked file,
+			// pushed it as a new put against the freshly adopted head, and
+			// because the path had not moved since that base the server
+			// applied our bytes over its own without merging.
+			//
+			// Keep both instead. Ours moves aside under a conflict name, the
+			// server's version lands at the real path, and nothing is lost.
+			const aside = conflictName(path, this.device());
+			await this.adapter.writeBinary(aside, await this.adapter.readBinary(path));
+			// The aside copy is deliberately NOT recorded in state.files.
+			// Recorded with its own hash, the next diff saw it as unchanged
+			// and it never uploaded -- rescued content stayed on this device
+			// only, invisible to every other device and lost with this one.
+			// Left untracked, the next push sees a new file and uploads it.
+			// That is safe for the ASIDE path in a way it was not for the
+			// real path (the bug the comment above describes): the aside
+			// name is new and device-suffixed, so its put creates a path on
+			// the server rather than overwriting anything.
+			this.log(`no common ancestor for ${path}; kept ours as ${aside}`);
+			return this.materialise(path, entry.hash, entry.size);
+		}
+		// The server's hash is of ciphertext and never equals a local one, so
+		// "unchanged" has to be decided on plaintext. Without this every
+		// encrypted file would be set aside as a conflict copy. The old
+		// snapshot answers it for free when it still describes both sides;
+		// otherwise download and compare.
+		const old = prev?.files[path];
+		if (old && old.hash === entry.hash && localHash(old) === cur.hash) {
+			return { ...cur, hash: entry.hash, plain: cur.hash };
+		}
+		const remote = await client.getContent(entry.hash, path);
+		if ((await gitHash(remote)) === cur.hash) {
+			return { ...cur, hash: entry.hash, plain: cur.hash };
+		}
+		const aside = conflictName(path, this.device());
+		await this.adapter.writeBinary(aside, await this.adapter.readBinary(path));
+		this.log(`no common ancestor for ${path}; kept ours as ${aside}`);
+		return this.place(path, entry.hash, remote, entry.size);
 	}
 
 	/**
@@ -529,10 +741,10 @@ export class Sync {
 
 			const content = await this.adapter.readBinary(path);
 			const hash = await gitHash(content);
-			if (known && known.hash === hash) {
+			if (known && localHash(known) === hash) {
 				// Touched but unchanged: refresh the metadata so we stop
 				// re-hashing it every cycle.
-				state.files[path] = { hash, mtime: st.mtime, size: st.size };
+				state.files[path] = { ...known, mtime: st.mtime, size: st.size };
 				continue;
 			}
 			out.push({ path, op: "put", hash, mtime: st.mtime, size: st.size, content });
@@ -551,20 +763,27 @@ export class Sync {
 		if (!isFirstRun(state)) {
 			for (const path of Object.keys(state.files)) {
 				if (seen.has(path)) continue;
-				if (skip(path)) {
+				if (this.skips(path)) {
 					// Retired config is forgotten locally, never deleted remotely.
 					delete state.files[path];
 					continue;
 				}
 				// The hash comes along so pairRenames can recognise this as
 				// half of a rename. It is never sent -- toChange drops it.
-				out.push({ path, op: "del", hash: state.files[path]?.hash });
+				// The LOCAL hash, since it is matched against a new file's.
+				out.push({ path, op: "del", hash: localHash(state.files[path]) });
 			}
 		}
 		// A deletion plus an addition of identical content is a rename. Folding
 		// them into one move is what lets a token with write but not delete
 		// rename a note; anything ambiguous is left as del+put.
-		return pairRenames(out as Pending[]) as PendingChange[];
+		//
+		// Not across the .encrypted marker. A move carries bytes as they are,
+		// so across it the server would be asked to put plaintext at a marked
+		// path or ciphertext at a readable one, and refuses. Those stay a
+		// delete and a put, and the put is sealed or not as its path requires.
+		const client = this.client();
+		return pairRenames(out as Pending[], (from, to) => covered(client, from) === covered(client, to)) as PendingChange[];
 	}
 
 	/**
@@ -582,10 +801,122 @@ export class Sync {
 		}
 		const server: Record<string, string> = {};
 		for (const [p, e] of Object.entries((await client.snapshot()).files)) {
-			if (skip(p) || inventoryPathAllowed(p)) continue;
-			server[p] = e.hash;
+			if (this.skips(p) || inventoryPathAllowed(p)) continue;
+			// Ciphertext hashes never match local ones, so an encrypted file
+			// is compared on plaintext: one download per such file, once.
+			server[p] = covered(client, p) ? await gitHash(await client.getContent(e.hash, p)) : e.hash;
 		}
 		return compareVaults(local, server);
+	}
+
+	/**
+	 * checkKind settles whether this is an encrypted vault and whether this
+	 * device may sync it, and installs the key check on the first device.
+	 *
+	 * The refusals are the point. A device holding a key that is told the vault
+	 * is ordinary would upload every note in plaintext, so that is refused even
+	 * though it can only happen through a misconfigured or hostile server.
+	 */
+	private async checkKind(client: Client, state: SyncState, idx: ServerIndex): Promise<void> {
+		const crypt = client.crypt;
+		if (!idx.encrypted) {
+			if (state.encrypted || crypt?.scope === "vault") {
+				throw new Error(
+					`Refusing to sync: this device holds "${idx.vault}" as an encrypted vault, but the ` +
+						`server says it is not one. Syncing would upload every note in plaintext.`,
+				);
+			}
+			// An ordinary vault syncs without a key: its .encrypted files are
+			// left alone until this device is given one. With a key, it is
+			// verified exactly as an encrypted vault's is.
+			if (!crypt) return;
+			if (!idx.features.includes(Feature.EncryptedFiles)) {
+				// A server from before encrypted files can neither record
+				// the key check nor refuse a readable upload to a marked
+				// path. This device has a key, so it has synced with a newer
+				// server: this one was rolled back, or is a different one.
+				throw new Error(
+					`Refusing to sync: this device holds a key for the encrypted files of "${idx.vault}", ` +
+						`but the server (${idx.version}) is too old to store them. Update the server.`,
+				);
+			}
+			await this.verifyKey(client, crypt, idx);
+			return;
+		}
+		if (!crypt) throw new KeyRequiredError(idx.vault, idx.keyCheck !== "", idx.keyCheck);
+		if (crypt.scope !== "vault") {
+			// The key on this device only covers marked files. Used here it
+			// would encrypt nothing, and the server would refuse every note.
+			throw new Error(
+				`Refusing to sync: the server says "${idx.vault}" is an encrypted vault, but the key on ` +
+					`this device was made for the encrypted files of an ordinary one.`,
+			);
+		}
+		await this.verifyKey(client, crypt, idx);
+	}
+
+	/** Installs the key check on the first device, and verifies the key
+	 *  against it on every other. */
+	private async verifyKey(client: Client, crypt: VaultCrypt, idx: ServerIndex): Promise<void> {
+		let check = idx.keyCheck;
+		if (check === "") {
+			try {
+				await client.putKeyCheck(crypt.keyCheck);
+				return;
+			} catch (err) {
+				if (!(err instanceof ServerError && err.code === Code.KeyCheckSet)) throw err;
+				// Another device installed a key between our reading the index
+				// and writing. Theirs stands; ours is compared against it.
+				check = (await client.index()).keyCheck;
+			}
+		}
+		if (check !== crypt.keyCheck) {
+			throw new WrongKeyError(`the key on this device does not open "${idx.vault}"`);
+		}
+	}
+
+	/**
+	 * seal turns pending changes into what the server takes for an encrypted
+	 * path: sealed content under the hash of the sealed bytes. Changes to
+	 * paths the key does not cover pass through untouched.
+	 *
+	 * After pairRenames, deliberately. Renames are recognised on plaintext
+	 * hashes -- sealed hashes never repeat -- and a file that turns out to be a
+	 * move is never sealed or uploaded at all.
+	 */
+	private async seal(
+		client: Client,
+		state: SyncState,
+		changes: PendingChange[],
+		report: SyncReport,
+	): Promise<PendingChange[]> {
+		const crypt = client.crypt;
+		if (!crypt) return changes;
+		const out: PendingChange[] = [];
+		for (const c of changes) {
+			if (!crypt.covers(c.path)) {
+				out.push(c);
+				continue;
+			}
+			try {
+				crypt.encryptPath(c.path);
+			} catch (err) {
+				if (!(err instanceof NameTooLongError)) throw err;
+				// Not sent, and said so. Its snapshot entry is left alone, so
+				// nothing is deleted on the server because of it.
+				report.refused.push({ path: c.path, status: "refused", reason: "name too long to encrypt" });
+				continue;
+			}
+			if (c.op === "put") {
+				const sealed = await crypt.seal(c.content!);
+				out.push({ ...c, plain: c.hash, hash: await gitHash(sealed), content: sealed });
+			} else if (c.op === "move") {
+				// pairRenames carried the source's local hash; the server wants
+				// its own for the If-Match.
+				out.push({ ...c, plain: c.hash, hash: state.files[c.from!]?.hash });
+			} else out.push(c);
+		}
+		return out;
 	}
 
 	private async upload(changes: PendingChange[]): Promise<void> {
@@ -650,9 +981,20 @@ export class Sync {
 			// files.
 			const nfc = f.normalize("NFC");
 			if (nfc !== f && !listed.has(nfc) && (await this.adapter.exists(nfc))) f = nfc;
-			if (!skip(f)) out.push(f);
+			if (skip(f)) continue;
+			if (this.keyless && encryptedPath(f)) {
+				this.held = true;
+				continue;
+			}
+			out.push(f);
 		}
 		for (const d of listing.folders) {
+			if (this.keyless && encryptedDir(d) && !skipDir(d)) {
+				// Not descended into: without the key nothing inside can be
+				// sent. Noted, so the user is asked for the key.
+				this.held = true;
+				continue;
+			}
 			// A directory is worth descending into if anything under it could
 			// sync. skip() answers that for a FILE path; for a directory the
 			// inventory ancestors are excluded as files but contain allowed JSON.
@@ -807,7 +1149,7 @@ export class Sync {
 		this.running = true;
 		try {
 			this.pairingResolved = true;
-			saveState(this.app, await this.rebootstrap());
+			saveState(this.app, await this.rebootstrap(loadState(this.app)));
 		} finally {
 			this.running = false;
 		}
@@ -818,7 +1160,14 @@ export class Sync {
 type PendingChange = {
 	path: string;
 	op: "put" | "del" | "move";
+	/** What the server will hold: for a put, the hash of `content`. */
 	hash?: string;
+	/** Encrypted paths only: the hash of the plaintext on this device. */
+	plain?: string;
+	/** Half of a rename across the .encrypted marker: where the file went
+	 *  (on the delete) and where it came from (on the put). */
+	becomes?: string;
+	was?: string;
 	mtime?: number;
 	size?: number;
 	content?: ArrayBuffer;
@@ -828,6 +1177,8 @@ type PendingChange = {
 
 function toChange(c: PendingChange): Change {
 	if (c.op === "del") return { path: c.path, op: "del" };
-	if (c.op === "move") return { path: c.path, op: "move", from: c.from, hash: c.hash };
-	return { path: c.path, op: "put", hash: c.hash, size: c.size };
+	if (c.op === "move") return { path: c.path, op: "move", from: c.from, hash: c.hash || undefined };
+	// The size on the wire is of what is stored, which for a sealed put is not
+	// the size of the file on this device.
+	return { path: c.path, op: "put", hash: c.hash, size: c.plain ? c.content!.byteLength : c.size };
 }

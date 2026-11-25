@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkronstrom/obsidian-archivist/internal/version"
 	"github.com/pkronstrom/obsidian-archivist/protocol"
 )
 
@@ -68,6 +69,22 @@ type Client struct {
 	// so one check answers for all of them. (`go vet` catches the copy-a-lock
 	// form; the sharing is the reason to prefer this shape anyway.)
 	compat *compatCache
+
+	// kinds remembers which vaults are encrypted. Shared across copies for the
+	// same reason compat is: the kind is a property of the server's vault, not
+	// of the token or the copy asking.
+	kinds *kindCache
+}
+
+// kindCache maps a vault name to whether it is encrypted. Only confirmed
+// answers are stored; a failed lookup is retried on the next call.
+//
+// Entries never expire. A vault's kind is fixed when it is created, so the
+// only way one goes stale is a vault deleted and recreated under the same
+// name -- and then the server's own guards still refuse every plaintext write.
+type kindCache struct {
+	mu        sync.Mutex
+	encrypted map[string]bool
 }
 
 type compatCache struct {
@@ -88,6 +105,7 @@ func New(baseURL, token, device string) *Client {
 		// context the caller passes.
 		http:   &http.Client{},
 		compat: &compatCache{},
+		kinds:  &kindCache{encrypted: map[string]bool{}},
 	}
 }
 
@@ -217,6 +235,78 @@ func (c *Client) Unlock(ctx context.Context, code string) (expiresAt int64, err 
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	if err := c.refuseEncrypted(ctx); err != nil {
+		return nil, err
+	}
+	return c.send(ctx, method, path, body, contentType)
+}
+
+// refusePath stops a call that names a path marked .encrypted in an ordinary
+// vault.
+//
+// Same reasoning as refuseEncrypted, for one file: what the server holds
+// there is ciphertext, so a read returns bytes no tool can use and a write
+// would send plaintext the server then has to refuse -- after the content
+// was already uploaded. Refusing here keeps both from starting.
+func refusePath(paths ...string) error {
+	for _, p := range paths {
+		if protocol.EncryptedPath(p) {
+			return &Error{
+				Code:    protocol.CodeEncryptedPath,
+				Message: p + " is encrypted; only a device holding the vault's key can read or write it",
+				Status:  http.StatusUnprocessableEntity,
+			}
+		}
+	}
+	return nil
+}
+
+// refuseEncrypted stops every call to an encrypted vault.
+//
+// This client is the relay's: MCP tools, the file API and webhooks all go
+// through it, and all of them deal in note text. An encrypted vault's text
+// exists only on devices holding the key, so there is nothing here the relay
+// could usefully read, and nothing it may write. Refusing in one place, below
+// every caller, is what keeps a future tool from forgetting to.
+//
+// A lookup that fails decides nothing: the call goes out and fails on its own
+// terms, the same way ensureCompatible treats an unreachable server.
+func (c *Client) refuseEncrypted(ctx context.Context) error {
+	if c.vault == "" || c.kinds == nil {
+		return nil
+	}
+	c.kinds.mu.Lock()
+	encrypted, known := c.kinds.encrypted[c.vault]
+	c.kinds.mu.Unlock()
+	if !known {
+		resp, err := c.send(ctx, "GET", "/v1", nil, "")
+		if err != nil {
+			return nil
+		}
+		var index struct {
+			Encrypted bool `json:"encrypted"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&index)
+		resp.Body.Close()
+		if err != nil {
+			return nil
+		}
+		encrypted = index.Encrypted
+		c.kinds.mu.Lock()
+		c.kinds.encrypted[c.vault] = encrypted
+		c.kinds.mu.Unlock()
+	}
+	if encrypted {
+		return &Error{
+			Code:    protocol.CodeEncryptedVault,
+			Message: c.vault + " is an encrypted vault; only a device holding its key can read or write it",
+			Status:  http.StatusUnprocessableEntity,
+		}
+	}
+	return nil
+}
+
+func (c *Client) send(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.qualify(path), body)
 	if err != nil {
 		return nil, err
@@ -227,6 +317,8 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, co
 	if c.via != "" {
 		req.Header.Set(protocol.HeaderVia, c.via)
 	}
+	// The relay is the only program built on this client.
+	req.Header.Set(protocol.HeaderClient, "relay/"+version.Version)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -431,6 +523,11 @@ func readLimited(body io.Reader, max int64, what string) ([]byte, error) {
 // put that merged once can merge again. Reporting an uncertain outcome honestly
 // is better than a retry that quietly does something different.
 func (c *Client) Push(ctx context.Context, base string, changes []protocol.Change) (protocol.PushResponse, error) {
+	for _, ch := range changes {
+		if err := refusePath(ch.Path, ch.From); err != nil {
+			return protocol.PushResponse{}, err
+		}
+	}
 	// Gate the only call that changes the vault. Reads against a mismatched
 	// protocol are merely wrong; writes are durable.
 	if err := c.ensureCompatible(ctx); err != nil {
@@ -442,6 +539,9 @@ func (c *Client) Push(ctx context.Context, base string, changes []protocol.Chang
 }
 
 func (c *Client) History(ctx context.Context, path string, limit int) ([]protocol.Revision, error) {
+	if err := refusePath(path); err != nil {
+		return nil, err
+	}
 	q := "/v1/history?path=" + url.QueryEscape(path)
 	if limit > 0 {
 		q += "&limit=" + strconv.Itoa(limit)
@@ -464,6 +564,9 @@ func (c *Client) ReadAt(ctx context.Context, rev, path string, max int64) ([]byt
 
 // openAt is ReadAt without the read: the caller gets the body and closes it.
 func (c *Client) openAt(ctx context.Context, rev, path string) (io.ReadCloser, error) {
+	if err := refusePath(path); err != nil {
+		return nil, err
+	}
 	if rev == "" {
 		rev = "head"
 	}
@@ -543,6 +646,11 @@ func (c *Client) WriteAt(ctx context.Context, path string, content []byte, base 
 func (c *Client) WriteAtWithRevision(ctx context.Context, path string, content []byte, base string) (protocol.Result, string, error) {
 	var zero protocol.Result
 
+	// Before the upload below, not left to Push: by then the plaintext would
+	// already be in the server's object store.
+	if err := refusePath(path); err != nil {
+		return zero, "", err
+	}
 	if base == "" {
 		var err error
 		if base, err = c.Head(ctx); err != nil {
@@ -658,12 +766,11 @@ func (c *Client) List(ctx context.Context, prefix string) (map[string]protocol.E
 	if err != nil {
 		return nil, err
 	}
-	if prefix == "" {
-		return snap.Files, nil
-	}
+	// Marked paths are left out: every caller of List goes on to read, search
+	// or offer what it returns, and none of that works on ciphertext.
 	out := make(map[string]protocol.Entry)
 	for p, e := range snap.Files {
-		if strings.HasPrefix(p, prefix) {
+		if strings.HasPrefix(p, prefix) && !protocol.EncryptedPath(p) {
 			out[p] = e
 		}
 	}

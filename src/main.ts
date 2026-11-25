@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile, setIcon } from "obsidian";
 import { openSyncedNote } from "./open-synced";
 import { publishInventory, inventoryPathAllowed } from "./plugin-inventory";
-import { Client } from "./client";
+import { Client, setClientVersion } from "./client";
 import { Sync, skip, localOnly, type SyncReport } from "./sync";
 import { RevisionModal } from "./revision-modal";
 import { DEFAULT_SETTINGS, ArchivistSettingTab, type Settings } from "./settings";
@@ -9,7 +9,13 @@ import { Watcher } from "./watch";
 import { loadState } from "./state";
 import { stepUpWarning } from "./scopes";
 import { createSyncScheduler, type SyncScheduler } from "./sync-schedule";
-import { loadToken } from "./credentials";
+import { keyDeclined, loadToken, loadVaultKey, saveVaultKey, setKeyDeclined, type StoredKey } from "./credentials";
+import { VaultCrypt, hex, unhex, type KeyScope } from "./crypt";
+import { KeyModal } from "./key-modal";
+import { KeyRequiredError } from "./sync";
+import { saveToken } from "./credentials";
+import { SwitchModal } from "./switch-modal";
+import { beginSwitch, finishSwitch, loadSwitchBackup, planSwitch, undoSwitch, type SwitchPlan } from "./switch";
 import { PairingHazardError, type PairingChoice } from "./pairing";
 import { PairingModal } from "./pairing-modal";
 
@@ -34,6 +40,21 @@ export default class ArchivistPlugin extends Plugin {
 	 * within seconds and there was no way to defer at all.
 	 */
 	pendingPairing?: PairingHazardError;
+	/** An encrypted vault this device has no key for; see openKeyModal. */
+	pendingKey?: KeyRequiredError;
+	/** Set while .encrypted files stay on this device because the server is
+	 *  too old to store them: that server's version, for settings to show. */
+	serverTooOld?: string;
+	private keyDeferred = false;
+	private keyModal: KeyModal | null = null;
+	/**
+	 * The current vault's cipher, built from the key in local storage.
+	 *
+	 * Cached because building it is async and the client factories are not.
+	 * Tagged with its vault name so a stale one is never used after the vault
+	 * setting changes: a key applied to the wrong vault must fail closed.
+	 */
+	private crypt?: { vault: string; crypt: VaultCrypt };
 	private pairingDeferred = false;
 	/** The pairing modal while it is on screen -- see openPairingModal. */
 	private pairingModal: PairingModal | null = null;
@@ -86,11 +107,15 @@ export default class ArchivistPlugin extends Plugin {
 	private scheduleSync = (): void => this.syncScheduler.schedule();
 
 	async onload(): Promise<void> {
+		setClientVersion(this.manifest.version);
 		await this.loadSettings();
+		// Before anything can build a client: the revision browser and the
+		// deleted-files list read notes without going through a sync first.
+		await this.loadCrypt().catch((err) => console.error("[archivist] could not load the vault key", err));
 
 		this.sync = new Sync(
 			this.app,
-			() => new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault),
+			() => this.makeClient(),
 			() => this.settings.device || "device",
 			(msg, ...rest) => console.log("[archivist]", msg, ...rest),
 			async () => {
@@ -110,9 +135,7 @@ export default class ArchivistPlugin extends Plugin {
 		// long-polling and not the server's SSE stream.
 		this.watcher = new Watcher(
 			() =>
-				this.configured()
-					? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
-					: null,
+				this.configured() ? this.makeClient() : null,
 			() => loadState(this.app).base,
 			() => this.forceSync(),
 			(msg, ...rest) => console.log("[archivist:watch]", msg, ...rest),
@@ -158,6 +181,15 @@ export default class ArchivistPlugin extends Plugin {
 			id: "sync-now",
 			name: "Sync now",
 			callback: () => void this.forceSync(),
+		});
+		this.addCommand({
+			id: "switch-vault",
+			name: "Switch this folder to another vault",
+			checkCallback: (checking) => {
+				if (!this.configured() || loadSwitchBackup(this.app)) return false;
+				if (!checking) this.openSwitchModal();
+				return true;
+			},
 		});
 		this.addCommand({
 			id: "revisions",
@@ -379,14 +411,36 @@ export default class ArchivistPlugin extends Plugin {
 		}
 		this.setStatus("syncing…");
 		try {
+			await this.loadCrypt();
 			const report = await this.sync.run();
 			if (report === null) return; // coalesced into an in-flight cycle
 			this.lastSyncError = undefined;
+			this.completeSwitch(report);
+			this.offerKey(report);
+			const readable = report.refused.find((r) => r.reason?.startsWith("still stored readable"));
+			if (readable) {
+				// Renamed to an .encrypted name, but the old readable file
+				// could not be removed. The user believes it is gone.
+				new Notice(`archivist: ${readable.path} is ${readable.reason}`, 0);
+			}
+			if (report.marked?.length) this.explainMarked(report.marked);
+			if (report.exposed?.length) {
+				// The one direction in which a rename publishes a note.
+				new Notice(
+					`archivist: ${report.exposed.length} file(s) no longer have an .encrypted name and were ` +
+						`uploaded as readable text: ${report.exposed.slice(0, 5).join(", ")}` +
+						(report.exposed.length > 5 ? ", …" : ""),
+					0,
+				);
+			}
 			if (report.conflicts.length > 0) {
 				// Conflicts are the one outcome worth interrupting for: a file
-				// now exists that the user has to resolve by hand.
+				// now exists that the user has to resolve by hand. An encrypted
+				// vault's server names no copy; this device made it, beside the
+				// note.
+				const first = report.conflicts[0];
 				new Notice(
-					`archivist: ${report.conflicts.length} conflict(s); see ${report.conflicts[0].conflictPath}`,
+					`archivist: ${report.conflicts.length} conflict(s); see ${first.conflictPath ?? `the copy beside ${first.path}`}`,
 					8000,
 				);
 			}
@@ -397,6 +451,18 @@ export default class ArchivistPlugin extends Plugin {
 					: `↓${report.pulled} ↑${report.pushed}`,
 			);
 		} catch (err) {
+			if (err instanceof KeyRequiredError) {
+				// A question, like the pairing hazard: nothing was read or
+				// written, and the device stays paused until it is answered.
+				this.pendingKey = err;
+				if (this.keyDeferred) {
+					this.setStatus("paused — needs its key");
+					return;
+				}
+				this.setStatus("needs its key");
+				this.openKeyModal();
+				return;
+			}
 			if (err instanceof PairingHazardError) {
 				// Not an error to report and move past: it is a question, and
 				// until it is answered this device does not sync at all.
@@ -530,9 +596,226 @@ export default class ArchivistPlugin extends Plugin {
 
 	/** The client, or null when the plugin is not configured yet. */
 	private clientOrNull(): Client | null {
-		return this.configured()
-			? new Client(this.settings.serverUrl, loadToken(this.app), this.settings.vault)
-			: null;
+		return this.configured() ? this.makeClient() : null;
+	}
+
+	/** The client for the configured vault, with its key when it has one.
+	 *  Every client that reads or writes notes must come from here. */
+	makeClient(): Client {
+		const vault = this.settings.vault;
+		return new Client(
+			this.settings.serverUrl,
+			loadToken(this.app),
+			vault,
+			this.crypt?.vault === vault ? this.crypt.crypt : undefined,
+		);
+	}
+
+	/** Build the cipher for the configured vault if this device holds its key.
+	 *  Called before each sync, so a changed vault setting is picked up. */
+	private async loadCrypt(): Promise<void> {
+		const vault = this.settings.vault;
+		if (this.crypt?.vault === vault) return;
+		const stored = loadVaultKey(this.app, vault);
+		this.crypt = stored
+			? { vault, crypt: await VaultCrypt.fromKey(unhex(stored.key), stored.scope) }
+			: undefined;
+	}
+
+	/** The recovery key for the configured vault, or "" when it has none. */
+	vaultKey(): StoredKey | null {
+		return loadVaultKey(this.app, this.settings.vault);
+	}
+
+	/**
+	 * A note that was already on the server has been renamed to an .encrypted
+	 * name. From here on the server gets ciphertext, but the rename cannot
+	 * reach back: every earlier version is still readable in history and in
+	 * backups. Someone marking a note to protect it is owed that sentence.
+	 *
+	 * In full, and until dismissed, the first time on this device. After that
+	 * a short reminder, so marking the tenth note is not a lecture.
+	 */
+	private explainMarked(paths: string[]): void {
+		const what = paths.length === 1 ? paths[0] : `${paths.length} notes`;
+		const KEY = "archivist.markedExplained";
+		if (this.app.loadLocalStorage(KEY)) {
+			new Notice(`archivist: ${what} now encrypted on the server; earlier versions stay readable in its history`, 8000);
+			return;
+		}
+		this.app.saveLocalStorage(KEY, true);
+		new Notice(
+			`archivist: ${what} ${paths.length === 1 ? "is" : "are"} encrypted on the server from now on. ` +
+				`Versions from before the rename are still readable in the server's history and in its ` +
+				`backups, under the old name, until they are pruned there. To keep a note off the server ` +
+				`entirely, create it with the .encrypted name.`,
+			0,
+		);
+	}
+
+	/**
+	 * An ordinary vault synced, but left its .encrypted files alone because
+	 * this device has no key. Ask once; "not now" is remembered, so a device
+	 * kept without the key on purpose is not asked at every start. Settings
+	 * offer it either way.
+	 */
+	private offerKey(report: SyncReport): void {
+		const vault = this.settings.vault;
+		this.explainOldServer(report.serverTooOld);
+		if (!report.needsKey) {
+			if (this.pendingKey?.scope === "files") this.pendingKey = undefined;
+			return;
+		}
+		this.pendingKey = new KeyRequiredError(vault, report.needsKey.hasKey, report.needsKey.keyCheck, "files");
+		if (!keyDeclined(this.app, vault)) this.openKeyModal();
+	}
+
+	/**
+	 * The server is from before encrypted files, and this device has some.
+	 * They stay here: nothing else is safe, since that server would store
+	 * them readable. Everything else synced.
+	 *
+	 * Said once per server version on this device, and until dismissed,
+	 * because a note the user believes is synced is not. Settings keep
+	 * saying it for as long as it is true.
+	 */
+	private explainOldServer(version: string | undefined): void {
+		this.serverTooOld = version;
+		if (!version) return;
+		const KEY = "archivist.oldServerExplained";
+		if (this.app.loadLocalStorage(KEY) === version) return;
+		this.app.saveLocalStorage(KEY, version);
+		new Notice(
+			`archivist: files and folders marked .encrypted are staying on this device. The server ` +
+				`(${version}) is too old to store them encrypted. Everything else synced; update the ` +
+				`server to sync these too.`,
+			0,
+		);
+	}
+
+	/** Open the switch dialog. Also called from the settings tab. */
+	openSwitchModal(): void {
+		const current = this.settings.vault;
+		new SwitchModal(
+			this.app,
+			current,
+			async (vault, token, skipSync) => {
+				await this.loadCrypt();
+				return planSwitch({
+					state: loadState(this.app),
+					current: this.clientOrNull(),
+					// No key here, on purpose: the checks read only the index and
+					// the head, and the key for a new vault does not exist yet.
+					target: new Client(this.settings.serverUrl, token || loadToken(this.app), vault),
+					syncCurrent: () => this.sync.run(),
+					skipSync,
+				});
+			},
+			(plan, token) => void this.applySwitch(plan, token),
+		).open();
+	}
+
+	private async applySwitch(plan: SwitchPlan, token: string): Promise<void> {
+		// Backup first, then the pointers. From here until the first sync with
+		// the new vault succeeds, undoSwitchNow puts everything back.
+		beginSwitch(this.app, { vault: this.settings.vault, token: loadToken(this.app) }, plan.to.vault);
+		this.settings.vault = plan.to.vault;
+		await this.saveSettings();
+		if (token) saveToken(this.app, token);
+		this.crypt = undefined;
+		this.pendingPairing = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		new Notice(`archivist: switched to "${plan.to.vault}"; publishing this folder`, 8000);
+		await this.forceSync();
+	}
+
+	/** The switch that has been started and not yet completed, if any. */
+	pendingSwitch(): { from: string; to: string } | null {
+		const backup = loadSwitchBackup(this.app);
+		return backup ? { from: backup.vault, to: backup.to } : null;
+	}
+
+	/** Go back to the vault this folder synced before the switch. */
+	async undoSwitchNow(): Promise<void> {
+		const backup = undoSwitch(this.app);
+		if (!backup) return;
+		this.settings.vault = backup.vault;
+		await this.saveSettings();
+		saveToken(this.app, backup.token);
+		this.crypt = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		new Notice(`archivist: back on "${backup.vault}"; nothing there was changed`, 8000);
+		await this.forceSync();
+	}
+
+	/**
+	 * The first successful sync after a switch: let the old state go and say
+	 * what was published, so the old vault is deleted on evidence.
+	 */
+	private completeSwitch(report: SyncReport): void {
+		const backup = loadSwitchBackup(this.app);
+		if (!backup || loadState(this.app).vault !== backup.to) return;
+		finishSwitch(this.app);
+		const skipped = report.refused.length
+			? ` ${report.refused.length} could not be published: ` +
+				report.refused
+					.slice(0, 5)
+					.map((r) => `${r.path} (${r.reason ?? "refused"})`)
+					.join(", ") +
+				(report.refused.length > 5 ? ", …" : "") +
+				"."
+			: "";
+		new Notice(
+			`archivist: published ${report.pushed} file(s) to "${backup.to}".${skipped} ` +
+				`"${backup.vault}" is unchanged on the server; delete it there once you have checked the new vault.`,
+			0,
+		);
+	}
+
+	/** Open the key question. Also called from the settings tab. */
+	openKeyModal(): void {
+		const need = this.pendingKey;
+		if (!need || this.keyModal) return;
+		const modal = new KeyModal(
+			this.app,
+			need,
+			(key) => void this.adoptKey(need.vault, key, need.scope),
+			() => {
+				if (need.scope === "files") {
+					// Not a pause: everything else keeps syncing.
+					setKeyDeclined(this.app, need.vault, true);
+					new Notice(
+						"archivist: files marked .encrypted are not synced on this device until it has " +
+							"the key. Add it in Archivist's settings when you are ready.",
+						8000,
+					);
+					return;
+				}
+				this.keyDeferred = true;
+				this.setStatus("paused — needs its key");
+				new Notice(
+					"archivist: not syncing this encrypted vault until it has its key. " +
+						"Reopen this in Archivist's settings when you are ready.",
+					8000,
+				);
+			},
+		);
+		modal.onClosed = () => {
+			this.keyModal = null;
+		};
+		this.keyModal = modal;
+		modal.open();
+	}
+
+	private async adoptKey(vault: string, key: Uint8Array, scope: KeyScope): Promise<void> {
+		saveVaultKey(this.app, vault, hex(key), scope);
+		setKeyDeclined(this.app, vault, false);
+		this.crypt = undefined;
+		this.pendingKey = undefined;
+		this.keyDeferred = false;
+		await this.forceSync();
 	}
 
 	/**

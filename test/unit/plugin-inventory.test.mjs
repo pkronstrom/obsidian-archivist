@@ -88,7 +88,7 @@ test("old-server inventory refusal is reported while notes can sync", async t =>
  await app.vault.adapter.write(file(a),JSON.stringify(record(a)));
  const pushed=[];
  const client={
-  async index(){return {service:"archivist",protocol:2,version:"t",vault:"personal"};},
+  async index(){return {service:"archivist",protocol:2,version:"t",vault:"personal",encrypted:false,keyCheck:""};},
   async head(){return "";}, async changes(){return {head:"",entries:[]};},
   async missing(h){return h;},async putContent(){},
   async push(base,device,changes){pushed.push(...changes);return {head:"head",results:changes.map(c=>({path:c.path,status:c.path.startsWith(".archivist")?"refused":"applied"}))};},

@@ -19,9 +19,44 @@ const tok = "test-token"
 // against a real server in client_live_test.go.
 func stub(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
-	srv := httptest.NewServer(h)
+	// Every vault-scoped call first asks the index what kind of vault this is.
+	// The stubs here are ordinary vaults, so that question is answered for them
+	// and each test's handler sees only the call it is about.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1") {
+			writeJSON(w, map[string]any{"encrypted": false})
+			return
+		}
+		h(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return New(srv.URL, tok, "test")
+}
+
+// Everything the relay does goes through this client, so refusing here closes
+// MCP, the file API and webhooks at once -- and the refusal has to come before
+// the request, not after a read has already returned ciphertext.
+func TestEncryptedVaultIsRefusedBeforeAnyCallReachesIt(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/work/v1" {
+			writeJSON(w, map[string]any{"encrypted": true})
+			return
+		}
+		writeJSON(w, map[string]any{})
+	}))
+	t.Cleanup(srv.Close)
+	c := New(srv.URL, tok, "test").WithVault("work")
+
+	for i := 0; i < 2; i++ {
+		if _, err := c.Head(context.Background()); !IsCode(err, protocol.CodeEncryptedVault) {
+			t.Fatalf("err = %v, want IsCode(encrypted_vault)", err)
+		}
+	}
+	if len(calls) != 1 || calls[0] != "GET /work/v1" {
+		t.Errorf("want one index lookup and nothing else, got %v", calls)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -396,4 +431,18 @@ func TestTypedNoteMutationClientsSendConfiguredDevice(t *testing.T) {
 			t.Errorf("device = %q, want configured-device", received.Device)
 		}
 	})
+}
+
+func TestEveryRequestNamesTheClient(t *testing.T) {
+	var got []string
+	c := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(protocol.HeaderClient))
+		writeJSON(w, protocol.HeadResponse{Head: "abc"})
+	})
+	if _, err := c.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "relay/") {
+		t.Fatalf("%s = %q, want relay/<version>", protocol.HeaderClient, got)
+	}
 }

@@ -17,7 +17,7 @@ function fakeClient({ head = "serverhead", entries = [] } = {}) {
 	return {
 		pushes: [],
 		async index() {
-			return { service: "archivist", version: "test", protocol: 2, vault: "personal" };
+			return { service: "archivist", version: "test", protocol: 2, vault: "personal", encrypted: false, keyCheck: "" };
 		},
 		async head() {
 			return head;
